@@ -10,7 +10,7 @@
 #   - panel/ and node/ source
 #   - prebuilt frontend (frontend-dist/)
 #   - pip wheels (wheels/panel, wheels/node)
-#   - tunnel binaries (bin/): gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws (zapret), rstund/rstunc (trusttunnel)
+#   - tunnel binaries (bin/): gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws (zapret), rstund/rstunc (trusttunnel), xray (snispoof)
 #   - systemd units, CLIs, and the native installers
 #
 # Transfer the tarball to the offline server, extract it, then run:
@@ -45,6 +45,8 @@ UDP2RAW_VERSION="20230206.0"
 ZAPRET_VERSION="v72.12"
 # TrustTunnel ships the rstun (rstund/rstunc) QUIC binaries.
 RSTUN_VERSION="0.7.4"
+# Xray-core: front proxy for the snispoof core (SNI-spoof + zapret).
+XRAY_VERSION="26.3.27"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -59,8 +61,8 @@ if [ -z "$ARCH" ]; then
 fi
 case "$ARCH" in
     # rathole publishes no gnu build for aarch64 -> use the static musl build there
-    amd64) RATHOLE_TARGET="x86_64-unknown-linux-gnu"; UDP2RAW_ASSET="udp2raw_amd64"; ZAPRET_ARCH="linux-x86_64"; RSTUN_ASSET="rstun-linux-x86_64.tar.gz" ;;
-    arm64) RATHOLE_TARGET="aarch64-unknown-linux-musl"; UDP2RAW_ASSET="udp2raw_arm"; ZAPRET_ARCH="linux-arm64"; RSTUN_ASSET="rstun-linux-aarch64.tar.gz" ;;
+    amd64) RATHOLE_TARGET="x86_64-unknown-linux-gnu"; UDP2RAW_ASSET="udp2raw_amd64"; ZAPRET_ARCH="linux-x86_64"; RSTUN_ASSET="rstun-linux-x86_64.tar.gz"; XRAY_ASSET="Xray-linux-64.zip" ;;
+    arm64) RATHOLE_TARGET="aarch64-unknown-linux-musl"; UDP2RAW_ASSET="udp2raw_arm"; ZAPRET_ARCH="linux-arm64"; RSTUN_ASSET="rstun-linux-aarch64.tar.gz"; XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;;
     *) fail "Unsupported TARGET_ARCH: $ARCH (use amd64 or arm64)" ;;
 esac
 progress "Target architecture: $ARCH"
@@ -222,6 +224,15 @@ RSTUNC_BIN="$(find "$DL/rstun" -type f -name rstunc | head -n1)"
 install -m 0755 "$RSTUND_BIN" "$STAGE/bin/rstund"
 install -m 0755 "$RSTUNC_BIN" "$STAGE/bin/rstunc"
 progress "rstun/TrustTunnel ${RSTUN_VERSION} (rstund, rstunc)"
+
+# xray-core / snispoof front proxy (local VLESS inbound + WS/TLS fronting outbound)
+dl "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/${XRAY_ASSET}" "$DL/xray.zip"
+mkdir -p "$DL/xray"
+unzip -qo "$DL/xray.zip" -d "$DL/xray"
+XRAY_BIN="$(find "$DL/xray" -type f -name xray | head -n1)"
+[ -n "$XRAY_BIN" ] || fail "xray binary not found in Xray-core release archive"
+install -m 0755 "$XRAY_BIN" "$STAGE/bin/xray"
+progress "xray-core ${XRAY_VERSION}"
 
 # --- 5. Make scripts executable ---
 chmod +x "$STAGE/scripts/"*.sh

@@ -343,6 +343,7 @@ interface ZapretFormState {
   direction: string
   queue_num: string
   extra_args: string
+  target_ip: string
 }
 
 const createDefaultZapretState = (): ZapretFormState => ({
@@ -354,6 +355,7 @@ const createDefaultZapretState = (): ZapretFormState => ({
   direction: 'both',
   queue_num: '',
   extra_args: '',
+  target_ip: '',
 })
 
 const buildZapretSpec = (state: ZapretFormState, desyncOverride?: string): Record<string, any> => {
@@ -382,6 +384,8 @@ const buildZapretSpec = (state: ZapretFormState, desyncOverride?: string): Recor
     spec.extra_args = state.extra_args.trim()
   }
 
+  spec.target_ip = state.target_ip.trim()
+
   return spec
 }
 
@@ -401,7 +405,121 @@ const parseZapretSpec = (spec: Record<string, any> | undefined, currentType?: st
   if (spec.direction) state.direction = String(spec.direction)
   if (spec.queue_num) state.queue_num = String(spec.queue_num)
   if (spec.extra_args) state.extra_args = String(spec.extra_args)
+  if (spec.target_ip) state.target_ip = String(spec.target_ip)
   return state
+}
+
+// ---- snispoof (Xray front proxy + zapret SNI spoof) ----
+const generateUuidV4 = (): string =>
+  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+
+interface SniSpoofFormState {
+  local_port: string
+  inbound_uuid: string
+  front_ip: string
+  front_port: string
+  uuid: string
+  sni: string
+  ws_path: string
+  alpn: string
+  fingerprint: string
+  desync_mode: string
+  fake_tls_sni: string
+  desync_fooling: string
+}
+
+const createDefaultSniSpoofState = (): SniSpoofFormState => ({
+  local_port: '18443',
+  inbound_uuid: generateUuidV4(),
+  front_ip: '',
+  front_port: '443',
+  uuid: '',
+  sni: '',
+  ws_path: '/',
+  alpn: 'h2,http/1.1',
+  fingerprint: 'chrome',
+  desync_mode: 'fake',
+  fake_tls_sni: 'hcaptcha.com',
+  desync_fooling: 'badseq,ts',
+})
+
+const buildSniSpoofSpec = (state: SniSpoofFormState, desyncOverride?: string): Record<string, any> => {
+  const modeCandidate = desyncOverride || state.desync_mode || 'fake'
+  const mode = ZAPRET_DESYNC_MODES.includes(modeCandidate) ? modeCandidate : 'fake'
+  const spec: Record<string, any> = {
+    listen_addr: '127.0.0.1',
+    local_port: parseInt(state.local_port, 10) || 18443,
+    inbound_uuid: state.inbound_uuid.trim() || generateUuidV4(),
+    front_ip: state.front_ip.trim(),
+    front_port: parseInt(state.front_port, 10) || 443,
+    uuid: state.uuid.trim(),
+    sni: state.sni.trim(),
+    host: state.sni.trim(),
+    ws_path: state.ws_path.trim() || '/',
+    desync_mode: mode,
+    fake_tls_sni: state.fake_tls_sni.trim() || 'hcaptcha.com',
+    desync_fooling: state.desync_fooling.trim() || 'badseq,ts',
+    max_pkt: 10,
+    alpn: state.alpn.trim(),
+    fingerprint: state.fingerprint.trim(),
+  }
+  return spec
+}
+
+const parseSniSpoofSpec = (spec: Record<string, any> | undefined, currentType?: string): SniSpoofFormState => {
+  const state = createDefaultSniSpoofState()
+  const modeCandidate = ((spec?.desync_mode || currentType || 'fake') as string).toLowerCase()
+  if (ZAPRET_DESYNC_MODES.includes(modeCandidate)) {
+    state.desync_mode = modeCandidate
+  }
+  if (!spec) {
+    return state
+  }
+  if (spec.local_port) state.local_port = String(spec.local_port)
+  if (spec.inbound_uuid) state.inbound_uuid = String(spec.inbound_uuid)
+  if (spec.front_ip) state.front_ip = String(spec.front_ip)
+  if (spec.front_port) state.front_port = String(spec.front_port)
+  if (spec.uuid) state.uuid = String(spec.uuid)
+  state.sni = String(spec.sni || spec.host || state.sni)
+  if (spec.ws_path) state.ws_path = String(spec.ws_path)
+  if (spec.alpn !== undefined) state.alpn = String(spec.alpn)
+  if (spec.fingerprint !== undefined) state.fingerprint = String(spec.fingerprint)
+  state.fake_tls_sni = spec.fake_tls_sni ?? state.fake_tls_sni
+  if (spec.desync_fooling !== undefined) state.desync_fooling = String(spec.desync_fooling)
+  return state
+}
+
+// Parse a vless:// share link (WS/TLS backend) to prefill the snispoof form.
+// vless://uuid@host:443?type=ws&path=/admin&sni=domain&fp=chrome&alpn=h2,http/1.1#name
+const parseVlessLink = (link: string): Partial<SniSpoofFormState> | null => {
+  try {
+    const trimmed = link.trim()
+    if (!trimmed.toLowerCase().startsWith('vless://')) return null
+    // Re-parse with an http scheme so URL handles host/port/user reliably.
+    const url = new URL('http://' + trimmed.slice('vless://'.length))
+    const uuid = decodeURIComponent(url.username || '')
+    const address = url.hostname.replace(/^\[|\]$/g, '')
+    const params = url.searchParams
+    const result: Partial<SniSpoofFormState> = {}
+    if (uuid) result.uuid = uuid
+    if (address) result.front_ip = address
+    result.front_port = url.port || '443'
+    const sni = params.get('sni') || params.get('host') || address
+    if (sni) result.sni = sni
+    const path = params.get('path')
+    if (path) result.ws_path = decodeURIComponent(path)
+    const alpn = params.get('alpn')
+    if (alpn) result.alpn = decodeURIComponent(alpn)
+    const fp = params.get('fp') || params.get('fingerprint')
+    if (fp) result.fingerprint = fp
+    return result
+  } catch {
+    return null
+  }
 }
 
 const numericServerKeys = new Set([
@@ -725,6 +843,9 @@ const Tunnels = () => {
             if (tunnel.core === 'zapret') {
               return (tunnel.spec?.filter_tcp || '443').toString()
             }
+            if (tunnel.core === 'snispoof') {
+              return (tunnel.spec?.local_port || 'N/A').toString()
+            }
             if (tunnel.spec?.ports) {
               if (Array.isArray(tunnel.spec.ports)) {
                 // For Backhaul, ports are in format "8080=127.0.0.1:8080", extract just the port numbers
@@ -757,6 +878,7 @@ const Tunnels = () => {
               udp2raw: { bg: 'bg-rose-100 dark:bg-rose-900/30', text: 'text-rose-800 dark:text-rose-200', border: 'border-rose-300 dark:border-rose-700' },
               trusttunnel: { bg: 'bg-sky-100 dark:bg-sky-900/30', text: 'text-sky-800 dark:text-sky-200', border: 'border-sky-300 dark:border-sky-700' },
               zapret: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
+              snispoof: { bg: 'bg-fuchsia-100 dark:bg-fuchsia-900/30', text: 'text-fuchsia-800 dark:text-fuchsia-200', border: 'border-fuchsia-300 dark:border-fuchsia-700' },
             }
             return coreColors[tunnel.core] || { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-800 dark:text-gray-200', border: 'border-gray-300 dark:border-gray-600' }
           }
@@ -764,7 +886,7 @@ const Tunnels = () => {
           const coreBadge = getCoreBadge()
           const ports = getPorts()
           const iranNode = nodes.find(n => n.id === tunnel.iran_node_id || n.id === tunnel.node_id)
-            || (tunnel.core === 'zapret' ? servers.find(s => s.id === tunnel.node_id) : undefined)
+            || (tunnel.core === 'zapret' || tunnel.core === 'snispoof' ? servers.find(s => s.id === tunnel.node_id) : undefined)
           const foreignServer = servers.find(s => s.id === tunnel.foreign_node_id)
 
           return (
@@ -882,6 +1004,8 @@ const Tunnels = () => {
                           corePort = tunnel.spec?.control_port
                         } else if (tunnel.core === 'zapret') {
                           corePort = tunnel.spec?.queue_num || null
+                        } else if (tunnel.core === 'snispoof') {
+                          corePort = tunnel.spec?.front_port || '443'
                         }
                         return corePort ? (
                           <div className="flex items-center gap-1.5">
@@ -1436,6 +1560,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
   const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(() => parseUdp2rawSpec(tunnel.spec, tunnel.type))
   const [trustTunnelState, setTrustTunnelState] = useState<TrustTunnelFormState>(() => parseTrustTunnelSpec(tunnel.spec, tunnel.type))
   const [zapretState, setZapretState] = useState<ZapretFormState>(() => parseZapretSpec(tunnel.spec, tunnel.type))
+  const [sniSpoofState, setSniSpoofState] = useState<SniSpoofFormState>(() => parseSniSpoofSpec(tunnel.spec, tunnel.type))
 
   // In-place core/type change (reverse cores only)
   const coreChangeable = CHANGEABLE_CORES.includes(tunnel.core)
@@ -1560,6 +1685,8 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
         updatedSpec = { ...tunnel.spec, ...buildTrustTunnelSpec(trustTunnelState, editType) }
       } else if (tunnel.core === 'zapret') {
         updatedSpec = { ...tunnel.spec, ...buildZapretSpec(zapretState, tunnel.type) }
+      } else if (tunnel.core === 'snispoof') {
+        updatedSpec = { ...tunnel.spec, ...buildSniSpoofSpec(sniSpoofState, tunnel.type) }
       }
 
       await api.put(`/tunnels/${tunnel.id}`, {
@@ -1706,6 +1833,15 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
               state={zapretState}
               onChange={(partial) => {
                 setZapretState((prev) => ({ ...prev, ...partial }))
+              }}
+            />
+          )}
+
+          {tunnel.core === 'snispoof' && (
+            <SniSpoofForm
+              state={sniSpoofState}
+              onChange={(partial) => {
+                setSniSpoofState((prev) => ({ ...prev, ...partial }))
               }}
             />
           )}
@@ -1999,6 +2135,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     return state
   })
   const [zapretState, setZapretState] = useState<ZapretFormState>(createDefaultZapretState())
+  const [sniSpoofState, setSniSpoofState] = useState<SniSpoofFormState>(createDefaultSniSpoofState())
 
   // Auto-populate remote_ip with foreign server IP when GOST is selected
   useEffect(() => {
@@ -2184,6 +2321,24 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         spec = buildZapretSpec(zapretState)
         tunnelType = zapretState.desync_mode
       }
+
+      if (formData.core === 'snispoof') {
+        if (!formData.node_id && !formData.iran_node_id) {
+          alert('SNI Spoof requires a node (the server that runs the xray front proxy)')
+          return
+        }
+        const localPort = parseInt(sniSpoofState.local_port, 10)
+        if (Number.isNaN(localPort) || localPort <= 0 || localPort > 65535) {
+          alert('Please enter a valid local port for SNI Spoof')
+          return
+        }
+        if (!sniSpoofState.front_ip.trim() || !sniSpoofState.uuid.trim() || !sniSpoofState.sni.trim()) {
+          alert('Front address, backend UUID and SNI domain are required for SNI Spoof')
+          return
+        }
+        spec = buildSniSpoofSpec(sniSpoofState)
+        tunnelType = sniSpoofState.desync_mode
+      }
       
       const payload = {
         name: formData.name,
@@ -2234,7 +2389,9 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
       newType = trustTunnelState.transport
     } else if (core === 'zapret') {
       newType = zapretState.desync_mode
-    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'zapret') {
+    } else if (core === 'snispoof') {
+      newType = sniSpoofState.desync_mode
+    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'zapret' || formData.core === 'snispoof') {
       newType = 'tcp'
     }
     setFormData({ ...formData, core, type: newType })
@@ -2265,7 +2422,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               required
             />
           </div>
-          {formData.core !== 'zapret' && (
+          {formData.core !== 'zapret' && formData.core !== 'snispoof' && (
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -2306,7 +2463,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
           </div>
           )}
 
-          {formData.core === 'zapret' && (
+          {(formData.core === 'zapret' || formData.core === 'snispoof') && (
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 {t.tunnels.zapretNode}
@@ -2348,6 +2505,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 <option value="udp2raw">udp2raw</option>
                 <option value="trusttunnel">TrustTunnel (QUIC)</option>
                 <option value="zapret">Zapret (DPI bypass)</option>
+                <option value="snispoof">SNI Spoof (Xray + Zapret)</option>
               </select>
             </div>
             <div>
@@ -2370,6 +2528,9 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                   }
                   if (formData.core === 'zapret') {
                     setZapretState((prev) => ({ ...prev, desync_mode: e.target.value }))
+                  }
+                  if (formData.core === 'snispoof') {
+                    setSniSpoofState((prev) => ({ ...prev, desync_mode: e.target.value }))
                   }
                 }}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
@@ -2407,7 +2568,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                     <option value="udp">UDP</option>
                     <option value="both">TCP + UDP</option>
                   </>
-                ) : formData.core === 'zapret' ? (
+                ) : formData.core === 'zapret' || formData.core === 'snispoof' ? (
                   <>
                     {ZAPRET_DESYNC_MODES.map((mode) => (
                       <option key={mode} value={mode}>{mode}</option>
@@ -2510,6 +2671,18 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               state={zapretState}
               onChange={(partial) => {
                 setZapretState((prev) => ({ ...prev, ...partial }))
+                if (partial.desync_mode) {
+                  setFormData((prev) => ({ ...prev, type: partial.desync_mode as string }))
+                }
+              }}
+            />
+          )}
+
+          {formData.core === 'snispoof' && (
+            <SniSpoofForm
+              state={sniSpoofState}
+              onChange={(partial) => {
+                setSniSpoofState((prev) => ({ ...prev, ...partial }))
                 if (partial.desync_mode) {
                   setFormData((prev) => ({ ...prev, type: partial.desync_mode as string }))
                 }
@@ -3126,20 +3299,37 @@ function ZapretForm({
         </div>
       </div>
 
-      <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          Fake TLS SNI
-        </label>
-        <input
-          type="text"
-          value={state.fake_tls_sni}
-          onChange={(e) => onChange({ fake_tls_sni: e.target.value })}
-          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-          placeholder="hcaptcha.com"
-        />
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-          Decoy SNI sent in the fake ClientHello (--dpi-desync-fake-tls-mod=sni=). Use an allowed domain.
-        </p>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Fake TLS SNI
+          </label>
+          <input
+            type="text"
+            value={state.fake_tls_sni}
+            onChange={(e) => onChange({ fake_tls_sni: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="hcaptcha.com"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Decoy SNI sent in the fake ClientHello (--dpi-desync-fake-tls-mod=sni=). Use an allowed domain.
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.zapretTargetIp}
+          </label>
+          <input
+            type="text"
+            value={state.target_ip}
+            onChange={(e) => onChange({ target_ip: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="104.19.229.21"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.zapretTargetIpHint}
+          </p>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -3191,6 +3381,271 @@ function ZapretForm({
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
           Optional raw flags appended to nfqws. Leave empty unless you know what you need.
         </p>
+      </div>
+    </div>
+  )
+}
+
+function SniSpoofForm({
+  state,
+  onChange,
+}: {
+  state: SniSpoofFormState
+  onChange: (partial: Partial<SniSpoofFormState>) => void
+}) {
+  const { t } = useLanguage()
+  const [vlessLink, setVlessLink] = useState('')
+  const [vlessError, setVlessError] = useState(false)
+
+  const applyVlessLink = () => {
+    const parsed = parseVlessLink(vlessLink)
+    if (parsed) {
+      setVlessError(false)
+      onChange(parsed)
+    } else {
+      setVlessError(true)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        {t.tunnels.snispoofHint}
+      </p>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          {t.tunnels.snispoofPasteVless}
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={vlessLink}
+            onChange={(e) => { setVlessLink(e.target.value); setVlessError(false) }}
+            className={`flex-1 px-3 py-2 border rounded-lg dark:bg-gray-700 dark:text-white ${vlessError ? 'border-red-400 dark:border-red-600' : 'border-gray-300 dark:border-gray-600'}`}
+            placeholder="vless://uuid@host:443?type=ws&path=/...&sni=...#name"
+            dir="ltr"
+          />
+          <button
+            type="button"
+            onClick={applyVlessLink}
+            className="px-3 py-2 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 shrink-0"
+          >
+            {t.tunnels.snispoofApplyVless}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofLocalPort}
+          </label>
+          <input
+            type="number"
+            value={state.local_port}
+            onChange={(e) => onChange({ local_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="18443"
+            min={1}
+            max={65535}
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.snispoofLocalPortHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofInboundUuid}
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={state.inbound_uuid}
+              onChange={(e) => onChange({ inbound_uuid: e.target.value })}
+              className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white font-mono text-xs"
+              dir="ltr"
+            />
+            <button
+              type="button"
+              onClick={() => onChange({ inbound_uuid: generateUuidV4() })}
+              className="px-2 py-2 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 shrink-0"
+            >
+              {t.tunnels.snispoofRegenerate}
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.snispoofInboundUuidHint}
+          </p>
+        </div>
+      </div>
+
+      <p className="text-xs text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg p-3" dir="ltr">
+        {t.tunnels.snispoofClientHint
+          .replace('{port}', state.local_port || '...')
+          .replace('{uuid}', state.inbound_uuid || '...')}
+      </p>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofFrontAddress}
+          </label>
+          <input
+            type="text"
+            value={state.front_ip}
+            onChange={(e) => onChange({ front_ip: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="104.19.229.21"
+            dir="ltr"
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.snispoofFrontAddressHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofFrontPort}
+          </label>
+          <input
+            type="number"
+            value={state.front_port}
+            onChange={(e) => onChange({ front_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="443"
+            min={1}
+            max={65535}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofUuid}
+          </label>
+          <input
+            type="text"
+            value={state.uuid}
+            onChange={(e) => onChange({ uuid: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white font-mono text-xs"
+            placeholder="4480161e-2c59-4d37-8736-..."
+            dir="ltr"
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.snispoofUuidHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofSni}
+          </label>
+          <input
+            type="text"
+            value={state.sni}
+            onChange={(e) => onChange({ sni: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="zprt.example.com"
+            dir="ltr"
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.snispoofSniHint}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofWsPath}
+          </label>
+          <input
+            type="text"
+            value={state.ws_path}
+            onChange={(e) => onChange({ ws_path: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="/admin"
+            dir="ltr"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofAlpn}
+          </label>
+          <input
+            type="text"
+            value={state.alpn}
+            onChange={(e) => onChange({ alpn: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="h2,http/1.1"
+            dir="ltr"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.snispoofFingerprint}
+          </label>
+          <input
+            type="text"
+            value={state.fingerprint}
+            onChange={(e) => onChange({ fingerprint: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="chrome"
+            dir="ltr"
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
+        <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+          {t.tunnels.snispoofDesyncSection}
+        </p>
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Desync Mode
+            </label>
+            <select
+              value={state.desync_mode}
+              onChange={(e) => onChange({ desync_mode: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            >
+              {ZAPRET_DESYNC_MODES.map((mode) => (
+                <option key={mode} value={mode}>{mode}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Fake TLS SNI
+            </label>
+            <input
+              type="text"
+              value={state.fake_tls_sni}
+              onChange={(e) => onChange({ fake_tls_sni: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+              placeholder="hcaptcha.com"
+              dir="ltr"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Fooling
+            </label>
+            <input
+              type="text"
+              value={state.desync_fooling}
+              onChange={(e) => onChange({ desync_fooling: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+              placeholder="badseq,ts"
+              dir="ltr"
+            />
+          </div>
+        </div>
       </div>
     </div>
   )

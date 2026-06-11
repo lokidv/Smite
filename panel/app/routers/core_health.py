@@ -16,7 +16,7 @@ from app.node_client import NodeClient
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-CORES = ["backhaul", "rathole", "chisel", "frp", "udp2raw", "trusttunnel", "zapret"]
+CORES = ["backhaul", "rathole", "chisel", "frp", "udp2raw", "trusttunnel", "zapret", "snispoof"]
 
 
 class CoreHealthResponse(BaseModel):
@@ -288,14 +288,14 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
     
     for tunnel in active_tunnels:
         try:
-            if core == "zapret":
-                # zapret is single-node: just re-push the spec to its node.
+            if core in ("zapret", "snispoof"):
+                # zapret/snispoof are single-node: just re-push the spec to the node.
                 target = None
                 if tunnel.node_id:
                     result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
                     target = result.scalar_one_or_none()
                 if not target:
-                    logger.warning(f"Tunnel {tunnel.id}: zapret node not found, skipping reset")
+                    logger.warning(f"Tunnel {tunnel.id}: {core} node not found, skipping reset")
                     continue
                 spec = tunnel.spec.copy() if tunnel.spec else {}
                 if not target.node_metadata.get("api_address"):
@@ -307,7 +307,7 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
                     data={"tunnel_id": tunnel.id, "core": core, "type": tunnel.type, "spec": spec},
                 )
                 if resp.get("status") == "error":
-                    logger.error(f"Failed to reset zapret tunnel {tunnel.id}: {resp.get('message')}")
+                    logger.error(f"Failed to reset {core} tunnel {tunnel.id}: {resp.get('message')}")
                 await asyncio.sleep(0.5)
                 continue
 

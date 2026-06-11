@@ -82,6 +82,28 @@ interface Translations {
     zapretNode: string
     selectZapretNode: string
     zapretNodeHint: string
+    zapretTargetIp: string
+    zapretTargetIpHint: string
+    snispoofHint: string
+    snispoofClientHint: string
+    snispoofLocalPort: string
+    snispoofLocalPortHint: string
+    snispoofInboundUuid: string
+    snispoofInboundUuidHint: string
+    snispoofRegenerate: string
+    snispoofFrontAddress: string
+    snispoofFrontAddressHint: string
+    snispoofFrontPort: string
+    snispoofUuid: string
+    snispoofUuidHint: string
+    snispoofSni: string
+    snispoofSniHint: string
+    snispoofWsPath: string
+    snispoofAlpn: string
+    snispoofFingerprint: string
+    snispoofPasteVless: string
+    snispoofApplyVless: string
+    snispoofDesyncSection: string
     coreChangeHint: string
     bulkSelectedCount: string
     bulkApply: string
@@ -285,6 +307,28 @@ const translations: Record<Language, Translations> = {
       zapretNode: 'Node',
       selectZapretNode: 'Select a node',
       zapretNodeHint: 'The single server where nfqws + NFQUEUE rules will run (usually the foreign / proxy server).',
+      zapretTargetIp: 'Target IP (Optional)',
+      zapretTargetIpHint: 'Scope the desync to one destination IP only (e.g. the CDN / front IP). Leave empty to desync all traffic on the filter ports.',
+      snispoofHint: 'SNI Spoof runs an Xray front proxy on this node: a local VLESS inbound (127.0.0.1:port) whose outbound goes to a front IP/domain over WS+TLS, while zapret/nfqws replaces the SNI seen by DPI with a decoy domain. Point your panel (e.g. Sanaei) outbound at the local port.',
+      snispoofClientHint: 'In your proxy panel, create a VLESS TCP outbound to 127.0.0.1:{port} with UUID {uuid} (security: none).',
+      snispoofLocalPort: 'Local Port',
+      snispoofLocalPortHint: 'The local VLESS inbound port your proxy panel connects to (127.0.0.1).',
+      snispoofInboundUuid: 'Inbound UUID',
+      snispoofInboundUuidHint: 'UUID your proxy panel uses to connect to the local inbound. Auto-generated.',
+      snispoofRegenerate: 'Regenerate',
+      snispoofFrontAddress: 'Front IP / Address',
+      snispoofFrontAddressHint: 'The CDN edge IP (e.g. 104.19.229.21) or domain the outbound connects to.',
+      snispoofFrontPort: 'Front Port',
+      snispoofUuid: 'Backend UUID',
+      snispoofUuidHint: 'The VLESS user UUID of your WS/TLS backend.',
+      snispoofSni: 'SNI / Host Domain',
+      snispoofSniHint: 'The real backend domain used for TLS SNI and the WS Host header (e.g. zprt.example.com).',
+      snispoofWsPath: 'WebSocket Path',
+      snispoofAlpn: 'ALPN (Optional)',
+      snispoofFingerprint: 'TLS Fingerprint (Optional)',
+      snispoofPasteVless: 'Prefill from vless:// link',
+      snispoofApplyVless: 'Fill',
+      snispoofDesyncSection: 'DPI desync (zapret) on the front port',
     },
     coreHealth: {
       title: 'Core Health',
@@ -462,6 +506,28 @@ const translations: Record<Language, Translations> = {
       zapretNode: 'نود',
       selectZapretNode: 'یک نود انتخاب کنید',
       zapretNodeHint: 'تنها سروری که nfqws و قوانین NFQUEUE روی آن اجرا می‌شود (معمولاً سرور خارجی/پروکسی).',
+      zapretTargetIp: 'آی‌پی مقصد (اختیاری)',
+      zapretTargetIpHint: 'دی‌سینک فقط روی همین آی‌پی مقصد اعمال می‌شود (مثلاً آی‌پی CDN/فرانت). خالی بگذارید تا همه ترافیک پورت‌های فیلتر دی‌سینک شود.',
+      snispoofHint: 'SNI Spoof یک فرانت‌پروکسی Xray روی این نود اجرا می‌کند: یک اینباند VLESS محلی (127.0.0.1:پورت) که اوتباند آن با WS+TLS به یک آی‌پی/دامنه فرانت می‌رود و همزمان zapret/nfqws دامنه SNI را برای DPI با یک دامنه بدلی جایگزین می‌کند. اوتباند پنل خود (مثلاً سنایی) را به همین پورت محلی وصل کنید.',
+      snispoofClientHint: 'در پنل پروکسی خود یک اوتباند VLESS TCP به 127.0.0.1:{port} با UUID {uuid} بسازید (security: none).',
+      snispoofLocalPort: 'پورت محلی',
+      snispoofLocalPortHint: 'پورت اینباند VLESS محلی که پنل پروکسی شما به آن وصل می‌شود (127.0.0.1).',
+      snispoofInboundUuid: 'UUID اینباند',
+      snispoofInboundUuidHint: 'UUID اتصال پنل پروکسی به اینباند محلی. خودکار ساخته می‌شود.',
+      snispoofRegenerate: 'ساخت مجدد',
+      snispoofFrontAddress: 'آی‌پی / آدرس فرانت',
+      snispoofFrontAddressHint: 'آی‌پی لبه CDN (مثل 104.19.229.21) یا دامنه‌ای که اوتباند به آن وصل می‌شود.',
+      snispoofFrontPort: 'پورت فرانت',
+      snispoofUuid: 'UUID بک‌اند',
+      snispoofUuidHint: 'UUID کاربر VLESS در بک‌اند WS/TLS شما.',
+      snispoofSni: 'دامنه SNI / Host',
+      snispoofSniHint: 'دامنه واقعی بک‌اند برای SNI در TLS و هدر Host وب‌سوکت (مثل zprt.example.com).',
+      snispoofWsPath: 'مسیر وب‌سوکت',
+      snispoofAlpn: 'ALPN (اختیاری)',
+      snispoofFingerprint: 'فینگرپرینت TLS (اختیاری)',
+      snispoofPasteVless: 'پر کردن از لینک vless://',
+      snispoofApplyVless: 'پر کن',
+      snispoofDesyncSection: 'دی‌سینک DPI (zapret) روی پورت فرانت',
     },
     coreHealth: {
       title: 'سلامت هسته',

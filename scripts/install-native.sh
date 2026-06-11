@@ -131,7 +131,7 @@ if [ -d "$BUNDLE_DIR/bin" ]; then
         [ -f "$b" ] || continue
         install -m 0755 "$b" "/usr/local/bin/$(basename "$b")"
     done
-    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws, rstund, rstunc)"
+    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws, rstund, rstunc, xray)"
 else
     warn "No bin/ directory in bundle; panel-side cores (gost/frp) may be unavailable"
 fi

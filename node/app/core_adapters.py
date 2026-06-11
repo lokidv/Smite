@@ -1719,12 +1719,26 @@ class ZapretAdapter:
             return ["-m", "multiport", multi, s]
         return [single, s]
 
-    def _setup_iptables(self, post_chain, pre_chain, ports_str, queue, max_pkt, direction):
+    def _setup_iptables(self, post_chain, pre_chain, ports_str, queue, max_pkt, direction, target_ip: str = ""):
         jnfq = ["-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass"]
         cb_orig = ["-m", "connbytes", "--connbytes-dir=original", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
         cb_reply = ["-m", "connbytes", "--connbytes-dir=reply", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
+        # Optional destination scoping: only desync traffic to/from one IP.
+        ip_ver = None
+        if target_ip:
+            import ipaddress
+            try:
+                ip_ver = ipaddress.ip_address(target_ip).version
+            except ValueError:
+                logger.warning(f"zapret: target_ip '{target_ip}' is not a literal IP, ignoring scope")
+                target_ip = ""
+        dst_match = ["-d", target_ip] if target_ip else []
+        src_match = ["-s", target_ip] if target_ip else []
         for ipt in ("iptables", "ip6tables"):
             v6 = ipt == "ip6tables"
+            # When scoped to a literal IP, only install rules in the matching family.
+            if target_ip and ip_ver is not None and (6 if v6 else 4) != ip_ver:
+                continue
             try:
                 if direction in ("out", "both"):
                     self._run_ipt([ipt, "-t", "mangle", "-N", post_chain])
@@ -1732,7 +1746,7 @@ class ZapretAdapter:
                     chk = self._run_ipt([ipt, "-t", "mangle", "-C", "POSTROUTING", "-j", post_chain])
                     if not chk or chk.returncode != 0:
                         self._run_ipt([ipt, "-t", "mangle", "-A", "POSTROUTING", "-j", post_chain], check=True)
-                    dm = self._port_match(ports_str, inbound=False)
+                    dm = self._port_match(ports_str, inbound=False) + dst_match
                     self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + cb_orig + jnfq, check=True)
                     self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + ["--tcp-flags", "fin", "fin"] + jnfq, check=True)
                     self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + ["--tcp-flags", "rst", "rst"] + jnfq, check=True)
@@ -1742,7 +1756,7 @@ class ZapretAdapter:
                     chk = self._run_ipt([ipt, "-t", "mangle", "-C", "PREROUTING", "-j", pre_chain])
                     if not chk or chk.returncode != 0:
                         self._run_ipt([ipt, "-t", "mangle", "-A", "PREROUTING", "-j", pre_chain], check=True)
-                    sm = self._port_match(ports_str, inbound=True)
+                    sm = self._port_match(ports_str, inbound=True) + src_match
                     self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + cb_reply + jnfq, check=True)
                     self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + ["--tcp-flags", "syn,ack", "syn,ack"] + jnfq, check=True)
                     self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + ["--tcp-flags", "fin", "fin"] + jnfq, check=True)
@@ -1792,6 +1806,8 @@ class ZapretAdapter:
         if direction not in ("out", "in", "both"):
             direction = "both"
 
+        target_ip = (spec.get("target_ip") or "").strip()
+
         try:
             max_pkt = int(spec.get("max_pkt") or 10)
         except (TypeError, ValueError):
@@ -1828,7 +1844,7 @@ class ZapretAdapter:
         try:
             log_f.write(f"Starting zapret/nfqws for tunnel {tunnel_id}\n")
             log_f.write(f"Command: {' '.join(cmd)}\n")
-            log_f.write(f"queue={queue}, ports={filter_tcp}, direction={direction}, max_pkt={max_pkt}\n")
+            log_f.write(f"queue={queue}, ports={filter_tcp}, direction={direction}, max_pkt={max_pkt}, target_ip={target_ip or '-'}\n")
             log_f.flush()
             proc = subprocess.Popen(
                 cmd,
@@ -1858,7 +1874,7 @@ class ZapretAdapter:
 
         post_chain, pre_chain = self._chain_names(tunnel_id)
         try:
-            self._setup_iptables(post_chain, pre_chain, filter_tcp, queue, max_pkt, direction)
+            self._setup_iptables(post_chain, pre_chain, filter_tcp, queue, max_pkt, direction, target_ip)
         except Exception:
             self._teardown_iptables(post_chain, pre_chain)
             try:
@@ -1876,7 +1892,7 @@ class ZapretAdapter:
         self.chains[tunnel_id] = (post_chain, pre_chain, direction)
         logger.info(
             f"zapret started for tunnel {tunnel_id}: mode={desync_mode}, ports={filter_tcp}, "
-            f"queue={queue}, direction={direction}, sni={fake_tls_sni or '-'}"
+            f"queue={queue}, direction={direction}, sni={fake_tls_sni or '-'}, target={target_ip or 'any'}"
         )
 
     def remove(self, tunnel_id: str):
@@ -1915,6 +1931,299 @@ class ZapretAdapter:
         }
 
 
+class SniSpoofAdapter:
+    """SNI-spoof front proxy adapter (xray front proxy + zapret desync).
+
+    Single-node core (runs on the Iran node). Two pieces, managed as one tunnel:
+      1. Xray front proxy: a local VLESS/TCP inbound (default 127.0.0.1:<local_port>)
+         whose outbound is VLESS over WS+TLS to a fronting address (CDN IP or
+         domain) on :443 with the real backend SNI/Host.
+      2. zapret nfqws desync (composed ZapretAdapter) scoped to the outbound
+         front port, so DPI sees a decoy SNI (e.g. hcaptcha.com) instead of the
+         real one.
+
+    Point the local proxy panel (e.g. Sanaei) outbound at 127.0.0.1:<local_port>
+    using the generated inbound UUID.
+    """
+    name = "snispoof"
+
+    def __init__(self):
+        self.config_dir = Path(os.environ.get("SMITE_SNISPOOF_DIR", "/etc/smite-node/snispoof"))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.log_handles: Dict[str, Any] = {}
+        # Composed zapret adapter: nfqws/NFQUEUE logic stays in one place.
+        self.zapret = ZapretAdapter()
+
+    def _resolve_binary_path(self) -> Path:
+        """Resolve xray binary path"""
+        env_path = os.environ.get("XRAY_BINARY")
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+
+        common_paths = [
+            Path("/usr/local/bin/xray"),
+            Path("/usr/bin/xray"),
+            Path("/opt/xray/xray"),
+        ]
+        for path in common_paths:
+            if path.exists() and path.is_file():
+                return path
+
+        resolved = shutil.which("xray")
+        if resolved:
+            return Path(resolved)
+
+        raise FileNotFoundError(
+            "xray binary not found. Expected at XRAY_BINARY, '/usr/local/bin/xray', or in PATH."
+        )
+
+    def _close_log(self, tunnel_id: str):
+        handle = self.log_handles.pop(tunnel_id, None)
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    def _build_xray_config(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the xray front-proxy config.json from a snispoof spec."""
+        listen_addr = (spec.get("listen_addr") or "127.0.0.1").strip()
+        local_port = int(spec.get("local_port") or 0)
+        if not local_port:
+            raise ValueError("snispoof: local_port is required")
+        inbound_uuid = (spec.get("inbound_uuid") or "").strip()
+        if not inbound_uuid:
+            raise ValueError("snispoof: inbound_uuid is required")
+
+        front_ip = (spec.get("front_ip") or "").strip()
+        if not front_ip:
+            raise ValueError("snispoof: front_ip (front address) is required")
+        try:
+            front_port = int(spec.get("front_port") or 443)
+        except (TypeError, ValueError):
+            front_port = 443
+        out_uuid = (spec.get("uuid") or "").strip()
+        if not out_uuid:
+            raise ValueError("snispoof: uuid (backend user id) is required")
+
+        sni = (spec.get("sni") or "").strip()
+        host = (spec.get("host") or "").strip() or sni
+        if not sni:
+            sni = host
+        if not sni:
+            raise ValueError("snispoof: sni (target domain) is required")
+        ws_path = (spec.get("ws_path") or "/").strip() or "/"
+        if not ws_path.startswith("/"):
+            ws_path = "/" + ws_path
+        flow = (spec.get("flow") or "").strip()
+        fingerprint = (spec.get("fingerprint") or "").strip()
+        alpn_raw = (spec.get("alpn") or "").strip()
+        alpn = [a.strip() for a in alpn_raw.split(",") if a.strip()] if alpn_raw else []
+        allow_insecure = bool(spec.get("allow_insecure"))
+
+        user: Dict[str, Any] = {"id": out_uuid, "encryption": "none"}
+        if flow:
+            user["flow"] = flow
+
+        tls_settings: Dict[str, Any] = {
+            "serverName": sni,
+            "allowInsecure": allow_insecure,
+        }
+        if alpn:
+            tls_settings["alpn"] = alpn
+        if fingerprint:
+            tls_settings["fingerprint"] = fingerprint
+
+        return {
+            "log": {"loglevel": "warning"},
+            "inbounds": [
+                {
+                    "tag": "local-in",
+                    "listen": listen_addr,
+                    "port": local_port,
+                    "protocol": "vless",
+                    "settings": {
+                        "clients": [{"id": inbound_uuid}],
+                        "decryption": "none",
+                    },
+                    "streamSettings": {"network": "tcp"},
+                }
+            ],
+            "outbounds": [
+                {
+                    "tag": "front-out",
+                    "protocol": "vless",
+                    "settings": {
+                        "vnext": [
+                            {
+                                "address": front_ip,
+                                "port": front_port,
+                                "users": [user],
+                            }
+                        ]
+                    },
+                    "streamSettings": {
+                        "network": "ws",
+                        "security": "tls",
+                        "tlsSettings": tls_settings,
+                        "wsSettings": {
+                            "path": ws_path,
+                            "host": host,
+                        },
+                    },
+                }
+            ],
+        }
+
+    def _build_zapret_spec(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Derive the composed zapret sub-spec from the snispoof spec."""
+        import ipaddress
+        front_ip = (spec.get("front_ip") or "").strip()
+        try:
+            front_port = int(spec.get("front_port") or 443)
+        except (TypeError, ValueError):
+            front_port = 443
+        target_ip = ""
+        if front_ip:
+            try:
+                ipaddress.ip_address(front_ip)
+                target_ip = front_ip
+            except ValueError:
+                # Front address is a domain: leave the desync unscoped.
+                target_ip = ""
+        return {
+            "filter_tcp": str(front_port),
+            "filter_l7": "tls",
+            "desync_mode": (spec.get("desync_mode") or "fake"),
+            "fake_tls_sni": (spec.get("fake_tls_sni") or "hcaptcha.com"),
+            "desync_fooling": (spec.get("desync_fooling") or "badseq,ts"),
+            "desync_ttl": spec.get("desync_ttl"),
+            "max_pkt": spec.get("max_pkt") or 10,
+            "queue_num": spec.get("queue_num"),
+            "direction": "both",
+            "target_ip": target_ip,
+        }
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Apply the SNI-spoof front proxy: launch xray, then the zapret desync."""
+        if tunnel_id in self.processes:
+            logger.info(f"snispoof tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+
+        config = self._build_xray_config(spec)
+        binary_path = self._resolve_binary_path()
+
+        import json
+        config_file = self.config_dir / f"{tunnel_id}.json"
+        with open(config_file, "w") as f:
+            json.dump(config, f, indent=2)
+
+        cmd = [str(binary_path), "run", "-c", str(config_file)]
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, "w", buffering=1)
+        try:
+            log_f.write(f"Starting snispoof/xray front proxy for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            inbound = config["inbounds"][0]
+            out = config["outbounds"][0]["settings"]["vnext"][0]
+            log_f.write(
+                f"inbound={inbound['listen']}:{inbound['port']}, "
+                f"front={out['address']}:{out['port']}, sni={config['outbounds'][0]['streamSettings']['tlsSettings']['serverName']}\n"
+            )
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir),
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("xray binary not found. Please install xray-core.")
+        except Exception:
+            log_f.close()
+            raise
+
+        self.log_handles[tunnel_id] = log_f
+        self.processes[tunnel_id] = proc
+        time.sleep(1.0)
+        if proc.poll() is not None:
+            err = ""
+            if log_file.exists():
+                with open(log_file, "r") as f:
+                    err = f.read()
+            self._close_log(tunnel_id)
+            self.processes.pop(tunnel_id, None)
+            raise RuntimeError(f"xray failed to start: {err[-500:] if len(err) > 500 else err}")
+
+        # Desync the outbound front traffic so DPI sees the decoy SNI.
+        try:
+            self.zapret.apply(tunnel_id, self._build_zapret_spec(spec))
+        except Exception:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._close_log(tunnel_id)
+            self.processes.pop(tunnel_id, None)
+            raise
+
+        logger.info(
+            f"snispoof started for tunnel {tunnel_id}: local={spec.get('listen_addr') or '127.0.0.1'}:{spec.get('local_port')}, "
+            f"front={spec.get('front_ip')}:{spec.get('front_port') or 443}, sni={spec.get('sni') or spec.get('host')}"
+        )
+
+    def remove(self, tunnel_id: str):
+        """Remove the snispoof tunnel: stop zapret desync, then the xray proxy."""
+        try:
+            self.zapret.remove(tunnel_id)
+        except Exception as e:
+            logger.warning(f"snispoof: zapret teardown failed for {tunnel_id}: {e}")
+
+        proc = self.processes.pop(tunnel_id, None)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+
+        self._close_log(tunnel_id)
+
+        config_file = self.config_dir / f"{tunnel_id}.json"
+        try:
+            if config_file.exists():
+                config_file.unlink()
+        except Exception:
+            pass
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status of both the xray proxy and the zapret desync."""
+        xray_running = False
+        proc = self.processes.get(tunnel_id)
+        if proc:
+            xray_running = proc.poll() is None
+        zapret_status = self.zapret.status(tunnel_id)
+        return {
+            "active": xray_running and zapret_status.get("process_running", False),
+            "type": "snispoof",
+            "process_running": xray_running,
+            "xray_running": xray_running,
+            "zapret_running": zapret_status.get("process_running", False),
+        }
+
+
 class AdapterManager:
     """Manager for core adapters"""
     
@@ -1928,6 +2237,7 @@ class AdapterManager:
             "udp2raw": Udp2rawAdapter(),
             "trusttunnel": TrustTunnelAdapter(),
             "zapret": ZapretAdapter(),
+            "snispoof": SniSpoofAdapter(),
         }
         self.active_tunnels: Dict[str, CoreAdapter] = {}
         self.config_dir = Path("/var/lib/smite-node")

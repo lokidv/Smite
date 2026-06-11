@@ -165,6 +165,29 @@ RUN set -eux; \
     /usr/local/bin/rstund --help > /dev/null 2>&1 || true; \
     /usr/local/bin/rstunc --help > /dev/null 2>&1 || true
 
+# Stage 3e: Install xray-core (snispoof front proxy, cached layer)
+FROM base AS xray-bin
+ARG XRAY_VERSION=26.3.27
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+        x86_64|amd64) XRAY_ASSET="Xray-linux-64.zip" ;; \
+        aarch64|arm64) XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;; \
+        *) XRAY_ASSET="Xray-linux-64.zip" ;; \
+    esac; \
+    TMP_DIR="$(mktemp -d)"; \
+    curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/${XRAY_ASSET}" -o "$TMP_DIR/xray.zip"; \
+    unzip -q "$TMP_DIR/xray.zip" -d "$TMP_DIR"; \
+    BIN_PATH="$(find "$TMP_DIR" -type f -name 'xray' | head -n1)"; \
+    if [ -z "$BIN_PATH" ]; then \
+        echo "xray binary not found in archive"; \
+        ls -R "$TMP_DIR"; \
+        exit 1; \
+    fi; \
+    install -Dm755 "$BIN_PATH" /usr/local/bin/xray; \
+    rm -rf "$TMP_DIR"; \
+    /usr/local/bin/xray version > /dev/null 2>&1 || true
+
 # Stage 4: Python dependencies (cached layer)
 FROM base AS deps
 WORKDIR /app
@@ -192,6 +215,7 @@ COPY --from=udp2raw-bin /usr/local/bin/udp2raw /usr/local/bin/udp2raw
 COPY --from=zapret-bin /usr/local/bin/nfqws /usr/local/bin/nfqws
 COPY --from=rstun-bin /usr/local/bin/rstund /usr/local/bin/rstund
 COPY --from=rstun-bin /usr/local/bin/rstunc /usr/local/bin/rstunc
+COPY --from=xray-bin /usr/local/bin/xray /usr/local/bin/xray
 
 # Copy Python dependencies from deps stage
 COPY --from=deps /usr/local /usr/local

@@ -150,6 +150,36 @@ def normalize_zapret_spec(spec: dict) -> dict:
     return s
 
 
+def normalize_snispoof_spec(spec: dict) -> dict:
+    """Apply snispoof (xray front proxy + zapret) defaults.
+
+    Auto-generates a stable inbound UUID the first time so the local VLESS
+    inbound credentials never change across re-applies.
+    """
+    import uuid as uuid_mod
+    s = dict(spec or {})
+    s.setdefault("listen_addr", "127.0.0.1")
+    if not s.get("inbound_uuid"):
+        s["inbound_uuid"] = str(uuid_mod.uuid4())
+    s.setdefault("front_port", 443)
+    s.setdefault("ws_path", "/")
+    # zapret desync sub-settings (decoy SNI stays editable)
+    s.setdefault("desync_mode", "fake")
+    s.setdefault("fake_tls_sni", "hcaptcha.com")
+    s.setdefault("desync_fooling", "badseq,ts")
+    s.setdefault("max_pkt", 10)
+    return s
+
+
+# Single-node cores: run on exactly one node (no iran/foreign pair).
+SINGLE_NODE_CORES = {"zapret", "snispoof"}
+
+SINGLE_NODE_NORMALIZERS = {
+    "zapret": normalize_zapret_spec,
+    "snispoof": normalize_snispoof_spec,
+}
+
+
 # Cores that support in-place core/type change (dual-node reverse cores).
 # zapret (single-node DPI bypass) and gost (panel-side forwarder) are excluded
 # because their semantics/topology differ from the reverse cores.
@@ -438,7 +468,7 @@ async def change_tunnel_core_type(
 
 
 async def resolve_single_node(db_tunnel: Tunnel, db: AsyncSession):
-    """Resolve the single node a zapret tunnel runs on (any of node/iran/foreign)."""
+    """Resolve the single node a single-node tunnel runs on (any of node/iran/foreign)."""
     candidates = [
         db_tunnel.node_id,
         getattr(db_tunnel, "iran_node_id", None),
@@ -453,21 +483,31 @@ async def resolve_single_node(db_tunnel: Tunnel, db: AsyncSession):
     return None
 
 
-async def apply_zapret_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel:
-    """Push a zapret (single-node DPI desync) tunnel to its node.
+async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel:
+    """Push a single-node tunnel (zapret, snispoof) to its node.
 
-    zapret is not a reverse tunnel: it runs nfqws + NFQUEUE rules on one host,
-    so it bypasses the dual-node orchestration entirely.
+    These are not reverse tunnels: they run on one host (nfqws + NFQUEUE rules,
+    optionally an xray front proxy), so they bypass the dual-node orchestration.
     """
+    core = db_tunnel.core
     node = await resolve_single_node(db_tunnel, db)
     if not node:
         db_tunnel.status = "error"
-        db_tunnel.error_message = "zapret requires a node. Select the server that runs the proxy / outbound TLS."
+        db_tunnel.error_message = f"{core} requires a node. Select the server that runs the proxy / outbound TLS."
         await db.commit()
         await db.refresh(db_tunnel)
         return db_tunnel
 
-    spec_for_node = normalize_zapret_spec(db_tunnel.spec)
+    normalizer = SINGLE_NODE_NORMALIZERS.get(core, lambda s: dict(s or {}))
+    spec_for_node = normalizer(db_tunnel.spec)
+
+    # Persist normalized fields (e.g. the auto-generated snispoof inbound_uuid)
+    # so re-applies and the UI always see the same values.
+    if spec_for_node != (db_tunnel.spec or {}):
+        from sqlalchemy.orm.attributes import flag_modified
+        db_tunnel.spec = spec_for_node
+        flag_modified(db_tunnel, "spec")
+
     if not node.node_metadata.get("api_address"):
         node.node_metadata["api_address"] = (
             f"http://{node.node_metadata.get('ip_address', node.fingerprint)}:{node.node_metadata.get('api_port', 8888)}"
@@ -487,7 +527,7 @@ async def apply_zapret_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel:
             },
         )
     except Exception as e:
-        logger.error(f"zapret tunnel {db_tunnel.id}: failed to reach node {node.id}: {e}", exc_info=True)
+        logger.error(f"{core} tunnel {db_tunnel.id}: failed to reach node {node.id}: {e}", exc_info=True)
         db_tunnel.status = "error"
         db_tunnel.error_message = f"Node error: {e}"
         await db.commit()
@@ -497,15 +537,19 @@ async def apply_zapret_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel:
     if response.get("status") == "success":
         db_tunnel.status = "active"
         db_tunnel.error_message = None
-        logger.info(f"zapret tunnel {db_tunnel.id} applied on node {node.id}")
+        logger.info(f"{core} tunnel {db_tunnel.id} applied on node {node.id}")
     else:
         db_tunnel.status = "error"
         db_tunnel.error_message = f"Node error: {response.get('message', 'Unknown error from node')}"
-        logger.error(f"zapret tunnel {db_tunnel.id}: node returned error: {db_tunnel.error_message}")
+        logger.error(f"{core} tunnel {db_tunnel.id}: node returned error: {db_tunnel.error_message}")
 
     await db.commit()
     await db.refresh(db_tunnel)
     return db_tunnel
+
+
+# Backwards-compatible alias (zapret was the first single-node core).
+apply_zapret_tunnel = apply_singlenode_tunnel
 
 
 @router.post("", response_model=TunnelResponse)
@@ -605,8 +649,8 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     await db.refresh(db_tunnel)
     
     try:
-        if db_tunnel.core == "zapret":
-            return await apply_zapret_tunnel(db_tunnel, db)
+        if db_tunnel.core in SINGLE_NODE_CORES:
+            return await apply_singlenode_tunnel(db_tunnel, db)
 
         needs_gost_forwarding = db_tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and db_tunnel.core == "gost" and not is_reverse_tunnel
         needs_rathole_server = False
@@ -1664,12 +1708,12 @@ async def update_tunnel(
     
     if spec_changed:
         try:
-            if tunnel.core == "zapret":
-                # zapret is single-node; re-push the updated spec via apply_tunnel.
+            if tunnel.core in SINGLE_NODE_CORES:
+                # zapret/snispoof are single-node; re-push the updated spec via apply_tunnel.
                 try:
                     await apply_tunnel(tunnel.id, request, db)
                 except HTTPException as e:
-                    logger.error(f"Failed to re-apply zapret tunnel {tunnel.id}: {e.detail}")
+                    logger.error(f"Failed to re-apply {tunnel.core} tunnel {tunnel.id}: {e.detail}")
                 await db.refresh(tunnel)
                 return tunnel
 
@@ -2075,11 +2119,11 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
     
     client = NodeClient()
 
-    if tunnel.core == "zapret":
-        await apply_zapret_tunnel(tunnel, db)
+    if tunnel.core in SINGLE_NODE_CORES:
+        await apply_singlenode_tunnel(tunnel, db)
         if tunnel.status == "active":
             return {"status": "applied", "message": "Tunnel reapplied successfully"}
-        raise HTTPException(status_code=500, detail=tunnel.error_message or "Failed to apply zapret tunnel")
+        raise HTTPException(status_code=500, detail=tunnel.error_message or f"Failed to apply {tunnel.core} tunnel")
 
     is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
     foreign_node = None
@@ -2661,10 +2705,11 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
                 import logging
                 logging.error(f"Failed to stop FRP server: {e}")
     
-    if tunnel.core in ("udp2raw", "zapret", "trusttunnel"):
+    if tunnel.core in ("udp2raw", "zapret", "trusttunnel", "snispoof"):
         # udp2raw and trusttunnel run on both the iran and foreign nodes; zapret
-        # runs on one node but may have been registered under node_id/iran/foreign.
-        # Remove from each so every process (and any iptables rules) is torn down.
+        # and snispoof run on one node but may have been registered under
+        # node_id/iran/foreign. Remove from each so every process (and any
+        # iptables rules) is torn down.
         client = NodeClient()
         node_ids = {tunnel.node_id, tunnel.iran_node_id, tunnel.foreign_node_id}
         for node_id in node_ids:

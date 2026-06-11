@@ -120,7 +120,7 @@ class TunnelReapplyManager:
             
             for tunnel in tunnels:
                 try:
-                    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp"}
+                    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw"}
                     
                     if is_reverse_tunnel:
                         iran_node_id = tunnel.iran_node_id or tunnel.node_id
@@ -311,6 +311,52 @@ class TunnelReapplyManager:
                                     client_spec["server_url"] = f"http://{iran_node_ip}:{server_control_port}"
                                 client_spec["mode"] = "client"
                                 client_spec["reverse_port"] = listen_port
+                            
+                            elif tunnel.core == "udp2raw":
+                                # Iran node runs the udp2raw CLIENT (public entry point),
+                                # foreign node runs the udp2raw SERVER.
+                                raw_mode = (tunnel.type or server_spec.get("raw_mode") or "faketcp").lower()
+                                if raw_mode not in {"faketcp", "icmp", "udp"}:
+                                    raw_mode = "faketcp"
+                                
+                                key = server_spec.get("key") or server_spec.get("token")
+                                listen_port = server_spec.get("listen_port") or server_spec.get("public_port")
+                                if not listen_port:
+                                    ports = server_spec.get("ports") or []
+                                    listen_port = ports[0] if ports else None
+                                if not key or not listen_port:
+                                    logger.warning(f"Tunnel {tunnel.id}: Missing key or listen_port, skipping")
+                                    continue
+                                
+                                import hashlib
+                                port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+                                raw_port = server_spec.get("raw_port") or (4096 + (port_hash % 1000))
+                                target_host = server_spec.get("target_host", "127.0.0.1")
+                                target_port = server_spec.get("target_port") or listen_port
+                                cipher_mode = server_spec.get("cipher_mode") or "aes128cbc"
+                                auth_mode = server_spec.get("auth_mode") or "md5"
+                                
+                                foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                                if not foreign_node_ip:
+                                    logger.warning(f"Tunnel {tunnel.id}: Foreign node has no IP address, skipping")
+                                    continue
+                                
+                                from app.utils import format_address_port
+                                server_spec["mode"] = "client"
+                                server_spec["raw_mode"] = raw_mode
+                                server_spec["listen_addr"] = f"0.0.0.0:{listen_port}"
+                                server_spec["remote_addr"] = format_address_port(foreign_node_ip, int(raw_port))
+                                server_spec["key"] = key
+                                server_spec["cipher_mode"] = cipher_mode
+                                server_spec["auth_mode"] = auth_mode
+                                
+                                client_spec["mode"] = "server"
+                                client_spec["raw_mode"] = raw_mode
+                                client_spec["listen_addr"] = f"0.0.0.0:{raw_port}"
+                                client_spec["forward_addr"] = format_address_port(target_host, int(target_port))
+                                client_spec["key"] = key
+                                client_spec["cipher_mode"] = cipher_mode
+                                client_spec["auth_mode"] = auth_mode
                             
                             server_response = await client.send_to_node(
                                 node_id=iran_node.id,

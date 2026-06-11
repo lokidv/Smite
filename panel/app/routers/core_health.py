@@ -16,7 +16,7 @@ from app.node_client import NodeClient
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-CORES = ["backhaul", "rathole", "chisel", "frp"]
+CORES = ["backhaul", "rathole", "chisel", "frp", "udp2raw", "zapret"]
 
 
 class CoreHealthResponse(BaseModel):
@@ -288,6 +288,29 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
     
     for tunnel in active_tunnels:
         try:
+            if core == "zapret":
+                # zapret is single-node: just re-push the spec to its node.
+                target = None
+                if tunnel.node_id:
+                    result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
+                    target = result.scalar_one_or_none()
+                if not target:
+                    logger.warning(f"Tunnel {tunnel.id}: zapret node not found, skipping reset")
+                    continue
+                spec = tunnel.spec.copy() if tunnel.spec else {}
+                if not target.node_metadata.get("api_address"):
+                    target.node_metadata["api_address"] = f"http://{target.node_metadata.get('ip_address', target.fingerprint)}:{target.node_metadata.get('api_port', 8888)}"
+                    await db.commit()
+                resp = await client.send_to_node(
+                    node_id=target.id,
+                    endpoint="/api/agent/tunnels/apply",
+                    data={"tunnel_id": tunnel.id, "core": core, "type": tunnel.type, "spec": spec},
+                )
+                if resp.get("status") == "error":
+                    logger.error(f"Failed to reset zapret tunnel {tunnel.id}: {resp.get('message')}")
+                await asyncio.sleep(0.5)
+                continue
+
             iran_node = None
             foreign_node = None
             
@@ -467,6 +490,52 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
                 client_spec["type"] = transport
                 if token:
                     client_spec["token"] = token
+            
+            elif core == "udp2raw":
+                # Iran node runs the udp2raw CLIENT (public entry point),
+                # foreign node runs the udp2raw SERVER.
+                raw_mode = (tunnel.type or server_spec.get("raw_mode") or "faketcp").lower()
+                if raw_mode not in {"faketcp", "icmp", "udp"}:
+                    raw_mode = "faketcp"
+                
+                key = server_spec.get("key") or server_spec.get("token")
+                listen_port = server_spec.get("listen_port") or server_spec.get("public_port")
+                if not listen_port:
+                    ports = server_spec.get("ports") or []
+                    listen_port = ports[0] if ports else None
+                if not key or not listen_port:
+                    logger.warning(f"Tunnel {tunnel.id}: Missing key or listen_port, skipping")
+                    continue
+                
+                import hashlib
+                port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+                raw_port = server_spec.get("raw_port") or (4096 + (port_hash % 1000))
+                target_host = server_spec.get("target_host", "127.0.0.1")
+                target_port = server_spec.get("target_port") or listen_port
+                cipher_mode = server_spec.get("cipher_mode") or "aes128cbc"
+                auth_mode = server_spec.get("auth_mode") or "md5"
+                
+                foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                if not foreign_node_ip:
+                    logger.warning(f"Tunnel {tunnel.id}: Foreign node has no IP address, skipping")
+                    continue
+                
+                from app.utils import format_address_port
+                server_spec["mode"] = "client"
+                server_spec["raw_mode"] = raw_mode
+                server_spec["listen_addr"] = f"0.0.0.0:{listen_port}"
+                server_spec["remote_addr"] = format_address_port(foreign_node_ip, int(raw_port))
+                server_spec["key"] = key
+                server_spec["cipher_mode"] = cipher_mode
+                server_spec["auth_mode"] = auth_mode
+                
+                client_spec["mode"] = "server"
+                client_spec["raw_mode"] = raw_mode
+                client_spec["listen_addr"] = f"0.0.0.0:{raw_port}"
+                client_spec["forward_addr"] = format_address_port(target_host, int(target_port))
+                client_spec["key"] = key
+                client_spec["cipher_mode"] = cipher_mode
+                client_spec["auth_mode"] = auth_mode
             
             if not iran_node.node_metadata.get("api_address"):
                 iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"

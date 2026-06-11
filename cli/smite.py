@@ -77,6 +77,61 @@ def get_panel_url():
     return f"http://localhost:{port}"
 
 
+# --- Native (Docker-free, systemd) mode helpers ---
+
+PANEL_SERVICE = "smite-panel"
+PANEL_UNIT_PATH = Path("/etc/systemd/system/smite-panel.service")
+NATIVE_PANEL_DIR = Path("/opt/smite/panel")
+
+
+def is_native_panel():
+    """Detect a native (systemd + venv) install rather than a Docker install."""
+    if PANEL_UNIT_PATH.exists():
+        return True
+    return (NATIVE_PANEL_DIR / ".venv" / "bin" / "python").exists()
+
+
+def get_panel_dir():
+    """Locate the panel application directory for native installs."""
+    for candidate in [NATIVE_PANEL_DIR, Path(__file__).parent.parent / "panel", Path.cwd() / "panel"]:
+        if (candidate / "main.py").exists():
+            return candidate
+    return NATIVE_PANEL_DIR
+
+
+def get_venv_python():
+    """Return the venv python interpreter for native installs, if present."""
+    panel_dir = get_panel_dir()
+    for candidate in [panel_dir / ".venv" / "bin" / "python", panel_dir / ".venv" / "bin" / "python3"]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def run_native_admin_script(script_body):
+    """Run an admin DB script using the panel venv python (native mode)."""
+    panel_dir = get_panel_dir()
+    py = get_venv_python()
+    if not py:
+        print("Error: panel virtualenv not found. Expected at /opt/smite/panel/.venv")
+        sys.exit(1)
+    script = "import sys\nsys.path.insert(0, %r)\n%s" % (str(panel_dir), script_body)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+        tmp.write(script)
+        tmp_path = tmp.name
+    try:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(panel_dir)
+        proc = subprocess.run([str(py), tmp_path], cwd=str(panel_dir), env=env, text=True)
+        if proc.returncode != 0:
+            sys.exit(proc.returncode)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def run_docker_compose(args, capture_output=False, env_vars=None, profile=None):
     """Run docker compose command"""
     compose_file = get_compose_file()
@@ -131,6 +186,43 @@ def cmd_admin_create(args):
                 break
             else:
                 print("Passwords do not match. Please try again.")
+    
+    if is_native_panel():
+        username_repr = repr(username)
+        password_repr = repr(password)
+        script_body = f"""import asyncio
+import sys
+from app.database import AsyncSessionLocal, init_db
+from app.models import Admin
+from sqlalchemy import select
+from passlib.context import CryptContext
+
+username = {username_repr}
+password = {password_repr}
+
+if isinstance(password, str):
+    password_bytes = password.encode('utf-8')
+    if len(password_bytes) > 72:
+        password = password_bytes[:72].decode('utf-8', errors='ignore')
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+async def create():
+    await init_db()
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Admin).where(Admin.username == username))
+        if result.scalar_one_or_none():
+            print(f"Error: Admin user '{{username}}' already exists", file=sys.stderr)
+            sys.exit(1)
+        admin = Admin(username=username, password_hash=pwd_context.hash(password))
+        session.add(admin)
+        await session.commit()
+        print(f"Admin user '{{username}}' created successfully!")
+
+asyncio.run(create())
+"""
+        run_native_admin_script(script_body)
+        return
     
     try:
         check_result = subprocess.run(
@@ -406,6 +498,41 @@ def cmd_admin_update(args):
             else:
                 print("Passwords do not match. Please try again.")
     
+    if is_native_panel():
+        password_repr = repr(password)
+        script_body = f"""import asyncio
+import sys
+from app.database import AsyncSessionLocal, init_db
+from app.models import Admin
+from sqlalchemy import select
+from passlib.context import CryptContext
+
+password = {password_repr}
+
+if isinstance(password, str):
+    password_bytes = password.encode('utf-8')
+    if len(password_bytes) > 72:
+        password = password_bytes[:72].decode('utf-8', errors='ignore')
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+async def update():
+    await init_db()
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Admin))
+        admin = result.scalar_one_or_none()
+        if not admin:
+            print("Error: No admin user found", file=sys.stderr)
+            sys.exit(1)
+        admin.password_hash = pwd_context.hash(password)
+        await session.commit()
+        print("Admin password updated successfully!")
+
+asyncio.run(update())
+"""
+        run_native_admin_script(script_body)
+        return
+    
     try:
         check_result = subprocess.run(
             ["docker", "ps", "-a", "--filter", "name=smite-panel", "--format", "{{.Names}}"],
@@ -666,12 +793,17 @@ def cmd_status(args):
     print("Panel Status:")
     print("-" * 50)
     
-    result = subprocess.run(["docker", "ps", "--filter", "name=smite-panel", "--format", "{{.Status}}"], 
-                          capture_output=True, text=True)
-    if result.stdout.strip():
-        print(f"Docker: {result.stdout.strip()}")
+    if is_native_panel():
+        result = subprocess.run(["systemctl", "is-active", PANEL_SERVICE], capture_output=True, text=True)
+        state = result.stdout.strip() or "unknown"
+        print(f"Service (systemd): {state}")
     else:
-        print("Docker: Not running")
+        result = subprocess.run(["docker", "ps", "--filter", "name=smite-panel", "--format", "{{.Status}}"], 
+                              capture_output=True, text=True)
+        if result.stdout.strip():
+            print(f"Docker: {result.stdout.strip()}")
+        else:
+            print("Docker: Not running")
     
     try:
         panel_url = get_panel_url()
@@ -698,6 +830,16 @@ def cmd_status(args):
 
 def cmd_update(args):
     """Update panel (pull images and recreate)"""
+    if is_native_panel():
+        print("Native (offline) install detected.")
+        print("To update, build a new offline bundle (scripts/build-offline-bundle.sh),")
+        print("transfer it to this server, extract it, and run: sudo bash scripts/install-native.sh")
+        print("Existing data and configuration are preserved by the installer.")
+        print("\nRestarting service with current version...")
+        subprocess.run(["systemctl", "restart", PANEL_SERVICE], check=False)
+        print("Panel restarted.")
+        return
+    
     print("Updating panel...")
     compose_file = get_compose_file()
     project_root = compose_file.parent
@@ -716,6 +858,21 @@ def cmd_update(args):
 def cmd_restart(args):
     """Restart panel (recreate container to pick up .env changes, no pull)"""
     print("Restarting panel...")
+    
+    if is_native_panel():
+        result = subprocess.run(["systemctl", "restart", PANEL_SERVICE], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Failed to restart {PANEL_SERVICE}: {result.stderr.strip()}")
+            print(f"Check logs with: journalctl -u {PANEL_SERVICE} -n 50 --no-pager")
+            sys.exit(result.returncode)
+        import time
+        time.sleep(2)
+        state = subprocess.run(["systemctl", "is-active", PANEL_SERVICE], capture_output=True, text=True)
+        if state.stdout.strip() != "active":
+            print(f"Warning: {PANEL_SERVICE} is not active. Check logs with: journalctl -u {PANEL_SERVICE} -n 50 --no-pager")
+        print("Panel restarted. Tunnels are preserved.")
+        return
+    
     run_docker_compose(["stop", "smite-panel"])
     run_docker_compose(["rm", "-f", "smite-panel"])
     run_docker_compose(["up", "-d", "--no-deps", "smite-panel"])
@@ -737,9 +894,16 @@ def cmd_restart(args):
 
 
 def cmd_edit(args):
-    """Edit docker-compose.yml"""
-    compose_file = get_compose_file()
+    """Edit docker-compose.yml (Docker) or the systemd unit (native)"""
     editor = os.environ.get("EDITOR", "nano")
+    
+    if is_native_panel():
+        subprocess.run([editor, str(PANEL_UNIT_PATH)])
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+        print("Run 'smite restart' to apply changes.")
+        return
+    
+    compose_file = get_compose_file()
     subprocess.run([editor, str(compose_file)])
 
 
@@ -760,12 +924,72 @@ def cmd_edit_env(args):
 
 def cmd_logs(args):
     """Stream logs"""
+    if is_native_panel():
+        cmd = ["journalctl", "-u", PANEL_SERVICE, "--no-pager", "-n", "200"]
+        if args.follow:
+            cmd.append("-f")
+        try:
+            subprocess.run(cmd)
+        except KeyboardInterrupt:
+            pass
+        return
+    
     follow = ["--follow"] if args.follow else []
     run_docker_compose(["logs"] + follow + ["smite-panel"])
 
 
 def cmd_uninstall(args):
     """Uninstall Smite Panel - removes everything"""
+    if is_native_panel():
+        print("=" * 60)
+        print("⚠️  WARNING: This will completely remove Smite Panel (native install)!")
+        print("=" * 60)
+        print("\nThis will remove:")
+        print("  - systemd service (smite-panel)")
+        print("  - Installation directory (/opt/smite)")
+        print("  - CLI script (/usr/local/bin/smite)")
+        print("\n⚠️  ALL DATA WILL BE LOST!")
+        print("=" * 60)
+        
+        response = input("\nAre you sure you want to continue? Type 'yes' to confirm: ")
+        if response.lower() != 'yes':
+            print("Uninstall cancelled.")
+            sys.exit(0)
+        
+        print("\n[1/3] Stopping and removing systemd service...")
+        subprocess.run(["systemctl", "disable", "--now", PANEL_SERVICE], capture_output=True, check=False)
+        try:
+            PANEL_UNIT_PATH.unlink()
+        except OSError:
+            pass
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, check=False)
+        print("  ✓ Service removed")
+        
+        print("\n[2/3] Removing installation directory...")
+        install_dir = Path("/opt/smite")
+        if install_dir.exists():
+            try:
+                shutil.rmtree(install_dir)
+                print(f"  ✓ Removed {install_dir}")
+            except Exception as e:
+                print(f"  ⚠️  Warning: Could not remove {install_dir}: {e}")
+        else:
+            print(f"  - {install_dir} does not exist")
+        
+        print("\n[3/3] Removing CLI script...")
+        cli_path = Path("/usr/local/bin/smite")
+        if cli_path.exists():
+            try:
+                cli_path.unlink()
+                print("  ✓ Removed /usr/local/bin/smite")
+            except Exception as e:
+                print(f"  ⚠️  Warning: Could not remove CLI script: {e}")
+        
+        print("\n" + "=" * 60)
+        print("✅ Smite Panel has been completely uninstalled!")
+        print("=" * 60)
+        return
+    
     print("=" * 60)
     print("⚠️  WARNING: This will completely remove Smite Panel!")
     print("=" * 60)

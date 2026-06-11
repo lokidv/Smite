@@ -1231,6 +1231,475 @@ class GostAdapter:
         }
 
 
+class Udp2rawAdapter:
+    """udp2raw tunnel adapter - tunnels UDP through raw fake-TCP / ICMP / UDP packets.
+
+    Dual-node layout (panel orchestrates both sides like Backhaul):
+      - Iran node runs the udp2raw *client*: listens for plain UDP traffic on the
+        public port and sends obfuscated raw packets to the foreign node.
+      - Foreign node runs the udp2raw *server*: receives the raw packets and
+        forwards the original UDP datagrams to the local target service.
+    """
+    name = "udp2raw"
+
+    RAW_MODES = {"faketcp", "icmp", "udp"}
+
+    def __init__(self):
+        self.config_dir = Path(os.environ.get("SMITE_UDP2RAW_DIR", "/etc/smite-node/udp2raw"))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.log_handles: Dict[str, Any] = {}
+
+    def _resolve_binary_path(self) -> Path:
+        """Resolve udp2raw binary path"""
+        env_path = os.environ.get("UDP2RAW_BINARY")
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+
+        common_paths = [
+            Path("/usr/local/bin/udp2raw"),
+            Path("/usr/bin/udp2raw"),
+        ]
+        for path in common_paths:
+            if path.exists() and path.is_file():
+                return path
+
+        resolved = shutil.which("udp2raw")
+        if resolved:
+            return Path(resolved)
+
+        raise FileNotFoundError(
+            "udp2raw binary not found. Expected at UDP2RAW_BINARY, '/usr/local/bin/udp2raw', or in PATH."
+        )
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Apply udp2raw tunnel - supports both server and client modes"""
+        if tunnel_id in self.processes:
+            logger.info(f"udp2raw tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+
+        mode = spec.get('mode', 'client')
+        raw_mode = (spec.get('raw_mode') or spec.get('type') or 'faketcp').lower()
+        if raw_mode not in self.RAW_MODES:
+            raise ValueError(f"Unsupported udp2raw raw mode '{raw_mode}' (expected faketcp, icmp or udp)")
+
+        key = spec.get('key') or spec.get('token')
+        if not key:
+            raise ValueError("udp2raw requires 'key' in spec")
+
+        cipher_mode = spec.get('cipher_mode') or 'aes128cbc'
+        auth_mode = spec.get('auth_mode') or 'md5'
+
+        if mode == 'server':
+            listen_addr = spec.get('listen_addr')
+            if not listen_addr:
+                raw_port = spec.get('raw_port') or spec.get('listen_port')
+                if not raw_port:
+                    raise ValueError("udp2raw server requires 'listen_addr' or 'raw_port' in spec")
+                bind_ip = spec.get('bind_ip', '0.0.0.0')
+                listen_addr = f"{bind_ip}:{raw_port}"
+
+            forward_addr = spec.get('forward_addr') or spec.get('local_addr')
+            if not forward_addr:
+                target_host = spec.get('target_host', '127.0.0.1')
+                target_port = spec.get('target_port')
+                if not target_port:
+                    raise ValueError("udp2raw server requires 'forward_addr'/'local_addr' or 'target_port' in spec")
+                forward_addr = f"{target_host}:{target_port}"
+
+            mode_flag = "-s"
+            local_flag_addr = listen_addr
+            remote_flag_addr = forward_addr
+        else:
+            listen_addr = spec.get('listen_addr')
+            if not listen_addr:
+                listen_port = spec.get('listen_port') or spec.get('local_port')
+                if not listen_port:
+                    raise ValueError("udp2raw client requires 'listen_addr' or 'listen_port' in spec")
+                bind_ip = spec.get('bind_ip', '0.0.0.0')
+                listen_addr = f"{bind_ip}:{listen_port}"
+
+            remote_addr = spec.get('remote_addr')
+            if not remote_addr:
+                remote_host = spec.get('remote_host') or spec.get('server_addr')
+                remote_port = spec.get('raw_port') or spec.get('remote_port')
+                if remote_host and remote_port:
+                    remote_addr = f"{remote_host}:{remote_port}"
+            if not remote_addr:
+                raise ValueError("udp2raw client requires 'remote_addr' (raw endpoint of the server side) in spec")
+
+            mode_flag = "-c"
+            local_flag_addr = listen_addr
+            remote_flag_addr = remote_addr
+
+        binary_path = self._resolve_binary_path()
+        cmd = [
+            str(binary_path),
+            mode_flag,
+            "-l", str(local_flag_addr),
+            "-r", str(remote_flag_addr),
+            "-k", str(key),
+            "--raw-mode", raw_mode,
+            "--cipher-mode", str(cipher_mode),
+            "--auth-mode", str(auth_mode),
+            "-a",  # auto add/remove the iptables rule needed by faketcp/icmp raw modes
+        ]
+
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, 'w', buffering=1)
+        try:
+            log_f.write(f"Starting udp2raw {mode} for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            log_f.write(f"raw_mode={raw_mode}, listen={local_flag_addr}, remote={remote_flag_addr}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir),
+                start_new_session=True
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("udp2raw binary not found. Please install udp2raw.")
+        except Exception:
+            log_f.close()
+            raise
+
+        self.log_handles[tunnel_id] = log_f
+        self.processes[tunnel_id] = proc
+        time.sleep(1.0)
+        if proc.poll() is not None:
+            stderr = ""
+            if log_file.exists():
+                with open(log_file, 'r') as f:
+                    stderr = f.read()
+            if tunnel_id in self.log_handles:
+                try:
+                    self.log_handles[tunnel_id].close()
+                except:
+                    pass
+                del self.log_handles[tunnel_id]
+            raise RuntimeError(f"udp2raw failed to start: {stderr[-500:] if len(stderr) > 500 else stderr}")
+
+        logger.info(
+            f"udp2raw {mode} started for tunnel {tunnel_id}: raw_mode={raw_mode}, listen={local_flag_addr}, remote={remote_flag_addr}"
+        )
+
+    def remove(self, tunnel_id: str):
+        """Remove udp2raw tunnel"""
+        if tunnel_id in self.processes:
+            proc = self.processes[tunnel_id]
+            try:
+                # SIGTERM lets udp2raw clean up the iptables rules it added with -a
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except:
+                pass
+            del self.processes[tunnel_id]
+
+        if tunnel_id in self.log_handles:
+            try:
+                self.log_handles[tunnel_id].close()
+            except:
+                pass
+            del self.log_handles[tunnel_id]
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status"""
+        is_running = False
+
+        if tunnel_id in self.processes:
+            proc = self.processes[tunnel_id]
+            is_running = proc.poll() is None
+
+        return {
+            "active": is_running,
+            "type": "udp2raw",
+            "process_running": is_running
+        }
+
+
+class ZapretAdapter:
+    """zapret DPI-desync adapter (nfqws + NFQUEUE).
+
+    Unlike the tunnel cores, zapret does NOT move traffic between two nodes. It
+    runs on a SINGLE node and desynchronizes outbound/inbound TCP (typically TLS
+    on :443) so SNI-based DPI cannot match and block the connection. It is meant
+    to run next to a proxy on the same host (e.g. an Xray VLESS server whose
+    outbound is a TLS/WS domain-fronting connection on :443).
+
+    Design notes:
+      - Rules live in dedicated, per-tunnel mangle chains (smite_zap_<hash>_o/_i)
+        and are added/removed surgically. We NEVER flush global iptables, so
+        zapret coexists with other Smite cores (udp2raw, etc.) on the same node.
+      - nfqws runs on a queue number that matches the NFQUEUE rules.
+    """
+    name = "zapret"
+
+    DESYNC_MODES = {
+        "fake", "fakedsplit", "fakeddisorder", "multisplit", "multidisorder",
+        "disorder", "disorder2", "split", "split2", "syndata",
+    }
+
+    def __init__(self):
+        self.config_dir = Path(os.environ.get("SMITE_ZAPRET_DIR", "/etc/smite-node/zapret"))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.log_handles: Dict[str, Any] = {}
+        self.chains: Dict[str, tuple] = {}
+
+    def _resolve_binary_path(self) -> Path:
+        """Resolve nfqws binary path"""
+        env_path = os.environ.get("NFQWS_BINARY")
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+
+        common_paths = [
+            Path("/usr/local/bin/nfqws"),
+            Path("/usr/bin/nfqws"),
+            Path("/opt/zapret/binaries/linux-x86_64/nfqws"),
+            Path("/opt/zapret/binaries/linux-arm64/nfqws"),
+        ]
+        for path in common_paths:
+            if path.exists() and path.is_file():
+                return path
+
+        resolved = shutil.which("nfqws")
+        if resolved:
+            return Path(resolved)
+
+        raise FileNotFoundError(
+            "nfqws binary not found. Expected at NFQWS_BINARY, '/usr/local/bin/nfqws', or in PATH."
+        )
+
+    def _chain_names(self, tunnel_id: str):
+        import hashlib
+        h = hashlib.md5(tunnel_id.encode()).hexdigest()[:8]
+        return f"smite_zap_{h}_o", f"smite_zap_{h}_i"
+
+    def _default_queue(self, tunnel_id: str) -> int:
+        import hashlib
+        return 200 + (int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16) % 300)
+
+    def _run_ipt(self, args, check: bool = False):
+        try:
+            return subprocess.run(args, capture_output=True, text=True, timeout=10, check=check)
+        except subprocess.TimeoutExpired:
+            logger.warning(f"zapret: iptables command timed out: {' '.join(args)}")
+            return None
+
+    def _port_match(self, ports_str: str, inbound: bool):
+        single = "--sport" if inbound else "--dport"
+        multi = "--sports" if inbound else "--dports"
+        s = str(ports_str)
+        if "," in s or "-" in s:
+            return ["-m", "multiport", multi, s]
+        return [single, s]
+
+    def _setup_iptables(self, post_chain, pre_chain, ports_str, queue, max_pkt, direction):
+        jnfq = ["-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass"]
+        cb_orig = ["-m", "connbytes", "--connbytes-dir=original", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
+        cb_reply = ["-m", "connbytes", "--connbytes-dir=reply", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
+        for ipt in ("iptables", "ip6tables"):
+            v6 = ipt == "ip6tables"
+            try:
+                if direction in ("out", "both"):
+                    self._run_ipt([ipt, "-t", "mangle", "-N", post_chain])
+                    self._run_ipt([ipt, "-t", "mangle", "-F", post_chain])
+                    chk = self._run_ipt([ipt, "-t", "mangle", "-C", "POSTROUTING", "-j", post_chain])
+                    if not chk or chk.returncode != 0:
+                        self._run_ipt([ipt, "-t", "mangle", "-A", "POSTROUTING", "-j", post_chain], check=True)
+                    dm = self._port_match(ports_str, inbound=False)
+                    self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + cb_orig + jnfq, check=True)
+                    self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + ["--tcp-flags", "fin", "fin"] + jnfq, check=True)
+                    self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + ["--tcp-flags", "rst", "rst"] + jnfq, check=True)
+                if direction in ("in", "both"):
+                    self._run_ipt([ipt, "-t", "mangle", "-N", pre_chain])
+                    self._run_ipt([ipt, "-t", "mangle", "-F", pre_chain])
+                    chk = self._run_ipt([ipt, "-t", "mangle", "-C", "PREROUTING", "-j", pre_chain])
+                    if not chk or chk.returncode != 0:
+                        self._run_ipt([ipt, "-t", "mangle", "-A", "PREROUTING", "-j", pre_chain], check=True)
+                    sm = self._port_match(ports_str, inbound=True)
+                    self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + cb_reply + jnfq, check=True)
+                    self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + ["--tcp-flags", "syn,ack", "syn,ack"] + jnfq, check=True)
+                    self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + ["--tcp-flags", "fin", "fin"] + jnfq, check=True)
+                    self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + ["--tcp-flags", "rst", "rst"] + jnfq, check=True)
+            except subprocess.CalledProcessError as e:
+                detail = getattr(e, "stderr", "") or str(e)
+                if v6:
+                    logger.warning(f"zapret: ip6tables setup failed (continuing with IPv4 only): {detail}")
+                else:
+                    raise RuntimeError(f"Failed to set up iptables NFQUEUE rules for zapret: {detail}")
+
+    def _teardown_iptables(self, post_chain, pre_chain):
+        for ipt in ("iptables", "ip6tables"):
+            for hook, chain in (("POSTROUTING", post_chain), ("PREROUTING", pre_chain)):
+                for _ in range(8):
+                    r = self._run_ipt([ipt, "-t", "mangle", "-D", hook, "-j", chain])
+                    if not r or r.returncode != 0:
+                        break
+                self._run_ipt([ipt, "-t", "mangle", "-F", chain])
+                self._run_ipt([ipt, "-t", "mangle", "-X", chain])
+
+    def _close_log(self, tunnel_id: str):
+        handle = self.log_handles.pop(tunnel_id, None)
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Apply zapret DPI-desync on a single node (nfqws + NFQUEUE rules)."""
+        if tunnel_id in self.processes or tunnel_id in self.chains:
+            logger.info(f"zapret tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+
+        desync_mode = (spec.get("desync_mode") or spec.get("type") or "fake").lower()
+
+        filter_tcp = str(spec.get("filter_tcp") or "443").strip()
+        if not filter_tcp or filter_tcp.lower() == "none":
+            filter_tcp = "443"
+
+        filter_l7 = (spec.get("filter_l7") or "tls").strip()
+        fake_tls_sni = (spec.get("fake_tls_sni") or spec.get("fake_sni") or "").strip()
+        desync_fooling = (spec.get("desync_fooling") or "badseq,ts").strip()
+
+        direction = (spec.get("direction") or "both").lower()
+        if direction not in ("out", "in", "both"):
+            direction = "both"
+
+        try:
+            max_pkt = int(spec.get("max_pkt") or 10)
+        except (TypeError, ValueError):
+            max_pkt = 10
+
+        queue = spec.get("queue_num")
+        try:
+            queue = int(queue) if queue not in (None, "", "auto") else self._default_queue(tunnel_id)
+        except (TypeError, ValueError):
+            queue = self._default_queue(tunnel_id)
+
+        extra_args = spec.get("extra_args") or ""
+
+        binary_path = self._resolve_binary_path()
+        cmd = [str(binary_path), "-q", str(queue), f"--filter-tcp={filter_tcp}"]
+        if filter_l7 and filter_l7.lower() not in ("none", "any", ""):
+            cmd.append(f"--filter-l7={filter_l7}")
+        cmd.append(f"--dpi-desync={desync_mode}")
+        if fake_tls_sni:
+            cmd.append(f"--dpi-desync-fake-tls-mod=sni={fake_tls_sni}")
+        if desync_fooling and desync_fooling.lower() not in ("none", ""):
+            cmd.append(f"--dpi-desync-fooling={desync_fooling}")
+        ttl = spec.get("desync_ttl")
+        if ttl not in (None, "", 0, "0"):
+            cmd.append(f"--dpi-desync-ttl={ttl}")
+        if extra_args:
+            import shlex
+            cmd.extend(shlex.split(extra_args))
+
+        # Start nfqws first. --queue-bypass means traffic flows untouched until the
+        # iptables rules below are installed, so this ordering never drops packets.
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, "w", buffering=1)
+        try:
+            log_f.write(f"Starting zapret/nfqws for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            log_f.write(f"queue={queue}, ports={filter_tcp}, direction={direction}, max_pkt={max_pkt}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir),
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("nfqws binary not found. Please install zapret/nfqws.")
+        except Exception:
+            log_f.close()
+            raise
+
+        self.log_handles[tunnel_id] = log_f
+        self.processes[tunnel_id] = proc
+        time.sleep(1.0)
+        if proc.poll() is not None:
+            err = ""
+            if log_file.exists():
+                with open(log_file, "r") as f:
+                    err = f.read()
+            self._close_log(tunnel_id)
+            self.processes.pop(tunnel_id, None)
+            raise RuntimeError(f"nfqws failed to start: {err[-500:] if len(err) > 500 else err}")
+
+        post_chain, pre_chain = self._chain_names(tunnel_id)
+        try:
+            self._setup_iptables(post_chain, pre_chain, filter_tcp, queue, max_pkt, direction)
+        except Exception:
+            self._teardown_iptables(post_chain, pre_chain)
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._close_log(tunnel_id)
+            self.processes.pop(tunnel_id, None)
+            raise
+
+        self.chains[tunnel_id] = (post_chain, pre_chain, direction)
+        logger.info(
+            f"zapret started for tunnel {tunnel_id}: mode={desync_mode}, ports={filter_tcp}, "
+            f"queue={queue}, direction={direction}, sni={fake_tls_sni or '-'}"
+        )
+
+    def remove(self, tunnel_id: str):
+        """Remove zapret tunnel: stop nfqws and tear down its NFQUEUE chains."""
+        info = self.chains.pop(tunnel_id, None)
+        if info:
+            post_chain, pre_chain = info[0], info[1]
+        else:
+            post_chain, pre_chain = self._chain_names(tunnel_id)
+        # Always attempt teardown (idempotent) so leftover rules never accumulate.
+        self._teardown_iptables(post_chain, pre_chain)
+
+        proc = self.processes.pop(tunnel_id, None)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+
+        self._close_log(tunnel_id)
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status"""
+        is_running = False
+        proc = self.processes.get(tunnel_id)
+        if proc:
+            is_running = proc.poll() is None
+        return {
+            "active": is_running,
+            "type": "zapret",
+            "process_running": is_running
+        }
+
+
 class AdapterManager:
     """Manager for core adapters"""
     
@@ -1241,6 +1710,8 @@ class AdapterManager:
             "chisel": ChiselAdapter(),
             "frp": FrpAdapter(),
             "gost": GostAdapter(),
+            "udp2raw": Udp2rawAdapter(),
+            "zapret": ZapretAdapter(),
         }
         self.active_tunnels: Dict[str, CoreAdapter] = {}
         self.config_dir = Path("/var/lib/smite-node")
@@ -1361,7 +1832,7 @@ class AdapterManager:
                 mode = spec.get('mode', 'N/A')
                 logger.info(f"Restoring tunnel {tunnel_id}: core={tunnel_core}, mode={mode}, spec_keys={list(spec.keys())}")
                 
-                if tunnel_core in ["rathole", "backhaul", "chisel", "frp"] and mode == 'N/A':
+                if tunnel_core in ["rathole", "backhaul", "chisel", "frp", "udp2raw"] and mode == 'N/A':
                     logger.warning(f"Tunnel {tunnel_id}: Reverse tunnel missing mode field, defaulting to client")
                     spec['mode'] = 'client'
                 

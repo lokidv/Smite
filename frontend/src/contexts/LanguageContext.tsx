@@ -76,6 +76,11 @@ interface Translations {
     reapplyAll: string
     confirmReapplyAll: string
     reapplyAllSuccess: string
+    udp2rawHint: string
+    zapretHint: string
+    zapretNode: string
+    selectZapretNode: string
+    zapretNodeHint: string
   }
   coreHealth: {
     title: string
@@ -199,6 +204,11 @@ const translations: Record<Language, Translations> = {
       reapplyAll: 'Reapply All',
       confirmReapplyAll: 'Are you sure you want to reapply all tunnels?',
       reapplyAllSuccess: 'Success',
+      udp2rawHint: 'udp2raw wraps UDP traffic in raw FakeTCP / ICMP / UDP packets between the Iran node (entry) and the foreign server (exit).',
+      zapretHint: 'zapret runs nfqws on a single node to desync DPI (SNI spoofing) so TLS on :443 is not blocked. Run it on the server that opens the outbound TLS connection (e.g. an Xray VLESS host doing domain-fronting). It does NOT tunnel traffic between nodes.',
+      zapretNode: 'Node',
+      selectZapretNode: 'Select a node',
+      zapretNodeHint: 'The single server where nfqws + NFQUEUE rules will run (usually the foreign / proxy server).',
     },
     coreHealth: {
       title: 'Core Health',
@@ -324,6 +334,11 @@ const translations: Record<Language, Translations> = {
       reapplyAll: 'اعمال مجدد همه',
       confirmReapplyAll: 'آیا از اعمال مجدد همه تونل‌ها مطمئن هستید؟',
       reapplyAllSuccess: 'موفقیت',
+      udp2rawHint: 'udp2raw ترافیک UDP را بین نود ایران (ورودی) و سرور خارجی (خروجی) در بسته‌های خام FakeTCP / ICMP / UDP کپسوله می‌کند.',
+      zapretHint: 'zapret با اجرای nfqws روی یک نود، DPI را با دی‌سینک (جعل SNI) دور می‌زند تا TLS روی پورت ۴۴۳ بسته نشود. آن را روی همان سروری اجرا کنید که اتصال TLS خروجی را باز می‌کند (مثلاً سرور Xray/VLESS با دامین‌فرانتینگ). این روش بین دو نود تونل نمی‌سازد.',
+      zapretNode: 'نود',
+      selectZapretNode: 'یک نود انتخاب کنید',
+      zapretNodeHint: 'تنها سروری که nfqws و قوانین NFQUEUE روی آن اجرا می‌شود (معمولاً سرور خارجی/پروکسی).',
     },
     coreHealth: {
       title: 'سلامت هسته',

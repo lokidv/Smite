@@ -10,6 +10,18 @@ import shutil
 from pathlib import Path
 
 
+NODE_SERVICE = "smite-node"
+NODE_UNIT_PATH = Path("/etc/systemd/system/smite-node.service")
+NATIVE_NODE_DIR = Path("/opt/smite-node")
+
+
+def is_native_node():
+    """Detect a native (systemd + venv) install rather than a Docker install."""
+    if NODE_UNIT_PATH.exists():
+        return True
+    return (NATIVE_NODE_DIR / ".venv" / "bin" / "python").exists()
+
+
 def get_compose_file():
     """Get docker-compose file path"""
     possible_roots = [
@@ -30,6 +42,7 @@ def get_compose_file():
 def get_env_file():
     """Get .env file path"""
     possible_roots = [
+        Path("/etc/smite-node"),  # Native installation config dir
         Path("/opt/smite-node"),
         Path("/usr/local/node"),  # Legacy installation path
         Path.cwd(),
@@ -41,6 +54,8 @@ def get_env_file():
         if env_file.exists():
             return env_file
     
+    if is_native_node():
+        return Path("/etc/smite-node") / ".env"
     return Path("/opt/smite-node") / ".env"
 
 
@@ -75,12 +90,17 @@ def cmd_status(args):
     print("Node Status:")
     print("-" * 50)
     
-    result = subprocess.run(["docker", "ps", "--filter", "name=smite-node", "--format", "{{.Status}}"], 
-                          capture_output=True, text=True)
-    if result.stdout.strip():
-        print(f"Docker: {result.stdout.strip()}")
+    if is_native_node():
+        result = subprocess.run(["systemctl", "is-active", NODE_SERVICE], capture_output=True, text=True)
+        state = result.stdout.strip() or "unknown"
+        print(f"Service (systemd): {state}")
     else:
-        print("Docker: Not running")
+        result = subprocess.run(["docker", "ps", "--filter", "name=smite-node", "--format", "{{.Status}}"], 
+                              capture_output=True, text=True)
+        if result.stdout.strip():
+            print(f"Docker: {result.stdout.strip()}")
+        else:
+            print("Docker: Not running")
     
     try:
         try:
@@ -109,6 +129,15 @@ def cmd_status(args):
 
 def cmd_update(args):
     """Update node (pull images and recreate)"""
+    if is_native_node():
+        print("Native (offline) install detected.")
+        print("To update, build a new offline bundle (scripts/build-offline-bundle.sh),")
+        print("transfer it to this server, extract it, and run: sudo bash scripts/install-node-native.sh")
+        print("\nRestarting service with current version...")
+        subprocess.run(["systemctl", "restart", NODE_SERVICE], check=False)
+        print("Node restarted.")
+        return
+    
     print("Updating node...")
     compose_file = get_compose_file()
     node_dir = compose_file.parent
@@ -136,6 +165,16 @@ def cmd_update(args):
 def cmd_restart(args):
     """Restart node (recreate container to pick up .env changes, no pull)"""
     print("Restarting node...")
+    
+    if is_native_node():
+        result = subprocess.run(["systemctl", "restart", NODE_SERVICE], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Failed to restart {NODE_SERVICE}: {result.stderr.strip()}")
+            print(f"Check logs with: journalctl -u {NODE_SERVICE} -n 50 --no-pager")
+            sys.exit(result.returncode)
+        print("Node restarted. Tunnels will be restored by the panel.")
+        return
+    
     run_docker_compose(["stop", "smite-node"])
     run_docker_compose(["rm", "-f", "smite-node"])
     result = run_docker_compose(["up", "-d", "--no-deps", "--no-pull", "smite-node"], capture_output=True)
@@ -149,9 +188,16 @@ def cmd_restart(args):
 
 
 def cmd_edit(args):
-    """Edit docker-compose.yml"""
-    compose_file = get_compose_file()
+    """Edit docker-compose.yml (Docker) or the systemd unit (native)"""
     editor = os.environ.get("EDITOR", "nano")
+    
+    if is_native_node():
+        subprocess.run([editor, str(NODE_UNIT_PATH)])
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+        print("Run 'smite-node restart' to apply changes.")
+        return
+    
+    compose_file = get_compose_file()
     subprocess.run([editor, str(compose_file)])
 
 
@@ -169,12 +215,74 @@ def cmd_edit_env(args):
 
 def cmd_logs(args):
     """Stream logs"""
+    if is_native_node():
+        cmd = ["journalctl", "-u", NODE_SERVICE, "--no-pager", "-n", "200"]
+        if args.follow:
+            cmd.append("-f")
+        try:
+            subprocess.run(cmd)
+        except KeyboardInterrupt:
+            pass
+        return
+    
     follow = ["--follow"] if args.follow else []
     run_docker_compose(["logs"] + follow + ["smite-node"])
 
 
 def cmd_uninstall(args):
     """Uninstall Smite Node - removes everything"""
+    if is_native_node():
+        print("=" * 60)
+        print("⚠️  WARNING: This will completely remove Smite Node (native install)!")
+        print("=" * 60)
+        print("\nThis will remove:")
+        print("  - systemd service (smite-node)")
+        print("  - Installation directory (/opt/smite-node)")
+        print("  - Configuration directory (/etc/smite-node)")
+        print("  - Data directory (/var/lib/smite-node)")
+        print("  - CLI script (/usr/local/bin/smite-node)")
+        print("\n⚠️  ALL DATA WILL BE LOST!")
+        print("=" * 60)
+        
+        response = input("\nAre you sure you want to continue? Type 'yes' to confirm: ")
+        if response.lower() != 'yes':
+            print("Uninstall cancelled.")
+            sys.exit(0)
+        
+        print("\n[1/3] Stopping and removing systemd service...")
+        subprocess.run(["systemctl", "disable", "--now", NODE_SERVICE], capture_output=True, check=False)
+        try:
+            NODE_UNIT_PATH.unlink()
+        except OSError:
+            pass
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, check=False)
+        print("  ✓ Service removed")
+        
+        print("\n[2/3] Removing directories...")
+        for d in [Path("/opt/smite-node"), Path("/etc/smite-node"), Path("/var/lib/smite-node")]:
+            if d.exists():
+                try:
+                    shutil.rmtree(d)
+                    print(f"  ✓ Removed {d}")
+                except Exception as e:
+                    print(f"  ⚠️  Warning: Could not remove {d}: {e}")
+            else:
+                print(f"  - {d} does not exist")
+        
+        print("\n[3/3] Removing CLI script...")
+        cli_path = Path("/usr/local/bin/smite-node")
+        if cli_path.exists():
+            try:
+                cli_path.unlink()
+                print("  ✓ Removed /usr/local/bin/smite-node")
+            except Exception as e:
+                print(f"  ⚠️  Warning: Could not remove CLI script: {e}")
+        
+        print("\n" + "=" * 60)
+        print("✅ Smite Node has been completely uninstalled!")
+        print("=" * 60)
+        return
+    
     print("=" * 60)
     print("⚠️  WARNING: This will completely remove Smite Node!")
     print("=" * 60)

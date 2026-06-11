@@ -136,6 +136,89 @@ def parse_ports_from_spec(spec: dict) -> list:
     return ports if ports else []
 
 
+def normalize_zapret_spec(spec: dict) -> dict:
+    """Apply zapret defaults so the node always receives a complete spec."""
+    s = dict(spec or {})
+    s.setdefault("filter_tcp", "443")
+    s.setdefault("filter_l7", "tls")
+    s.setdefault("desync_mode", s.get("type") or "fake")
+    s.setdefault("desync_fooling", "badseq,ts")
+    s.setdefault("max_pkt", 10)
+    s.setdefault("direction", "both")
+    return s
+
+
+async def resolve_single_node(db_tunnel: Tunnel, db: AsyncSession):
+    """Resolve the single node a zapret tunnel runs on (any of node/iran/foreign)."""
+    candidates = [
+        db_tunnel.node_id,
+        getattr(db_tunnel, "iran_node_id", None),
+        getattr(db_tunnel, "foreign_node_id", None),
+    ]
+    for nid in candidates:
+        if nid:
+            result = await db.execute(select(Node).where(Node.id == nid))
+            node = result.scalar_one_or_none()
+            if node:
+                return node
+    return None
+
+
+async def apply_zapret_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel:
+    """Push a zapret (single-node DPI desync) tunnel to its node.
+
+    zapret is not a reverse tunnel: it runs nfqws + NFQUEUE rules on one host,
+    so it bypasses the dual-node orchestration entirely.
+    """
+    node = await resolve_single_node(db_tunnel, db)
+    if not node:
+        db_tunnel.status = "error"
+        db_tunnel.error_message = "zapret requires a node. Select the server that runs the proxy / outbound TLS."
+        await db.commit()
+        await db.refresh(db_tunnel)
+        return db_tunnel
+
+    spec_for_node = normalize_zapret_spec(db_tunnel.spec)
+    if not node.node_metadata.get("api_address"):
+        node.node_metadata["api_address"] = (
+            f"http://{node.node_metadata.get('ip_address', node.fingerprint)}:{node.node_metadata.get('api_port', 8888)}"
+        )
+        await db.commit()
+
+    client = NodeClient()
+    try:
+        response = await client.send_to_node(
+            node_id=node.id,
+            endpoint="/api/agent/tunnels/apply",
+            data={
+                "tunnel_id": db_tunnel.id,
+                "core": db_tunnel.core,
+                "type": db_tunnel.type,
+                "spec": spec_for_node,
+            },
+        )
+    except Exception as e:
+        logger.error(f"zapret tunnel {db_tunnel.id}: failed to reach node {node.id}: {e}", exc_info=True)
+        db_tunnel.status = "error"
+        db_tunnel.error_message = f"Node error: {e}"
+        await db.commit()
+        await db.refresh(db_tunnel)
+        return db_tunnel
+
+    if response.get("status") == "success":
+        db_tunnel.status = "active"
+        db_tunnel.error_message = None
+        logger.info(f"zapret tunnel {db_tunnel.id} applied on node {node.id}")
+    else:
+        db_tunnel.status = "error"
+        db_tunnel.error_message = f"Node error: {response.get('message', 'Unknown error from node')}"
+        logger.error(f"zapret tunnel {db_tunnel.id}: node returned error: {db_tunnel.error_message}")
+
+    await db.commit()
+    await db.refresh(db_tunnel)
+    return db_tunnel
+
+
 @router.post("", response_model=TunnelResponse)
 async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession = Depends(get_db)):
     """Create a new tunnel and auto-apply it"""
@@ -152,7 +235,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
         if ports:
             tunnel.spec["ports"] = ports
     
-    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp"}
+    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw"}
     foreign_node = None
     iran_node = None
     
@@ -233,6 +316,9 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     await db.refresh(db_tunnel)
     
     try:
+        if db_tunnel.core == "zapret":
+            return await apply_zapret_tunnel(db_tunnel, db)
+
         needs_gost_forwarding = db_tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and db_tunnel.core == "gost" and not is_reverse_tunnel
         needs_rathole_server = False
         needs_backhaul_server = False
@@ -512,6 +598,88 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 client_spec["mode"] = "client"  # Ensure mode is set
                 if token:
                     client_spec["token"] = token
+            
+            elif db_tunnel.core == "udp2raw":
+                # udp2raw role mapping differs from the other reverse cores:
+                # the IRAN node runs the udp2raw CLIENT (public UDP entry point that
+                # wraps traffic into raw faketcp/icmp/udp packets) and the FOREIGN
+                # node runs the udp2raw SERVER (unwraps and forwards to the local
+                # target service). server_spec goes to iran, client_spec to foreign.
+                raw_mode = (db_tunnel.type or server_spec.get("raw_mode") or "faketcp").lower()
+                if raw_mode not in {"faketcp", "icmp", "udp"}:
+                    raw_mode = "faketcp"
+                
+                key = server_spec.get("key") or server_spec.get("token")
+                if not key:
+                    from app.utils import generate_token
+                    key = generate_token()
+                
+                ports = parse_ports_from_spec(db_tunnel.spec)
+                listen_port = server_spec.get("listen_port") or server_spec.get("public_port") or (ports[0] if ports else None)
+                if not listen_port:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "udp2raw requires listen_port (public UDP port on the iran node)"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+                
+                import hashlib
+                port_hash = int(hashlib.md5(db_tunnel.id.encode()).hexdigest()[:8], 16)
+                raw_port = server_spec.get("raw_port") or (4096 + (port_hash % 1000))
+                target_host = server_spec.get("target_host", "127.0.0.1")
+                target_port = server_spec.get("target_port") or listen_port
+                cipher_mode = server_spec.get("cipher_mode") or "aes128cbc"
+                auth_mode = server_spec.get("auth_mode") or "md5"
+                
+                try:
+                    listen_port = int(listen_port)
+                    raw_port = int(raw_port)
+                    target_port = int(target_port)
+                except (TypeError, ValueError):
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "udp2raw ports must be numeric"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+                
+                foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                if not foreign_node_ip:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "Foreign node has no IP address"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+                
+                # Persist derived values so reapply/restore reuse the same key/ports
+                db_tunnel.spec["key"] = key
+                db_tunnel.spec["raw_mode"] = raw_mode
+                db_tunnel.spec["listen_port"] = listen_port
+                db_tunnel.spec["raw_port"] = raw_port
+                db_tunnel.spec["target_host"] = target_host
+                db_tunnel.spec["target_port"] = target_port
+                db_tunnel.spec["cipher_mode"] = cipher_mode
+                db_tunnel.spec["auth_mode"] = auth_mode
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(db_tunnel, "spec")
+                
+                from app.utils import format_address_port
+                # Iran node: udp2raw client (public UDP entry point)
+                server_spec["mode"] = "client"
+                server_spec["raw_mode"] = raw_mode
+                server_spec["listen_addr"] = f"0.0.0.0:{listen_port}"
+                server_spec["remote_addr"] = format_address_port(foreign_node_ip, raw_port)
+                server_spec["key"] = key
+                server_spec["cipher_mode"] = cipher_mode
+                server_spec["auth_mode"] = auth_mode
+                
+                # Foreign node: udp2raw server (raw listener -> local target service)
+                client_spec["mode"] = "server"
+                client_spec["raw_mode"] = raw_mode
+                client_spec["listen_addr"] = f"0.0.0.0:{raw_port}"
+                client_spec["forward_addr"] = format_address_port(target_host, target_port)
+                client_spec["key"] = key
+                client_spec["cipher_mode"] = cipher_mode
+                client_spec["auth_mode"] = auth_mode
             
             if not iran_node.node_metadata.get("api_address"):
                 iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
@@ -1121,6 +1289,25 @@ async def update_tunnel(
     
     if spec_changed:
         try:
+            if tunnel.core == "zapret":
+                # zapret is single-node; re-push the updated spec via apply_tunnel.
+                try:
+                    await apply_tunnel(tunnel.id, request, db)
+                except HTTPException as e:
+                    logger.error(f"Failed to re-apply zapret tunnel {tunnel.id}: {e.detail}")
+                await db.refresh(tunnel)
+                return tunnel
+
+            if tunnel.core == "udp2raw":
+                # udp2raw runs on both the iran and foreign nodes; delegate to
+                # apply_tunnel which rebuilds and pushes the split specs.
+                try:
+                    await apply_tunnel(tunnel.id, request, db)
+                except HTTPException as e:
+                    logger.error(f"Failed to re-apply udp2raw tunnel {tunnel.id}: {e.detail}")
+                await db.refresh(tunnel)
+                return tunnel
+            
             needs_gost_forwarding = tunnel.type in ["tcp", "udp", "ws", "grpc", "tcpmux"] and tunnel.core == "gost"
             needs_rathole_server = tunnel.core == "rathole"
             needs_backhaul_server = tunnel.core == "backhaul"
@@ -1326,8 +1513,14 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
     client = NodeClient()
-    
-    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp"}
+
+    if tunnel.core == "zapret":
+        await apply_zapret_tunnel(tunnel, db)
+        if tunnel.status == "active":
+            return {"status": "applied", "message": "Tunnel reapplied successfully"}
+        raise HTTPException(status_code=500, detail=tunnel.error_message or "Failed to apply zapret tunnel")
+
+    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw"}
     foreign_node = None
     iran_node = None
     
@@ -1575,6 +1768,66 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         client_spec["server_url"] = f"http://{iran_node_ip}:{server_control_port}"
                     client_spec["reverse_port"] = listen_port
                 
+                elif tunnel.core == "udp2raw":
+                    # Iran node runs the udp2raw CLIENT (public entry), foreign node
+                    # runs the udp2raw SERVER. server_spec -> iran, client_spec -> foreign.
+                    raw_mode = (tunnel.type or spec.get("raw_mode") or "faketcp").lower()
+                    if raw_mode not in {"faketcp", "icmp", "udp"}:
+                        raw_mode = "faketcp"
+                    
+                    key = spec.get("key") or spec.get("token")
+                    if not key:
+                        from app.utils import generate_token
+                        key = generate_token()
+                        spec["key"] = key
+                        tunnel.spec["key"] = key
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(tunnel, "spec")
+                        await db.commit()
+                        await db.refresh(tunnel)
+                    
+                    ports = parse_ports_from_spec(spec)
+                    listen_port = spec.get("listen_port") or spec.get("public_port") or (ports[0] if ports else None)
+                    if not listen_port:
+                        tunnel.status = "error"
+                        tunnel.error_message = "udp2raw requires listen_port"
+                        await db.commit()
+                        raise HTTPException(status_code=400, detail="udp2raw requires listen_port")
+                    
+                    import hashlib
+                    port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+                    raw_port = spec.get("raw_port") or (4096 + (port_hash % 1000))
+                    target_host = spec.get("target_host", "127.0.0.1")
+                    target_port = spec.get("target_port") or listen_port
+                    cipher_mode = spec.get("cipher_mode") or "aes128cbc"
+                    auth_mode = spec.get("auth_mode") or "md5"
+                    
+                    foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                    if not foreign_node_ip:
+                        tunnel.status = "error"
+                        tunnel.error_message = "Foreign node has no IP address"
+                        await db.commit()
+                        raise HTTPException(status_code=400, detail="Foreign node has no IP address")
+                    
+                    from app.utils import format_address_port
+                    server_spec = spec.copy()
+                    server_spec["mode"] = "client"
+                    server_spec["raw_mode"] = raw_mode
+                    server_spec["listen_addr"] = f"0.0.0.0:{listen_port}"
+                    server_spec["remote_addr"] = format_address_port(foreign_node_ip, int(raw_port))
+                    server_spec["key"] = key
+                    server_spec["cipher_mode"] = cipher_mode
+                    server_spec["auth_mode"] = auth_mode
+                    
+                    client_spec = spec.copy()
+                    client_spec["mode"] = "server"
+                    client_spec["raw_mode"] = raw_mode
+                    client_spec["listen_addr"] = f"0.0.0.0:{raw_port}"
+                    client_spec["forward_addr"] = format_address_port(target_host, int(target_port))
+                    client_spec["key"] = key
+                    client_spec["cipher_mode"] = cipher_mode
+                    client_spec["auth_mode"] = auth_mode
+                
                 if not iran_node.node_metadata.get("api_address"):
                     iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
                     await db.commit()
@@ -1587,7 +1840,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         "tunnel_id": tunnel.id,
                         "core": tunnel.core,
                         "type": tunnel.type,
-                        "spec": server_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel"] else spec
+                        "spec": server_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw"] else spec
                     }
                 )
                 
@@ -1610,7 +1863,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         "tunnel_id": tunnel.id,
                         "core": tunnel.core,
                         "type": tunnel.type,
-                        "spec": client_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel"] else spec
+                        "spec": client_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw"] else spec
                     }
                 )
                 
@@ -1792,7 +2045,27 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
                 import logging
                 logging.error(f"Failed to stop FRP server: {e}")
     
-    if tunnel.status == "active":
+    if tunnel.core in ("udp2raw", "zapret"):
+        # udp2raw runs on both the iran and foreign nodes; zapret runs on one node
+        # but may have been registered under node_id/iran/foreign. Remove from each
+        # so the nfqws process and NFQUEUE iptables rules are always torn down.
+        client = NodeClient()
+        node_ids = {tunnel.node_id, tunnel.iran_node_id, tunnel.foreign_node_id}
+        for node_id in node_ids:
+            if not node_id:
+                continue
+            result = await db.execute(select(Node).where(Node.id == node_id))
+            node = result.scalar_one_or_none()
+            if node:
+                try:
+                    await client.send_to_node(
+                        node_id=node.id,
+                        endpoint="/api/agent/tunnels/remove",
+                        data={"tunnel_id": tunnel.id}
+                    )
+                except:
+                    pass
+    elif tunnel.status == "active":
         result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
         node = result.scalar_one_or_none()
         if node:

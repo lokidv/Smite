@@ -108,6 +108,173 @@ const createDefaultBackhaulAdvancedState = (): BackhaulAdvancedState => ({
   customPorts: '',
 })
 
+type Udp2rawRawMode = 'faketcp' | 'icmp' | 'udp'
+
+const UDP2RAW_RAW_MODES: Udp2rawRawMode[] = ['faketcp', 'icmp', 'udp']
+const UDP2RAW_CIPHER_MODES = ['aes128cbc', 'aes128cfb', 'xor', 'none']
+const UDP2RAW_AUTH_MODES = ['md5', 'crc32', 'simple', 'none']
+
+interface Udp2rawFormState {
+  raw_mode: Udp2rawRawMode
+  listen_port: string
+  raw_port: string
+  target_host: string
+  target_port: string
+  key: string
+  cipher_mode: string
+  auth_mode: string
+}
+
+const createDefaultUdp2rawState = (): Udp2rawFormState => ({
+  raw_mode: 'faketcp',
+  listen_port: '4096',
+  raw_port: '',
+  target_host: '127.0.0.1',
+  target_port: '',
+  key: '',
+  cipher_mode: 'aes128cbc',
+  auth_mode: 'md5',
+})
+
+const buildUdp2rawSpec = (state: Udp2rawFormState, rawModeOverride?: string): Record<string, any> => {
+  const rawModeCandidate = (rawModeOverride || state.raw_mode || 'faketcp') as Udp2rawRawMode
+  const rawMode = UDP2RAW_RAW_MODES.includes(rawModeCandidate) ? rawModeCandidate : 'faketcp'
+
+  const spec: Record<string, any> = {
+    raw_mode: rawMode,
+    cipher_mode: state.cipher_mode || 'aes128cbc',
+    auth_mode: state.auth_mode || 'md5',
+    target_host: state.target_host.trim() || '127.0.0.1',
+  }
+
+  const listenPort = parseInt(state.listen_port, 10)
+  if (!Number.isNaN(listenPort) && listenPort > 0) {
+    spec.listen_port = listenPort
+    spec.ports = [listenPort]
+  }
+
+  const rawPort = parseInt(state.raw_port, 10)
+  if (!Number.isNaN(rawPort) && rawPort > 0) {
+    spec.raw_port = rawPort
+  }
+
+  const targetPort = parseInt(state.target_port, 10)
+  if (!Number.isNaN(targetPort) && targetPort > 0) {
+    spec.target_port = targetPort
+  } else if (!Number.isNaN(listenPort) && listenPort > 0) {
+    spec.target_port = listenPort
+  }
+
+  if (state.key.trim()) {
+    spec.key = state.key.trim()
+  }
+
+  return spec
+}
+
+const parseUdp2rawSpec = (spec: Record<string, any> | undefined, currentType?: string): Udp2rawFormState => {
+  const state = createDefaultUdp2rawState()
+  const rawModeCandidate = ((spec?.raw_mode || currentType || 'faketcp') as string).toLowerCase() as Udp2rawRawMode
+  if (UDP2RAW_RAW_MODES.includes(rawModeCandidate)) {
+    state.raw_mode = rawModeCandidate
+  }
+  if (!spec) {
+    return state
+  }
+  const listenPort = spec.listen_port ?? (Array.isArray(spec.ports) && spec.ports.length > 0 ? spec.ports[0] : undefined)
+  if (listenPort) {
+    state.listen_port = String(listenPort)
+  }
+  if (spec.raw_port) {
+    state.raw_port = String(spec.raw_port)
+  }
+  if (spec.target_host) {
+    state.target_host = String(spec.target_host)
+  }
+  if (spec.target_port) {
+    state.target_port = String(spec.target_port)
+  }
+  state.key = spec.key ?? ''
+  state.cipher_mode = spec.cipher_mode || state.cipher_mode
+  state.auth_mode = spec.auth_mode || state.auth_mode
+  return state
+}
+
+// ---- zapret (DPI desync / SNI bypass) ----
+const ZAPRET_DESYNC_MODES = ['fake', 'fakedsplit', 'multisplit', 'multidisorder', 'disorder2', 'split2', 'syndata']
+const ZAPRET_L7_FILTERS = ['tls', 'http', 'quic', 'none']
+const ZAPRET_DIRECTIONS = ['both', 'out', 'in']
+
+interface ZapretFormState {
+  desync_mode: string
+  filter_tcp: string
+  filter_l7: string
+  fake_tls_sni: string
+  desync_fooling: string
+  direction: string
+  queue_num: string
+  extra_args: string
+}
+
+const createDefaultZapretState = (): ZapretFormState => ({
+  desync_mode: 'fake',
+  filter_tcp: '443',
+  filter_l7: 'tls',
+  fake_tls_sni: 'hcaptcha.com',
+  desync_fooling: 'badseq,ts',
+  direction: 'both',
+  queue_num: '',
+  extra_args: '',
+})
+
+const buildZapretSpec = (state: ZapretFormState, desyncOverride?: string): Record<string, any> => {
+  const modeCandidate = (desyncOverride || state.desync_mode || 'fake')
+  const mode = ZAPRET_DESYNC_MODES.includes(modeCandidate) ? modeCandidate : 'fake'
+
+  const spec: Record<string, any> = {
+    desync_mode: mode,
+    filter_tcp: state.filter_tcp.trim() || '443',
+    filter_l7: state.filter_l7 || 'tls',
+    desync_fooling: state.desync_fooling.trim(),
+    direction: ZAPRET_DIRECTIONS.includes(state.direction) ? state.direction : 'both',
+    max_pkt: 10,
+  }
+
+  if (state.fake_tls_sni.trim()) {
+    spec.fake_tls_sni = state.fake_tls_sni.trim()
+  }
+
+  const queue = parseInt(state.queue_num, 10)
+  if (!Number.isNaN(queue) && queue > 0) {
+    spec.queue_num = queue
+  }
+
+  if (state.extra_args.trim()) {
+    spec.extra_args = state.extra_args.trim()
+  }
+
+  return spec
+}
+
+const parseZapretSpec = (spec: Record<string, any> | undefined, currentType?: string): ZapretFormState => {
+  const state = createDefaultZapretState()
+  const modeCandidate = ((spec?.desync_mode || currentType || 'fake') as string).toLowerCase()
+  if (ZAPRET_DESYNC_MODES.includes(modeCandidate)) {
+    state.desync_mode = modeCandidate
+  }
+  if (!spec) {
+    return state
+  }
+  if (spec.filter_tcp) state.filter_tcp = String(spec.filter_tcp)
+  if (spec.filter_l7) state.filter_l7 = String(spec.filter_l7)
+  state.fake_tls_sni = spec.fake_tls_sni ?? spec.fake_sni ?? state.fake_tls_sni
+  if (spec.desync_fooling !== undefined) state.desync_fooling = String(spec.desync_fooling)
+  if (spec.direction) state.direction = String(spec.direction)
+  if (spec.queue_num) state.queue_num = String(spec.queue_num)
+  if (spec.extra_args) state.extra_args = String(spec.extra_args)
+  return state
+}
+
 const numericServerKeys = new Set([
   'keepalive_period',
   'heartbeat',
@@ -304,6 +471,9 @@ const Tunnels = () => {
         {tunnels.map((tunnel) => {
           // Extract ports from spec
           const getPorts = (): string => {
+            if (tunnel.core === 'zapret') {
+              return (tunnel.spec?.filter_tcp || '443').toString()
+            }
             if (tunnel.spec?.ports) {
               if (Array.isArray(tunnel.spec.ports)) {
                 // For Backhaul, ports are in format "8080=127.0.0.1:8080", extract just the port numbers
@@ -333,6 +503,8 @@ const Tunnels = () => {
               chisel: { bg: 'bg-orange-100 dark:bg-orange-900/30', text: 'text-orange-800 dark:text-orange-200', border: 'border-orange-300 dark:border-orange-700' },
               frp: { bg: 'bg-cyan-100 dark:bg-cyan-900/30', text: 'text-cyan-800 dark:text-cyan-200', border: 'border-cyan-300 dark:border-cyan-700' },
               gost: { bg: 'bg-indigo-100 dark:bg-indigo-900/30', text: 'text-indigo-800 dark:text-indigo-200', border: 'border-indigo-300 dark:border-indigo-700' },
+              udp2raw: { bg: 'bg-rose-100 dark:bg-rose-900/30', text: 'text-rose-800 dark:text-rose-200', border: 'border-rose-300 dark:border-rose-700' },
+              zapret: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
             }
             return coreColors[tunnel.core] || { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-800 dark:text-gray-200', border: 'border-gray-300 dark:border-gray-600' }
           }
@@ -340,6 +512,7 @@ const Tunnels = () => {
           const coreBadge = getCoreBadge()
           const ports = getPorts()
           const iranNode = nodes.find(n => n.id === tunnel.iran_node_id || n.id === tunnel.node_id)
+            || (tunnel.core === 'zapret' ? servers.find(s => s.id === tunnel.node_id) : undefined)
           const foreignServer = servers.find(s => s.id === tunnel.foreign_node_id)
 
           return (
@@ -392,6 +565,15 @@ const Tunnels = () => {
                             WSS: { bg: 'bg-pink-100 dark:bg-pink-900/30', text: 'text-pink-800 dark:text-pink-200', border: 'border-pink-300 dark:border-pink-700' },
                             GRPC: { bg: 'bg-teal-100 dark:bg-teal-900/30', text: 'text-teal-800 dark:text-teal-200', border: 'border-teal-300 dark:border-teal-700' },
                             TCPMUX: { bg: 'bg-violet-100 dark:bg-violet-900/30', text: 'text-violet-800 dark:text-violet-200', border: 'border-violet-300 dark:border-violet-700' },
+                            FAKETCP: { bg: 'bg-rose-100 dark:bg-rose-900/30', text: 'text-rose-800 dark:text-rose-200', border: 'border-rose-300 dark:border-rose-700' },
+                            ICMP: { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-800 dark:text-amber-200', border: 'border-amber-300 dark:border-amber-700' },
+                            FAKE: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
+                            FAKEDSPLIT: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
+                            MULTISPLIT: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
+                            MULTIDISORDER: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
+                            DISORDER2: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
+                            SPLIT2: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
+                            SYNDATA: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
                           }
                           return typeColors[transmissionType] || { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-800 dark:text-gray-200', border: 'border-gray-300 dark:border-gray-600' }
                         }
@@ -435,6 +617,10 @@ const Tunnels = () => {
                           corePort = tunnel.spec?.control_port || tunnel.spec?.public_port || '3080'
                         } else if (tunnel.core === 'frp') {
                           corePort = tunnel.spec?.bind_port || '7000'
+                        } else if (tunnel.core === 'udp2raw') {
+                          corePort = tunnel.spec?.raw_port
+                        } else if (tunnel.core === 'zapret') {
+                          corePort = tunnel.spec?.queue_num || null
                         }
                         return corePort ? (
                           <div className="flex items-center gap-1.5">
@@ -586,6 +772,8 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
   const [backhaulState, setBackhaulState] = useState<BackhaulFormState>(parsedBackhaul.state)
   const [backhaulAdvanced, setBackhaulAdvanced] = useState<BackhaulAdvancedState>(parsedBackhaul.advanced)
   const [showBackhaulAdvanced, setShowBackhaulAdvanced] = useState(false)
+  const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(() => parseUdp2rawSpec(tunnel.spec, tunnel.type))
+  const [zapretState, setZapretState] = useState<ZapretFormState>(() => parseZapretSpec(tunnel.spec, tunnel.type))
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -663,6 +851,10 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
           const targetHost = updatedSpec.target_host || '127.0.0.1'
           updatedSpec.ports = ports.map(p => `${p}=${targetHost}:${p}`)
         }
+      } else if (tunnel.core === 'udp2raw') {
+        updatedSpec = { ...tunnel.spec, ...buildUdp2rawSpec(udp2rawState, tunnel.type) }
+      } else if (tunnel.core === 'zapret') {
+        updatedSpec = { ...tunnel.spec, ...buildZapretSpec(zapretState, tunnel.type) }
       }
 
       await api.put(`/tunnels/${tunnel.id}`, {
@@ -742,6 +934,24 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
               acceptUdpVisible={
                 backhaulState.transport === 'tcp' || backhaulState.transport === 'tcpmux'
               }
+            />
+          )}
+          
+          {tunnel.core === 'udp2raw' && (
+            <Udp2rawForm
+              state={udp2rawState}
+              onChange={(partial) => {
+                setUdp2rawState((prev) => ({ ...prev, ...partial }))
+              }}
+            />
+          )}
+
+          {tunnel.core === 'zapret' && (
+            <ZapretForm
+              state={zapretState}
+              onChange={(partial) => {
+                setZapretState((prev) => ({ ...prev, ...partial }))
+              }}
             />
           )}
           
@@ -1006,6 +1216,8 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
   const [backhaulState, setBackhaulState] = useState<BackhaulFormState>(createDefaultBackhaulState())
   const [backhaulAdvanced, setBackhaulAdvanced] = useState<BackhaulAdvancedState>(createDefaultBackhaulAdvancedState())
   const [showBackhaulAdvanced, setShowBackhaulAdvanced] = useState(false)
+  const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(createDefaultUdp2rawState())
+  const [zapretState, setZapretState] = useState<ZapretFormState>(createDefaultZapretState())
 
   // Auto-populate remote_ip with foreign server IP when GOST is selected
   useEffect(() => {
@@ -1154,6 +1366,30 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
         tunnelType = formData.type === 'udp' ? 'udp' : 'tcp'
       }
       
+      if (formData.core === 'udp2raw') {
+        if (!formData.node_id && !formData.iran_node_id) {
+          alert('udp2raw tunnels require an iran node')
+          return
+        }
+        const listenPort = parseInt(udp2rawState.listen_port, 10)
+        if (Number.isNaN(listenPort) || listenPort <= 0) {
+          alert('Please enter a valid listen port for udp2raw')
+          return
+        }
+        spec = buildUdp2rawSpec(udp2rawState)
+        spec.use_ipv6 = formData.use_ipv6 || false
+        tunnelType = udp2rawState.raw_mode
+      }
+
+      if (formData.core === 'zapret') {
+        if (!formData.node_id && !formData.iran_node_id) {
+          alert('zapret requires a node (the server running the proxy / outbound TLS)')
+          return
+        }
+        spec = buildZapretSpec(zapretState)
+        tunnelType = zapretState.desync_mode
+      }
+      
       const payload = {
         name: formData.name,
         core: formData.core,
@@ -1197,7 +1433,11 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
       newType = (formData.type === 'tcp' || formData.type === 'udp') ? formData.type : 'tcp'
     } else if (core === 'backhaul') {
       newType = backhaulState.transport
-    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul') {
+    } else if (core === 'udp2raw') {
+      newType = udp2rawState.raw_mode
+    } else if (core === 'zapret') {
+      newType = zapretState.desync_mode
+    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul' || formData.core === 'udp2raw' || formData.core === 'zapret') {
       newType = 'tcp'
     }
     setFormData({ ...formData, core, type: newType })
@@ -1228,6 +1468,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
               required
             />
           </div>
+          {formData.core !== 'zapret' && (
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -1237,7 +1478,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                 value={formData.iran_node_id || formData.node_id}
                 onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel'}
+                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw'}
               >
                 <option value="">{t.tunnels.selectIranNode}</option>
                 {nodes.map((node) => (
@@ -1255,7 +1496,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                 value={formData.foreign_node_id}
                 onChange={(e) => setFormData({ ...formData, foreign_node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel'}
+                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw'}
               >
                 <option value="">{t.tunnels.selectForeignServer}</option>
                 {servers.map((server) => (
@@ -1266,6 +1507,31 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
               </select>
             </div>
           </div>
+          )}
+
+          {formData.core === 'zapret' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                {t.tunnels.zapretNode}
+              </label>
+              <select
+                value={formData.iran_node_id || formData.node_id}
+                onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                required
+              >
+                <option value="">{t.tunnels.selectZapretNode}</option>
+                {[...nodes, ...servers].map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.name} ({node.metadata?.role || node.node_metadata?.role || 'node'})
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                {t.tunnels.zapretNodeHint}
+              </p>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -1282,6 +1548,8 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                 <option value="backhaul">Backhaul</option>
                 <option value="chisel">Chisel</option>
                 <option value="frp">FRP</option>
+                <option value="udp2raw">udp2raw</option>
+                <option value="zapret">Zapret (DPI bypass)</option>
               </select>
             </div>
             <div>
@@ -1295,6 +1563,12 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                   setFormData({ ...formData, type: value })
                   if (formData.core === 'backhaul') {
                     setBackhaulState((prev) => ({ ...prev, transport: value }))
+                  }
+                  if (formData.core === 'udp2raw') {
+                    setUdp2rawState((prev) => ({ ...prev, raw_mode: e.target.value as Udp2rawRawMode }))
+                  }
+                  if (formData.core === 'zapret') {
+                    setZapretState((prev) => ({ ...prev, desync_mode: e.target.value }))
                   }
                 }}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
@@ -1319,6 +1593,18 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                     <option value="ws">WebSocket (WS)</option>
                     <option value="wsmux">WebSocket Mux</option>
                     <option value="tcpmux">TCPMux</option>
+                  </>
+                ) : formData.core === 'udp2raw' ? (
+                  <>
+                    <option value="faketcp">FakeTCP</option>
+                    <option value="icmp">ICMP</option>
+                    <option value="udp">UDP</option>
+                  </>
+                ) : formData.core === 'zapret' ? (
+                  <>
+                    {ZAPRET_DESYNC_MODES.map((mode) => (
+                      <option key={mode} value={mode}>{mode}</option>
+                    ))}
                   </>
                 ) : (
                   <>
@@ -1385,6 +1671,30 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
               acceptUdpVisible={
                 backhaulState.transport === 'tcp' || backhaulState.transport === 'tcpmux'
               }
+            />
+          )}
+          
+          {formData.core === 'udp2raw' && (
+            <Udp2rawForm
+              state={udp2rawState}
+              onChange={(partial) => {
+                setUdp2rawState((prev) => ({ ...prev, ...partial }))
+                if (partial.raw_mode) {
+                  setFormData((prev) => ({ ...prev, type: partial.raw_mode as string }))
+                }
+              }}
+            />
+          )}
+
+          {formData.core === 'zapret' && (
+            <ZapretForm
+              state={zapretState}
+              onChange={(partial) => {
+                setZapretState((prev) => ({ ...prev, ...partial }))
+                if (partial.desync_mode) {
+                  setFormData((prev) => ({ ...prev, type: partial.desync_mode as string }))
+                }
+              }}
             />
           )}
           
@@ -1683,6 +1993,300 @@ function BackhaulForm({
         >
           Advanced settings
         </button>
+      </div>
+    </div>
+  )
+}
+
+function Udp2rawForm({
+  state,
+  onChange,
+}: {
+  state: Udp2rawFormState
+  onChange: (partial: Partial<Udp2rawFormState>) => void
+}) {
+  const { t } = useLanguage()
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        {t.tunnels.udp2rawHint}
+      </p>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Listen Port
+          </label>
+          <input
+            type="number"
+            value={state.listen_port}
+            onChange={(e) => onChange({ listen_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="4096"
+            min={1}
+            max={65535}
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Public UDP port on the iran node (users connect here)
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Raw Port (Optional)
+          </label>
+          <input
+            type="number"
+            value={state.raw_port}
+            onChange={(e) => onChange({ raw_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="Auto"
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Raw faketcp/icmp/udp port on the foreign server (auto if empty)
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Target Host
+          </label>
+          <input
+            type="text"
+            value={state.target_host}
+            onChange={(e) => onChange({ target_host: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="127.0.0.1"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            UDP service host on the foreign server
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Target Port (Optional)
+          </label>
+          <input
+            type="number"
+            value={state.target_port}
+            onChange={(e) => onChange({ target_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="Same as listen port"
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            UDP service port on the foreign server (defaults to listen port)
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          Key (Optional - Auto-generated if empty)
+        </label>
+        <input
+          type="text"
+          value={state.key}
+          onChange={(e) => onChange({ key: e.target.value })}
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          placeholder="Leave empty for auto-generation"
+        />
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Shared password used by both sides (will be auto-generated if not provided)</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Cipher Mode
+          </label>
+          <select
+            value={state.cipher_mode}
+            onChange={(e) => onChange({ cipher_mode: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          >
+            {UDP2RAW_CIPHER_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {mode}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Auth Mode
+          </label>
+          <select
+            value={state.auth_mode}
+            onChange={(e) => onChange({ auth_mode: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          >
+            {UDP2RAW_AUTH_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {mode}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ZapretForm({
+  state,
+  onChange,
+}: {
+  state: ZapretFormState
+  onChange: (partial: Partial<ZapretFormState>) => void
+}) {
+  const { t } = useLanguage()
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        {t.tunnels.zapretHint}
+      </p>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Desync Mode
+          </label>
+          <select
+            value={state.desync_mode}
+            onChange={(e) => onChange({ desync_mode: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          >
+            {ZAPRET_DESYNC_MODES.map((mode) => (
+              <option key={mode} value={mode}>{mode}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            nfqws strategy (--dpi-desync). Try <code>fake</code> first.
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Filter Ports (TCP)
+          </label>
+          <input
+            type="text"
+            value={state.filter_tcp}
+            onChange={(e) => onChange({ filter_tcp: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="443"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Port(s) to desync, e.g. <code>443</code> or <code>443,8443</code>
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            L7 Filter
+          </label>
+          <select
+            value={state.filter_l7}
+            onChange={(e) => onChange({ filter_l7: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          >
+            {ZAPRET_L7_FILTERS.map((f) => (
+              <option key={f} value={f}>{f}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Protocol layer (--filter-l7). Use <code>tls</code> for HTTPS/SNI.
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Direction
+          </label>
+          <select
+            value={state.direction}
+            onChange={(e) => onChange({ direction: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          >
+            {ZAPRET_DIRECTIONS.map((d) => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            <code>both</code> is recommended for outbound TLS servers.
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          Fake TLS SNI
+        </label>
+        <input
+          type="text"
+          value={state.fake_tls_sni}
+          onChange={(e) => onChange({ fake_tls_sni: e.target.value })}
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          placeholder="hcaptcha.com"
+        />
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          Decoy SNI sent in the fake ClientHello (--dpi-desync-fake-tls-mod=sni=). Use an allowed domain.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Fooling
+          </label>
+          <input
+            type="text"
+            value={state.desync_fooling}
+            onChange={(e) => onChange({ desync_fooling: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="badseq,ts"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            --dpi-desync-fooling (e.g. <code>badseq,ts</code>, <code>md5sig</code>, <code>badsum</code>)
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            NFQUEUE Number (Optional)
+          </label>
+          <input
+            type="number"
+            value={state.queue_num}
+            onChange={(e) => onChange({ queue_num: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="Auto"
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Leave empty to auto-pick a unique queue per tunnel.
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          Extra nfqws Args (Advanced)
+        </label>
+        <input
+          type="text"
+          value={state.extra_args}
+          onChange={(e) => onChange({ extra_args: e.target.value })}
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          placeholder="--dpi-desync-ttl=5 --dpi-desync-split-pos=2"
+        />
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          Optional raw flags appended to nfqws. Leave empty unless you know what you need.
+        </p>
       </div>
     </div>
   )

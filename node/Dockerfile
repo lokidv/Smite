@@ -93,6 +93,52 @@ RUN set -eux; \
     rm -rf "$TMP_DIR"; \
     /opt/backhaul/backhaul --version || true
 
+# Stage 3b: Install udp2raw (cached layer)
+FROM base AS udp2raw-bin
+ARG UDP2RAW_VERSION=20230206.0
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+        x86_64|amd64) UDP2RAW_ASSET="udp2raw_amd64" ;; \
+        aarch64|arm64) UDP2RAW_ASSET="udp2raw_arm" ;; \
+        *) UDP2RAW_ASSET="udp2raw_amd64" ;; \
+    esac; \
+    TMP_DIR="$(mktemp -d)"; \
+    curl -fsSL "https://github.com/wangyu-/udp2raw/releases/download/${UDP2RAW_VERSION}/udp2raw_binaries.tar.gz" -o "$TMP_DIR/udp2raw.tar.gz"; \
+    tar -xzf "$TMP_DIR/udp2raw.tar.gz" -C "$TMP_DIR"; \
+    BIN_PATH="$(find "$TMP_DIR" -type f -name "$UDP2RAW_ASSET" | head -n1)"; \
+    if [ -z "$BIN_PATH" ]; then \
+        echo "udp2raw binary $UDP2RAW_ASSET not found in archive"; \
+        ls -R "$TMP_DIR"; \
+        exit 1; \
+    fi; \
+    install -Dm755 "$BIN_PATH" /usr/local/bin/udp2raw; \
+    rm -rf "$TMP_DIR"; \
+    /usr/local/bin/udp2raw -h > /dev/null 2>&1 || true
+
+# Stage 3c: Install zapret / nfqws (cached layer)
+FROM base AS zapret-bin
+ARG ZAPRET_VERSION=v72.12
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+        x86_64|amd64) ZAPRET_ARCH="linux-x86_64" ;; \
+        aarch64|arm64) ZAPRET_ARCH="linux-arm64" ;; \
+        *) ZAPRET_ARCH="linux-x86_64" ;; \
+    esac; \
+    TMP_DIR="$(mktemp -d)"; \
+    curl -fsSL "https://github.com/bol-van/zapret/releases/download/${ZAPRET_VERSION}/zapret-${ZAPRET_VERSION}.tar.gz" -o "$TMP_DIR/zapret.tar.gz"; \
+    tar -xzf "$TMP_DIR/zapret.tar.gz" -C "$TMP_DIR"; \
+    BIN_PATH="$(find "$TMP_DIR" -type f -path "*/binaries/${ZAPRET_ARCH}/nfqws" | head -n1)"; \
+    if [ -z "$BIN_PATH" ]; then \
+        echo "nfqws binary for ${ZAPRET_ARCH} not found in archive"; \
+        find "$TMP_DIR" -type d -name binaries; \
+        exit 1; \
+    fi; \
+    install -Dm755 "$BIN_PATH" /usr/local/bin/nfqws; \
+    rm -rf "$TMP_DIR"; \
+    /usr/local/bin/nfqws --help > /dev/null 2>&1 || true
+
 # Stage 4: Python dependencies (cached layer)
 FROM base AS deps
 WORKDIR /app
@@ -116,6 +162,8 @@ COPY --from=rathole-bin /usr/local/bin/chisel /usr/local/bin/chisel
 COPY --from=rathole-bin /usr/local/bin/frpc /usr/local/bin/frpc
 COPY --from=rathole-bin /usr/local/bin/frps /usr/local/bin/frps
 COPY --from=backhaul-bin /opt/backhaul/backhaul /usr/local/bin/backhaul
+COPY --from=udp2raw-bin /usr/local/bin/udp2raw /usr/local/bin/udp2raw
+COPY --from=zapret-bin /usr/local/bin/nfqws /usr/local/bin/nfqws
 
 # Copy Python dependencies from deps stage
 COPY --from=deps /usr/local /usr/local

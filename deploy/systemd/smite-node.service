@@ -1,0 +1,24 @@
+[Unit]
+Description=Smite Node Agent (native, Docker-free)
+Documentation=https://github.com/zZedix/Smite
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/smite-node
+# Default first, then .env overrides it (systemd applies directives in order).
+Environment=NODE_API_PORT=8888
+EnvironmentFile=/etc/smite-node/.env
+ExecStart=/opt/smite-node/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${NODE_API_PORT} --log-level info --access-log
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+# Tunnel cores need raw sockets + iptables (udp2raw faketcp/icmp), tun device, and
+# privileged port binding. These replace Docker's cap_add / devices configuration.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+DeviceAllow=/dev/net/tun rw
+
+[Install]
+WantedBy=multi-user.target

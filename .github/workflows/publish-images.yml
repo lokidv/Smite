@@ -33,7 +33,7 @@ jobs:
       image_prefix: ${{ steps.image-prefix.outputs.prefix }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -116,7 +116,7 @@ jobs:
     if: needs.prepare.outputs.should_publish == 'true'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -169,7 +169,7 @@ jobs:
     if: needs.prepare.outputs.should_publish == 'true'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true

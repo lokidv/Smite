@@ -49,7 +49,7 @@ jobs:
           git --version; python3 -V; python3 -m pip --version; node -v; npm -v
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -65,7 +65,7 @@ jobs:
           ls -lh smite-offline-*.tar.gz
 
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bundle-${{ matrix.arch }}-${{ matrix.label }}
           path: smite-offline-${{ matrix.arch }}-${{ matrix.label }}.tar.gz
@@ -82,7 +82,7 @@ jobs:
       contents: write
     steps:
       - name: Download bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: bundle-*
           merge-multiple: true
@@ -91,7 +91,7 @@ jobs:
         run: ls -lh smite-offline-*.tar.gz || true
 
       - name: Create / update GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: smite-offline-*.tar.gz
           generate_release_notes: true

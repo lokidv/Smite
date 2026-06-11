@@ -139,6 +139,32 @@ RUN set -eux; \
     rm -rf "$TMP_DIR"; \
     /usr/local/bin/nfqws --help > /dev/null 2>&1 || true
 
+# Stage 3d: Install rstun / TrustTunnel (rstund + rstunc, cached layer)
+FROM base AS rstun-bin
+ARG RSTUN_VERSION=0.7.4
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+        x86_64|amd64) RSTUN_ASSET="rstun-linux-x86_64.tar.gz" ;; \
+        aarch64|arm64) RSTUN_ASSET="rstun-linux-aarch64.tar.gz" ;; \
+        *) RSTUN_ASSET="rstun-linux-x86_64.tar.gz" ;; \
+    esac; \
+    TMP_DIR="$(mktemp -d)"; \
+    curl -fsSL "https://github.com/neevek/rstun/releases/download/v${RSTUN_VERSION}/${RSTUN_ASSET}" -o "$TMP_DIR/rstun.tar.gz"; \
+    tar -xzf "$TMP_DIR/rstun.tar.gz" -C "$TMP_DIR"; \
+    RSTUND_BIN="$(find "$TMP_DIR" -type f -name 'rstund' | head -n1)"; \
+    RSTUNC_BIN="$(find "$TMP_DIR" -type f -name 'rstunc' | head -n1)"; \
+    if [ -z "$RSTUND_BIN" ] || [ -z "$RSTUNC_BIN" ]; then \
+        echo "rstund/rstunc not found in archive"; \
+        ls -R "$TMP_DIR"; \
+        exit 1; \
+    fi; \
+    install -Dm755 "$RSTUND_BIN" /usr/local/bin/rstund; \
+    install -Dm755 "$RSTUNC_BIN" /usr/local/bin/rstunc; \
+    rm -rf "$TMP_DIR"; \
+    /usr/local/bin/rstund --help > /dev/null 2>&1 || true; \
+    /usr/local/bin/rstunc --help > /dev/null 2>&1 || true
+
 # Stage 4: Python dependencies (cached layer)
 FROM base AS deps
 WORKDIR /app
@@ -164,6 +190,8 @@ COPY --from=rathole-bin /usr/local/bin/frps /usr/local/bin/frps
 COPY --from=backhaul-bin /opt/backhaul/backhaul /usr/local/bin/backhaul
 COPY --from=udp2raw-bin /usr/local/bin/udp2raw /usr/local/bin/udp2raw
 COPY --from=zapret-bin /usr/local/bin/nfqws /usr/local/bin/nfqws
+COPY --from=rstun-bin /usr/local/bin/rstund /usr/local/bin/rstund
+COPY --from=rstun-bin /usr/local/bin/rstunc /usr/local/bin/rstunc
 
 # Copy Python dependencies from deps stage
 COPY --from=deps /usr/local /usr/local

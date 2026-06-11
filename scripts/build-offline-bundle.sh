@@ -10,7 +10,7 @@
 #   - panel/ and node/ source
 #   - prebuilt frontend (frontend-dist/)
 #   - pip wheels (wheels/panel, wheels/node)
-#   - tunnel binaries (bin/): gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws (zapret)
+#   - tunnel binaries (bin/): gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws (zapret), rstund/rstunc (trusttunnel)
 #   - systemd units, CLIs, and the native installers
 #
 # Transfer the tarball to the offline server, extract it, then run:
@@ -43,6 +43,8 @@ BACKHAUL_SHA256_AMD64="57bf95c2eabeddb1152d2e94ac42f4310883ce0fb909ee2a57bd53503
 BACKHAUL_SHA256_ARM64="9a424c97ff16fc3f682e8314c418790d2b5bf3136e008edbb6cd402ea00999f6"
 UDP2RAW_VERSION="20230206.0"
 ZAPRET_VERSION="v72.12"
+# TrustTunnel ships the rstun (rstund/rstunc) QUIC binaries.
+RSTUN_VERSION="0.7.4"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -57,8 +59,8 @@ if [ -z "$ARCH" ]; then
 fi
 case "$ARCH" in
     # rathole publishes no gnu build for aarch64 -> use the static musl build there
-    amd64) RATHOLE_TARGET="x86_64-unknown-linux-gnu"; UDP2RAW_ASSET="udp2raw_amd64"; ZAPRET_ARCH="linux-x86_64" ;;
-    arm64) RATHOLE_TARGET="aarch64-unknown-linux-musl"; UDP2RAW_ASSET="udp2raw_arm"; ZAPRET_ARCH="linux-arm64" ;;
+    amd64) RATHOLE_TARGET="x86_64-unknown-linux-gnu"; UDP2RAW_ASSET="udp2raw_amd64"; ZAPRET_ARCH="linux-x86_64"; RSTUN_ASSET="rstun-linux-x86_64.tar.gz" ;;
+    arm64) RATHOLE_TARGET="aarch64-unknown-linux-musl"; UDP2RAW_ASSET="udp2raw_arm"; ZAPRET_ARCH="linux-arm64"; RSTUN_ASSET="rstun-linux-aarch64.tar.gz" ;;
     *) fail "Unsupported TARGET_ARCH: $ARCH (use amd64 or arm64)" ;;
 esac
 progress "Target architecture: $ARCH"
@@ -208,6 +210,18 @@ NFQWS_BIN="$(find "$DL/zapret" -type f -path "*/binaries/${ZAPRET_ARCH}/nfqws" |
 [ -n "$NFQWS_BIN" ] || fail "nfqws asset for ${ZAPRET_ARCH} not found in zapret release archive"
 install -m 0755 "$NFQWS_BIN" "$STAGE/bin/nfqws"
 progress "zapret/nfqws ${ZAPRET_VERSION}"
+
+# rstun / TrustTunnel (rstund server + rstunc client, QUIC reverse tunnel)
+dl "https://github.com/neevek/rstun/releases/download/v${RSTUN_VERSION}/${RSTUN_ASSET}" "$DL/rstun.tar.gz"
+mkdir -p "$DL/rstun"
+tar -xzf "$DL/rstun.tar.gz" -C "$DL/rstun"
+RSTUND_BIN="$(find "$DL/rstun" -type f -name rstund | head -n1)"
+RSTUNC_BIN="$(find "$DL/rstun" -type f -name rstunc | head -n1)"
+[ -n "$RSTUND_BIN" ] || fail "rstund not found in rstun release archive"
+[ -n "$RSTUNC_BIN" ] || fail "rstunc not found in rstun release archive"
+install -m 0755 "$RSTUND_BIN" "$STAGE/bin/rstund"
+install -m 0755 "$RSTUNC_BIN" "$STAGE/bin/rstunc"
+progress "rstun/TrustTunnel ${RSTUN_VERSION} (rstund, rstunc)"
 
 # --- 5. Make scripts executable ---
 chmod +x "$STAGE/scripts/"*.sh

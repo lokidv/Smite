@@ -19,6 +19,7 @@ from app.config import settings
 from app.database import init_db
 from app.routers import nodes, tunnels, panel, status, logs, auth, core_health
 from app.routers import settings as settings_router
+from app.routers import update as update_router
 from app.node_server import NodeServer
 from app.gost_forwarder import gost_forwarder
 from app.rathole_server import rathole_server_manager
@@ -302,7 +303,7 @@ async def _restore_node_tunnels():
             
             logger.info(f"Found {len(tunnels)} active tunnels to check for sync")
             
-            reverse_tunnels = [t for t in tunnels if t.core in ["rathole", "backhaul", "chisel", "frp", "udp2raw"]]
+            reverse_tunnels = [t for t in tunnels if t.core in ["rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"]]
             gost_tunnels = [t for t in tunnels if t.core == "gost" and t.node_id]
             
             if not reverse_tunnels and not gost_tunnels:
@@ -545,6 +546,48 @@ async def _restore_node_tunnels():
                         client_spec["key"] = key
                         client_spec["cipher_mode"] = cipher_mode
                         client_spec["auth_mode"] = auth_mode
+
+                    elif tunnel.core == "trusttunnel":
+                        # Iran node runs rstund (server), foreign node runs rstunc (client).
+                        transport = (tunnel.type or server_spec.get("transport") or "tcp").lower()
+                        if transport not in {"tcp", "udp", "both"}:
+                            transport = "tcp"
+                        password = server_spec.get("password") or server_spec.get("token")
+                        ports = server_spec.get("ports") or []
+                        if isinstance(ports, str):
+                            ports = [int(p) for p in ports.split(",") if p.strip().isdigit()]
+                        if not ports:
+                            single = server_spec.get("listen_port") or server_spec.get("public_port")
+                            if single and str(single).isdigit():
+                                ports = [int(single)]
+                        if not password or not ports:
+                            logger.warning(f"Tunnel {tunnel.id}: Missing password or ports, skipping")
+                            continue
+
+                        import hashlib
+                        port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+                        control_port = server_spec.get("control_port") or (6100 + (port_hash % 800))
+                        target_host = server_spec.get("target_host", "127.0.0.1")
+
+                        iran_node_ip = iran_node.node_metadata.get("ip_address")
+                        if not iran_node_ip:
+                            logger.warning(f"Tunnel {tunnel.id}: Iran node has no IP address, skipping")
+                            continue
+
+                        from app.utils import format_address_port
+                        server_spec["mode"] = "server"
+                        server_spec["transport"] = transport
+                        server_spec["password"] = password
+                        server_spec["control_port"] = control_port
+                        server_spec["target_host"] = target_host
+                        server_spec["ports"] = ports
+
+                        client_spec["mode"] = "client"
+                        client_spec["transport"] = transport
+                        client_spec["password"] = password
+                        client_spec["server_addr"] = format_address_port(iran_node_ip, int(control_port))
+                        client_spec["target_host"] = target_host
+                        client_spec["ports"] = ports
                     
                     if not iran_node.node_metadata.get("api_address"):
                         iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
@@ -807,6 +850,7 @@ app.include_router(status.router, prefix="/api/status", tags=["status"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(core_health.router, prefix="/api/core-health", tags=["core-health"])
 app.include_router(settings_router.router)
+app.include_router(update_router.router, prefix="/api/update", tags=["update"])
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 static_path = Path(static_dir)

@@ -6,6 +6,15 @@
 # bundle. Suitable for Iran servers with no Docker/GitHub/international internet.
 #
 # Run this from inside the extracted bundle: sudo bash scripts/install-node-native.sh
+#
+# Non-interactive mode (for self-update / automation):
+#   sudo bash scripts/install-node-native.sh --yes
+#   (or SMITE_NONINTERACTIVE=1)
+#   - if /etc/smite-node/.env already exists it is preserved as-is (reinstall/
+#     update path: no prompts, no CA paste needed)
+#   - on a fresh install, configuration is taken from environment variables:
+#     PANEL_ADDRESS (required), PANEL_API_PORT, NODE_API_PORT, NODE_NAME,
+#     NODE_ROLE (iran|foreign), and the CA from PANEL_CA or PANEL_CA_FILE.
 
 set -e
 
@@ -16,6 +25,13 @@ NC='\033[0m'
 
 progress() { echo -e "${GREEN}OK${NC} $1"; }
 warn() { echo -e "${YELLOW}!${NC} $1"; }
+
+NONINTERACTIVE="${SMITE_NONINTERACTIVE:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y|--non-interactive) NONINTERACTIVE=1 ;;
+    esac
+done
 
 echo "=== Smite Node Offline Native Installer (no Docker) ==="
 echo ""
@@ -66,71 +82,118 @@ fi
 progress "Prerequisites present"
 
 # --- Configuration ---
-echo ""
-echo "Configuration:"
-read -p "Panel address (host or host:port, e.g. panel.example.com): " PANEL_ADDRESS
-if [ -z "$PANEL_ADDRESS" ]; then
-    echo -e "${RED}Error: Panel address is required${NC}"
-    exit 1
-fi
-
-read -p "Panel API port (must match panel PANEL_PORT, default: 8000): " PANEL_API_PORT
-PANEL_API_PORT=${PANEL_API_PORT:-8000}
-
-read -p "Node API port (default: 8888): " NODE_API_PORT
-NODE_API_PORT=${NODE_API_PORT:-8888}
-
-read -p "Node name (default: node-1): " NODE_NAME
-NODE_NAME=${NODE_NAME:-node-1}
-
-echo ""
-echo "=== Server Role ==="
-echo "1) Iran Server (runs tunnel servers, accepts connections from foreign side)"
-echo "2) Foreign Server (runs tunnel clients, connects out to Iran side)"
-read -p "Enter choice [1 or 2] (default: 1): " ROLE_CHOICE
-ROLE_CHOICE=${ROLE_CHOICE:-1}
-if [ "$ROLE_CHOICE" = "2" ]; then
-    NODE_ROLE="foreign"
-    CA_SOURCE="Servers > View CA Certificate"
-    echo "Selected: Foreign Server"
-else
-    NODE_ROLE="iran"
-    CA_SOURCE="Nodes > View CA Certificate"
-    echo "Selected: Iran Server"
-fi
-
-echo ""
-echo "=== CA Certificate ==="
-echo "Paste the CA certificate from the panel (copy from $CA_SOURCE)."
-echo "Press Enter on an empty line to finish:"
-echo ""
-PANEL_CA_CONTENT=""
-has_content=false
-while IFS= read -r line; do
-    if [ -z "$line" ]; then
-        if [ "$has_content" = true ]; then break; fi
-        continue
+# An existing /etc/smite-node/.env means this is a reinstall/update: preserve
+# the configuration (and CA) instead of prompting again.
+KEEP_ENV=0
+if [ -f "$CONFIG_DIR/.env" ]; then
+    if [ "$NONINTERACTIVE" = "1" ]; then
+        KEEP_ENV=1
     else
-        has_content=true
-        PANEL_CA_CONTENT="${PANEL_CA_CONTENT}${line}\n"
+        echo "Existing configuration found at $CONFIG_DIR/.env"
+        read -p "Keep existing configuration? [Y/n]: " KEEP_CHOICE
+        KEEP_CHOICE=${KEEP_CHOICE:-Y}
+        case "$KEEP_CHOICE" in
+            [Nn]*) KEEP_ENV=0 ;;
+            *) KEEP_ENV=1 ;;
+        esac
     fi
-done
-
-if [ -z "$PANEL_CA_CONTENT" ]; then
-    echo -e "${RED}Error: CA certificate is required${NC}"
-    exit 1
 fi
 
-# --- Directories ---
-mkdir -p "$INSTALL_DIR" "$CONFIG_DIR/certs" "$DATA_DIR"
+if [ "$KEEP_ENV" = "1" ]; then
+    progress "Keeping existing configuration ($CONFIG_DIR/.env)"
+    NODE_API_PORT="$(grep -E '^NODE_API_PORT=' "$CONFIG_DIR/.env" | head -n1 | cut -d= -f2)"
+    NODE_API_PORT=${NODE_API_PORT:-8888}
+    mkdir -p "$INSTALL_DIR" "$CONFIG_DIR/certs" "$DATA_DIR"
+elif [ "$NONINTERACTIVE" = "1" ]; then
+    # Fresh non-interactive install: everything comes from the environment.
+    if [ -z "$PANEL_ADDRESS" ]; then
+        echo -e "${RED}Error: PANEL_ADDRESS environment variable is required in non-interactive mode${NC}"
+        exit 1
+    fi
+    PANEL_API_PORT=${PANEL_API_PORT:-8000}
+    NODE_API_PORT=${NODE_API_PORT:-8888}
+    NODE_NAME=${NODE_NAME:-node-1}
+    NODE_ROLE=${NODE_ROLE:-iran}
 
-# --- Save CA certificate ---
-echo -e "$PANEL_CA_CONTENT" > "$CONFIG_DIR/certs/ca.crt"
-if [ ! -s "$CONFIG_DIR/certs/ca.crt" ]; then
-    echo -e "${RED}Error: Failed to save CA certificate${NC}"
-    exit 1
+    mkdir -p "$INSTALL_DIR" "$CONFIG_DIR/certs" "$DATA_DIR"
+
+    if [ -n "$PANEL_CA_FILE" ] && [ -f "$PANEL_CA_FILE" ]; then
+        cp "$PANEL_CA_FILE" "$CONFIG_DIR/certs/ca.crt"
+    elif [ -n "$PANEL_CA" ]; then
+        printf '%s\n' "$PANEL_CA" > "$CONFIG_DIR/certs/ca.crt"
+    fi
+    if [ ! -s "$CONFIG_DIR/certs/ca.crt" ]; then
+        echo -e "${RED}Error: CA certificate is required (set PANEL_CA or PANEL_CA_FILE)${NC}"
+        exit 1
+    fi
+    progress "Non-interactive configuration: panel=$PANEL_ADDRESS role=$NODE_ROLE"
+else
+    echo ""
+    echo "Configuration:"
+    read -p "Panel address (host or host:port, e.g. panel.example.com): " PANEL_ADDRESS
+    if [ -z "$PANEL_ADDRESS" ]; then
+        echo -e "${RED}Error: Panel address is required${NC}"
+        exit 1
+    fi
+
+    read -p "Panel API port (must match panel PANEL_PORT, default: 8000): " PANEL_API_PORT
+    PANEL_API_PORT=${PANEL_API_PORT:-8000}
+
+    read -p "Node API port (default: 8888): " NODE_API_PORT
+    NODE_API_PORT=${NODE_API_PORT:-8888}
+
+    read -p "Node name (default: node-1): " NODE_NAME
+    NODE_NAME=${NODE_NAME:-node-1}
+
+    echo ""
+    echo "=== Server Role ==="
+    echo "1) Iran Server (runs tunnel servers, accepts connections from foreign side)"
+    echo "2) Foreign Server (runs tunnel clients, connects out to Iran side)"
+    read -p "Enter choice [1 or 2] (default: 1): " ROLE_CHOICE
+    ROLE_CHOICE=${ROLE_CHOICE:-1}
+    if [ "$ROLE_CHOICE" = "2" ]; then
+        NODE_ROLE="foreign"
+        CA_SOURCE="Servers > View CA Certificate"
+        echo "Selected: Foreign Server"
+    else
+        NODE_ROLE="iran"
+        CA_SOURCE="Nodes > View CA Certificate"
+        echo "Selected: Iran Server"
+    fi
+
+    echo ""
+    echo "=== CA Certificate ==="
+    echo "Paste the CA certificate from the panel (copy from $CA_SOURCE)."
+    echo "Press Enter on an empty line to finish:"
+    echo ""
+    PANEL_CA_CONTENT=""
+    has_content=false
+    while IFS= read -r line; do
+        if [ -z "$line" ]; then
+            if [ "$has_content" = true ]; then break; fi
+            continue
+        else
+            has_content=true
+            PANEL_CA_CONTENT="${PANEL_CA_CONTENT}${line}\n"
+        fi
+    done
+
+    if [ -z "$PANEL_CA_CONTENT" ]; then
+        echo -e "${RED}Error: CA certificate is required${NC}"
+        exit 1
+    fi
+
+    # --- Directories ---
+    mkdir -p "$INSTALL_DIR" "$CONFIG_DIR/certs" "$DATA_DIR"
+
+    # --- Save CA certificate ---
+    echo -e "$PANEL_CA_CONTENT" > "$CONFIG_DIR/certs/ca.crt"
+    if [ ! -s "$CONFIG_DIR/certs/ca.crt" ]; then
+        echo -e "${RED}Error: Failed to save CA certificate${NC}"
+        exit 1
+    fi
+    progress "CA certificate saved to $CONFIG_DIR/certs/ca.crt"
 fi
-progress "CA certificate saved to $CONFIG_DIR/certs/ca.crt"
 
 # --- Copy application source ---
 rm -rf "$INSTALL_DIR/app" "$INSTALL_DIR/main.py" "$INSTALL_DIR/requirements.txt"
@@ -139,6 +202,10 @@ cp "$BUNDLE_DIR/node/main.py" "$INSTALL_DIR/main.py"
 cp "$BUNDLE_DIR/node/requirements.txt" "$INSTALL_DIR/requirements.txt"
 rm -rf "$INSTALL_DIR/cli"
 cp -r "$BUNDLE_DIR/cli" "$INSTALL_DIR/cli"
+# Version marker so the node reports the installed bundle version
+if [ -f "$BUNDLE_DIR/VERSION" ]; then
+    cp "$BUNDLE_DIR/VERSION" "$INSTALL_DIR/VERSION"
+fi
 progress "Application files installed to $INSTALL_DIR"
 
 # --- Tunnel binaries ---
@@ -147,7 +214,7 @@ if [ -d "$BUNDLE_DIR/bin" ]; then
         [ -f "$b" ] || continue
         install -m 0755 "$b" "/usr/local/bin/$(basename "$b")"
     done
-    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws)"
+    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws, rstund, rstunc)"
 else
     echo -e "${RED}No bin/ directory in bundle; node cannot run tunnels without binaries.${NC}"
     exit 1
@@ -162,7 +229,8 @@ python3 -m venv "$INSTALL_DIR/.venv"
 progress "Python dependencies installed from offline wheels"
 
 # --- .env ---
-cat > "$CONFIG_DIR/.env" << EOF
+if [ "$KEEP_ENV" != "1" ]; then
+    cat > "$CONFIG_DIR/.env" << EOF
 NODE_API_PORT=$NODE_API_PORT
 NODE_NAME=$NODE_NAME
 NODE_ROLE=$NODE_ROLE
@@ -171,7 +239,21 @@ PANEL_CA_PATH=$CONFIG_DIR/certs/ca.crt
 PANEL_ADDRESS=$PANEL_ADDRESS
 PANEL_API_PORT=$PANEL_API_PORT
 EOF
-progress "Configuration written to $CONFIG_DIR/.env"
+    progress "Configuration written to $CONFIG_DIR/.env"
+fi
+
+# Refresh SMITE_VERSION in .env so the node reports the installed version
+if [ -f "$BUNDLE_DIR/VERSION" ]; then
+    BUNDLE_VERSION="$(cat "$BUNDLE_DIR/VERSION" | tr -d '[:space:]')"
+    if [ -n "$BUNDLE_VERSION" ] && [ "$BUNDLE_VERSION" != "offline" ]; then
+        if grep -q "^SMITE_VERSION=" "$CONFIG_DIR/.env"; then
+            sed -i "s|^SMITE_VERSION=.*|SMITE_VERSION=$BUNDLE_VERSION|" "$CONFIG_DIR/.env"
+        else
+            echo "SMITE_VERSION=$BUNDLE_VERSION" >> "$CONFIG_DIR/.env"
+        fi
+        progress "Version set to $BUNDLE_VERSION"
+    fi
+fi
 
 # --- Network optimizations ---
 echo ""

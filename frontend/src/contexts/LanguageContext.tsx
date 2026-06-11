@@ -77,10 +77,35 @@ interface Translations {
     confirmReapplyAll: string
     reapplyAllSuccess: string
     udp2rawHint: string
+    trusttunnelHint: string
     zapretHint: string
     zapretNode: string
     selectZapretNode: string
     zapretNodeHint: string
+    coreChangeHint: string
+    bulkSelectedCount: string
+    bulkApply: string
+    bulkChange: string
+    bulkDelete: string
+    bulkConfirmDelete: string
+    bulkResultsTitle: string
+    bulkNewCore: string
+    bulkNewType: string
+    bulkKeepType: string
+    bulkRun: string
+    bulkRunning: string
+    benchmarkButton: string
+    benchmarkTitle: string
+    benchmarkHint: string
+    benchmarkRun: string
+    benchmarkRunning: string
+    benchmarkLatency: string
+    benchmarkThroughput: string
+    benchmarkLoss: string
+    benchmarkFailed: string
+    benchmarkUseConfig: string
+    benchmarkCoreMode: string
+    benchmarkScore: string
   }
   coreHealth: {
     title: string
@@ -120,10 +145,36 @@ interface Translations {
     saving: string
     loadingSettings: string
     settingsSaved: string
-      failedToLoad: string
-      failedToSave: string
-      enterAdminId: string
-    }
+    failedToLoad: string
+    failedToSave: string
+    enterAdminId: string
+    tunnelAutoReapply: string
+    enableTunnelAutoReapply: string
+    tunnelAutoReapplyDescription: string
+    tunnelReapplyInterval: string
+    panelUpdate: string
+    panelUpdateDescription: string
+    currentVersion: string
+    loadReleases: string
+    loadingReleases: string
+    selectRelease: string
+    noReleases: string
+    startUpdate: string
+    updateConfirm: string
+    updateInProgress: string
+    updateDone: string
+    updateFailedTitle: string
+    updateRelayNode: string
+    updatePanelRow: string
+    updateRefresh: string
+    statusPending: string
+    statusUploading: string
+    statusApplying: string
+    statusWaiting: string
+    statusUpdated: string
+    statusFailed: string
+    statusSkipped: string
+  }
   common: {
     loading: string
   }
@@ -205,7 +256,32 @@ const translations: Record<Language, Translations> = {
       confirmReapplyAll: 'Are you sure you want to reapply all tunnels?',
       reapplyAllSuccess: 'Success',
       udp2rawHint: 'udp2raw wraps UDP traffic in raw FakeTCP / ICMP / UDP packets between the Iran node (entry) and the foreign server (exit).',
+      trusttunnelHint: 'TrustTunnel (rstun) is a QUIC-based reverse tunnel. The Iran node runs the server (public entry ports) and the foreign server dials in over QUIC/UDP and forwards traffic to its local service.',
       zapretHint: 'zapret runs nfqws on a single node to desync DPI (SNI spoofing) so TLS on :443 is not blocked. Run it on the server that opens the outbound TLS connection (e.g. an Xray VLESS host doing domain-fronting). It does NOT tunnel traffic between nodes.',
+      coreChangeHint: 'Core change: exposed ports ({ports}) are preserved. Internal settings (tokens, control ports) are regenerated for the new core.',
+      bulkSelectedCount: 'selected',
+      bulkApply: 'Apply selected',
+      bulkChange: 'Change core/type',
+      bulkDelete: 'Delete selected',
+      bulkConfirmDelete: 'Delete the selected tunnels?',
+      bulkResultsTitle: 'Bulk operation results',
+      bulkNewCore: 'New core',
+      bulkNewType: 'New type',
+      bulkKeepType: 'Keep current / default',
+      bulkRun: 'Apply change',
+      bulkRunning: 'Working...',
+      benchmarkButton: 'Test between nodes',
+      benchmarkTitle: 'Tunnel quality test between nodes',
+      benchmarkHint: 'Tests every tunnel core and mode between the selected Iran and foreign node, then ranks them by quality. This runs real tunnels sequentially on dedicated test ports and can take several minutes.',
+      benchmarkRun: 'Run test',
+      benchmarkRunning: 'Testing...',
+      benchmarkLatency: 'Latency',
+      benchmarkThroughput: 'Throughput',
+      benchmarkLoss: 'Loss',
+      benchmarkFailed: 'Failed',
+      benchmarkUseConfig: 'Use this config',
+      benchmarkCoreMode: 'Core / Mode',
+      benchmarkScore: 'Score',
       zapretNode: 'Node',
       selectZapretNode: 'Select a node',
       zapretNodeHint: 'The single server where nfqws + NFQUEUE rules will run (usually the foreign / proxy server).',
@@ -248,6 +324,28 @@ const translations: Record<Language, Translations> = {
       enableTunnelAutoReapply: 'Enable Automatic Tunnel Reapply',
       tunnelAutoReapplyDescription: 'Automatically reapply all tunnels at specified intervals',
       tunnelReapplyInterval: 'Reapply Interval',
+      panelUpdate: 'Panel Update',
+      panelUpdateDescription: 'Update the panel and all nodes from GitHub releases. A foreign node with internet access is used as the relay, so the panel itself does not need GitHub access.',
+      currentVersion: 'Current version',
+      loadReleases: 'Check for updates',
+      loadingReleases: 'Loading releases...',
+      selectRelease: 'Select release',
+      noReleases: 'No releases found',
+      startUpdate: 'Update panel & nodes',
+      updateConfirm: 'Update the panel and ALL nodes to {tag}? Services will restart during the update.',
+      updateInProgress: 'Update in progress...',
+      updateDone: 'Update finished',
+      updateFailedTitle: 'Update failed',
+      updateRelayNode: 'Relay node',
+      updatePanelRow: 'Panel (this server)',
+      updateRefresh: 'Refresh status',
+      statusPending: 'Pending',
+      statusUploading: 'Uploading bundle...',
+      statusApplying: 'Installing...',
+      statusWaiting: 'Restarting...',
+      statusUpdated: 'Updated',
+      statusFailed: 'Failed',
+      statusSkipped: 'Skipped',
       saveSettings: 'Save Settings',
       saving: 'Saving...',
       loadingSettings: 'Loading settings...',
@@ -335,7 +433,32 @@ const translations: Record<Language, Translations> = {
       confirmReapplyAll: 'آیا از اعمال مجدد همه تونل‌ها مطمئن هستید؟',
       reapplyAllSuccess: 'موفقیت',
       udp2rawHint: 'udp2raw ترافیک UDP را بین نود ایران (ورودی) و سرور خارجی (خروجی) در بسته‌های خام FakeTCP / ICMP / UDP کپسوله می‌کند.',
+      trusttunnelHint: 'TrustTunnel (rstun) یک تونل معکوس مبتنی بر QUIC است. نود ایران سرور را اجرا می‌کند (پورت‌های عمومی ورودی) و سرور خارجی از طریق QUIC/UDP به آن وصل شده و ترافیک را به سرویس محلی خود هدایت می‌کند.',
       zapretHint: 'zapret با اجرای nfqws روی یک نود، DPI را با دی‌سینک (جعل SNI) دور می‌زند تا TLS روی پورت ۴۴۳ بسته نشود. آن را روی همان سروری اجرا کنید که اتصال TLS خروجی را باز می‌کند (مثلاً سرور Xray/VLESS با دامین‌فرانتینگ). این روش بین دو نود تونل نمی‌سازد.',
+      coreChangeHint: 'تغییر هسته: پورت‌های عمومی ({ports}) حفظ می‌شوند. تنظیمات داخلی (توکن‌ها، پورت‌های کنترل) برای هسته جدید دوباره ساخته می‌شوند.',
+      bulkSelectedCount: 'انتخاب شده',
+      bulkApply: 'اعمال موارد انتخابی',
+      bulkChange: 'تغییر هسته/نوع',
+      bulkDelete: 'حذف موارد انتخابی',
+      bulkConfirmDelete: 'تونل‌های انتخاب‌شده حذف شوند؟',
+      bulkResultsTitle: 'نتایج عملیات گروهی',
+      bulkNewCore: 'هسته جدید',
+      bulkNewType: 'نوع جدید',
+      bulkKeepType: 'حفظ فعلی / پیش‌فرض',
+      bulkRun: 'اعمال تغییر',
+      bulkRunning: 'در حال انجام...',
+      benchmarkButton: 'تست بین نودها',
+      benchmarkTitle: 'تست کیفیت تونل بین نودها',
+      benchmarkHint: 'تمام هسته‌ها و حالت‌های تونل بین نود ایران و سرور خارجی انتخاب‌شده تست و بر اساس کیفیت رتبه‌بندی می‌شوند. تست‌ها به صورت متوالی روی پورت‌های آزمایشی اجرا می‌شوند و ممکن است چند دقیقه طول بکشد.',
+      benchmarkRun: 'شروع تست',
+      benchmarkRunning: 'در حال تست...',
+      benchmarkLatency: 'تاخیر',
+      benchmarkThroughput: 'پهنای باند',
+      benchmarkLoss: 'از دست رفتن بسته',
+      benchmarkFailed: 'ناموفق',
+      benchmarkUseConfig: 'استفاده از این تنظیمات',
+      benchmarkCoreMode: 'هسته / حالت',
+      benchmarkScore: 'امتیاز',
       zapretNode: 'نود',
       selectZapretNode: 'یک نود انتخاب کنید',
       zapretNodeHint: 'تنها سروری که nfqws و قوانین NFQUEUE روی آن اجرا می‌شود (معمولاً سرور خارجی/پروکسی).',
@@ -378,6 +501,28 @@ const translations: Record<Language, Translations> = {
       enableTunnelAutoReapply: 'فعال کردن اعمال مجدد خودکار تونل',
       tunnelAutoReapplyDescription: 'به صورت خودکار همه تونل‌ها را در فواصل زمانی مشخص اعمال مجدد کنید',
       tunnelReapplyInterval: 'فاصله اعمال مجدد',
+      panelUpdate: 'به‌روزرسانی پنل',
+      panelUpdateDescription: 'به‌روزرسانی پنل و همه نودها از ریلیزهای گیت‌هاب. یک نود خارجی با دسترسی اینترنت به عنوان رله استفاده می‌شود، بنابراین خود پنل نیازی به دسترسی گیت‌هاب ندارد.',
+      currentVersion: 'نسخه فعلی',
+      loadReleases: 'بررسی به‌روزرسانی‌ها',
+      loadingReleases: 'در حال دریافت ریلیزها...',
+      selectRelease: 'انتخاب ریلیز',
+      noReleases: 'ریلیزی یافت نشد',
+      startUpdate: 'به‌روزرسانی پنل و نودها',
+      updateConfirm: 'پنل و همه نودها به {tag} به‌روزرسانی شوند؟ سرویس‌ها در حین به‌روزرسانی ری‌استارت می‌شوند.',
+      updateInProgress: 'به‌روزرسانی در حال انجام است...',
+      updateDone: 'به‌روزرسانی تمام شد',
+      updateFailedTitle: 'به‌روزرسانی ناموفق بود',
+      updateRelayNode: 'نود رله',
+      updatePanelRow: 'پنل (این سرور)',
+      updateRefresh: 'تازه‌سازی وضعیت',
+      statusPending: 'در انتظار',
+      statusUploading: 'در حال ارسال بسته...',
+      statusApplying: 'در حال نصب...',
+      statusWaiting: 'در حال ری‌استارت...',
+      statusUpdated: 'به‌روزرسانی شد',
+      statusFailed: 'ناموفق',
+      statusSkipped: 'رد شد',
       saveSettings: 'ذخیره تنظیمات',
       saving: 'در حال ذخیره...',
       loadingSettings: 'در حال بارگذاری تنظیمات...',

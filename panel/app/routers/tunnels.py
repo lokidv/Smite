@@ -101,6 +101,8 @@ class TunnelCreate(BaseModel):
 class TunnelUpdate(BaseModel):
     name: str | None = None
     spec: dict | None = None
+    core: str | None = None
+    type: str | None = None
 
 
 class TunnelResponse(BaseModel):
@@ -146,6 +148,293 @@ def normalize_zapret_spec(spec: dict) -> dict:
     s.setdefault("max_pkt", 10)
     s.setdefault("direction", "both")
     return s
+
+
+# Cores that support in-place core/type change (dual-node reverse cores).
+# zapret (single-node DPI bypass) and gost (panel-side forwarder) are excluded
+# because their semantics/topology differ from the reverse cores.
+CHANGEABLE_CORES = {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
+
+# Valid tunnel types per changeable core (first entry = default).
+CORE_TYPE_OPTIONS = {
+    "rathole": ["tcp", "ws"],
+    "backhaul": ["tcp", "udp", "ws", "wsmux", "tcpmux"],
+    "chisel": ["chisel"],
+    "frp": ["tcp", "udp"],
+    "udp2raw": ["faketcp", "icmp", "udp"],
+    "trusttunnel": ["tcp", "udp", "both"],
+}
+
+
+def extract_exposed_ports(core: str, spec: dict) -> list:
+    """Normalize a tunnel's exposed (public iran-side) ports + forward targets.
+
+    Returns [{"port": int, "target_host": str, "target_port": int}, ...] so the
+    same external ports can be rebuilt on a different core. Handles the
+    per-core port shapes: int lists (rathole/chisel/trusttunnel),
+    "443=127.0.0.1:8443" strings (backhaul), {"local","remote"} dicts (frp)
+    and listen_port/target_port pairs (udp2raw).
+    """
+    spec = spec or {}
+    default_host = spec.get("target_host") or "127.0.0.1"
+    entries = []
+
+    def add(port, t_host=None, t_port=None):
+        try:
+            p = int(port)
+        except (TypeError, ValueError):
+            return
+        try:
+            tp = int(t_port) if t_port is not None else p
+        except (TypeError, ValueError):
+            tp = p
+        host = str(t_host).strip() if t_host else default_host
+        entries.append({"port": p, "target_host": host or default_host, "target_port": tp})
+
+    ports = spec.get("ports") or []
+    if isinstance(ports, str):
+        ports = [p.strip() for p in ports.split(",") if p.strip()]
+
+    if core == "udp2raw":
+        listen_port = spec.get("listen_port") or spec.get("public_port")
+        if not listen_port and ports:
+            first = ports[0]
+            listen_port = first.get("local") if isinstance(first, dict) else first
+        if listen_port:
+            add(listen_port, spec.get("target_host"), spec.get("target_port"))
+    elif ports:
+        for p in ports:
+            if isinstance(p, dict):
+                # frp form {"local": foreign-local, "remote": iran-public}
+                exposed = p.get("remote") or p.get("listen_port") or p.get("public_port") or p.get("local")
+                add(exposed, p.get("target_host"), p.get("local") or p.get("target_port"))
+            elif isinstance(p, str) and "=" in p:
+                # backhaul form "443=127.0.0.1:8443"
+                left, right = p.split("=", 1)
+                t_host, t_port = None, None
+                right = right.strip()
+                if ":" in right:
+                    t_host, t_port = right.rsplit(":", 1)
+                elif right.isdigit():
+                    t_port = right
+                add(left.strip(), t_host, t_port)
+            else:
+                add(p)
+    else:
+        single = (
+            spec.get("listen_port")
+            or spec.get("public_port")
+            or spec.get("remote_port")
+            or spec.get("local_port")
+        )
+        if single:
+            add(single, spec.get("target_host"), spec.get("target_port"))
+
+    seen = set()
+    unique = []
+    for e in entries:
+        if e["port"] not in seen:
+            seen.add(e["port"])
+            unique.append(e)
+    return unique
+
+
+def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: str) -> dict:
+    """Build a fresh base spec for new_core/new_type reusing the exposed ports.
+
+    Only the exposed ports and their forward targets are carried over; secrets
+    (token/key/password) and internal control ports are re-derived by the
+    create/apply spec builders (or generated here when the apply path requires
+    them to pre-exist, e.g. rathole token / chisel auth).
+    """
+    import hashlib
+    from app.utils import generate_token
+
+    port_hash = int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16)
+    primary = exposed[0]
+    ports_int = [e["port"] for e in exposed]
+    target_host = primary.get("target_host") or "127.0.0.1"
+
+    if new_core == "backhaul":
+        return {
+            "transport": new_type,
+            "type": new_type,
+            "control_port": 3080 + (port_hash % 1000),
+            "target_host": target_host,
+            "ports": [
+                f"{e['port']}={e.get('target_host') or '127.0.0.1'}:{e.get('target_port') or e['port']}"
+                for e in exposed
+            ],
+        }
+    if new_core == "frp":
+        return {
+            "type": new_type,
+            "ports": [
+                {"local": int(e.get("target_port") or e["port"]), "remote": e["port"]}
+                for e in exposed
+            ],
+        }
+    if new_core == "rathole":
+        return {
+            "transport": new_type,
+            "type": new_type,
+            "token": generate_token(),
+            "remote_addr": f"0.0.0.0:{23333 + (port_hash % 1000)}",
+            "remote_port": primary["port"],
+            "ports": ports_int,
+        }
+    if new_core == "chisel":
+        return {
+            "auth": generate_token(),
+            "listen_port": primary["port"],
+            "ports": ports_int,
+        }
+    if new_core == "udp2raw":
+        return {
+            "raw_mode": new_type,
+            "listen_port": primary["port"],
+            "target_host": target_host,
+            "target_port": int(primary.get("target_port") or primary["port"]),
+            "ports": [primary["port"]],
+        }
+    if new_core == "trusttunnel":
+        return {
+            "transport": new_type,
+            "target_host": target_host,
+            "ports": ports_int,
+        }
+    raise HTTPException(status_code=400, detail=f"Unsupported core for change: {new_core}")
+
+
+def stop_panel_managers_for_core(tunnel: Tunnel, request: Request):
+    """Defensively stop any panel-side legacy manager process for the tunnel's core."""
+    manager_attr = {
+        "gost": "gost_forwarder",
+        "rathole": "rathole_server_manager",
+        "backhaul": "backhaul_manager",
+        "chisel": "chisel_server_manager",
+        "frp": "frp_server_manager",
+    }.get(tunnel.core)
+    if not manager_attr:
+        return
+    manager = getattr(request.app.state, manager_attr, None)
+    if not manager:
+        return
+    try:
+        if tunnel.core == "gost":
+            manager.stop_forward(tunnel.id)
+        else:
+            manager.stop_server(tunnel.id)
+    except Exception as e:
+        logger.warning(f"Failed to stop {manager_attr} for tunnel {tunnel.id}: {e}")
+
+
+async def remove_tunnel_from_all_nodes(tunnel: Tunnel, db: AsyncSession):
+    """Send /api/agent/tunnels/remove to every node associated with the tunnel."""
+    client = NodeClient()
+    node_ids = {tunnel.node_id, tunnel.iran_node_id, tunnel.foreign_node_id}
+    for node_id in node_ids:
+        if not node_id:
+            continue
+        result = await db.execute(select(Node).where(Node.id == node_id))
+        node = result.scalar_one_or_none()
+        if not node:
+            continue
+        try:
+            await client.send_to_node(
+                node_id=node.id,
+                endpoint="/api/agent/tunnels/remove",
+                data={"tunnel_id": tunnel.id},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to remove tunnel {tunnel.id} from node {node.id}: {e}")
+
+
+async def change_tunnel_core_type(
+    tunnel: Tunnel,
+    new_core: str | None,
+    new_type: str | None,
+    request: Request,
+    db: AsyncSession,
+) -> Tunnel:
+    """Change a tunnel's core and/or type in place, preserving exposed ports.
+
+    Validation problems raise HTTPException(400); apply failures are recorded
+    on the tunnel row (status='error' + error_message) without raising so bulk
+    callers can report per-tunnel results.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    old_core = (tunnel.core or "").lower()
+    new_core = (new_core or old_core).lower()
+    if old_core not in CHANGEABLE_CORES:
+        raise HTTPException(status_code=400, detail=f"Tunnels with core '{old_core}' do not support in-place change")
+    if new_core not in CHANGEABLE_CORES:
+        raise HTTPException(status_code=400, detail=f"Core '{new_core}' does not support in-place change")
+
+    valid_types = CORE_TYPE_OPTIONS[new_core]
+    if new_type:
+        new_type = new_type.lower()
+        if new_type not in valid_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Type '{new_type}' is not valid for core '{new_core}' (valid: {', '.join(valid_types)})",
+            )
+    else:
+        current_type = (tunnel.type or "").lower()
+        new_type = current_type if current_type in valid_types else valid_types[0]
+
+    if new_core == old_core and new_type == (tunnel.type or "").lower():
+        return tunnel
+
+    if new_core == old_core:
+        # Type-only change: keep the existing spec (secrets, advanced options)
+        # and just retarget the transport/type fields.
+        new_spec = dict(tunnel.spec or {})
+        if new_core in ("backhaul", "rathole", "trusttunnel"):
+            new_spec["transport"] = new_type
+        if new_core in ("backhaul", "rathole", "frp"):
+            new_spec["type"] = new_type
+        if new_core == "udp2raw":
+            new_spec["raw_mode"] = new_type
+    else:
+        exposed = extract_exposed_ports(old_core, tunnel.spec)
+        if not exposed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot determine exposed ports of tunnel '{tunnel.name}' to preserve them across the core change",
+            )
+        new_spec = build_spec_for_core(new_core, new_type, exposed, tunnel.id)
+        # Tear down the old core everywhere before switching adapters.
+        stop_panel_managers_for_core(tunnel, request)
+        await remove_tunnel_from_all_nodes(tunnel, db)
+
+    logger.info(
+        f"Changing tunnel {tunnel.id} core/type: {old_core}/{tunnel.type} -> {new_core}/{new_type}, "
+        f"spec ports preserved: {new_spec.get('ports') or new_spec.get('listen_port')}"
+    )
+
+    tunnel.core = new_core
+    tunnel.type = new_type
+    tunnel.spec = new_spec
+    tunnel.revision += 1
+    tunnel.updated_at = datetime.utcnow()
+    flag_modified(tunnel, "spec")
+    await db.commit()
+    await db.refresh(tunnel)
+
+    try:
+        await apply_tunnel(tunnel.id, request, db)
+    except HTTPException as e:
+        logger.error(f"Failed to apply tunnel {tunnel.id} after core/type change: {e.detail}")
+    except Exception as e:
+        logger.error(f"Failed to apply tunnel {tunnel.id} after core/type change: {e}", exc_info=True)
+        tunnel.status = "error"
+        tunnel.error_message = f"Apply error after core/type change: {e}"
+        await db.commit()
+
+    await db.refresh(tunnel)
+    return tunnel
 
 
 async def resolve_single_node(db_tunnel: Tunnel, db: AsyncSession):
@@ -235,7 +524,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
         if ports:
             tunnel.spec["ports"] = ports
     
-    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw"}
+    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
     foreign_node = None
     iran_node = None
     
@@ -679,7 +968,71 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 client_spec["key"] = key
                 client_spec["cipher_mode"] = cipher_mode
                 client_spec["auth_mode"] = auth_mode
-            
+
+            elif db_tunnel.core == "trusttunnel":
+                # TrustTunnel (rstun, QUIC). Iran node runs rstund (server, public
+                # listener); foreign node runs rstunc (client, dials in and forwards
+                # to its local egress target). server_spec -> iran, client_spec -> foreign.
+                transport = (db_tunnel.type or server_spec.get("transport") or "tcp").lower()
+                if transport not in {"tcp", "udp", "both"}:
+                    transport = "tcp"
+
+                password = server_spec.get("password") or server_spec.get("token")
+                if not password:
+                    from app.utils import generate_token
+                    password = generate_token(24)
+
+                ports = parse_ports_from_spec(db_tunnel.spec)
+                if not ports:
+                    single = server_spec.get("listen_port") or server_spec.get("public_port") or server_spec.get("remote_port")
+                    if single and str(single).isdigit():
+                        ports = [int(single)]
+                if not ports:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "TrustTunnel requires ports (public ports on the iran node)"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+
+                import hashlib
+                port_hash = int(hashlib.md5(db_tunnel.id.encode()).hexdigest()[:8], 16)
+                control_port = server_spec.get("control_port") or (6100 + (port_hash % 800))
+                target_host = server_spec.get("target_host", "127.0.0.1")
+
+                iran_node_ip = iran_node.node_metadata.get("ip_address")
+                if not iran_node_ip:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "Iran node has no IP address"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+
+                # Persist derived values so reapply/restore reuse the same password/ports
+                db_tunnel.spec["password"] = password
+                db_tunnel.spec["transport"] = transport
+                db_tunnel.spec["control_port"] = control_port
+                db_tunnel.spec["target_host"] = target_host
+                db_tunnel.spec["ports"] = ports
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(db_tunnel, "spec")
+
+                from app.utils import format_address_port
+                # Iran node: rstund server
+                server_spec["mode"] = "server"
+                server_spec["transport"] = transport
+                server_spec["password"] = password
+                server_spec["control_port"] = control_port
+                server_spec["target_host"] = target_host
+                server_spec["ports"] = ports
+
+                # Foreign node: rstunc client
+                client_spec["mode"] = "client"
+                client_spec["transport"] = transport
+                client_spec["password"] = password
+                client_spec["server_addr"] = format_address_port(iran_node_ip, control_port)
+                client_spec["target_host"] = target_host
+                client_spec["ports"] = ports
+
             if not iran_node.node_metadata.get("api_address"):
                 iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
                 await db.commit()
@@ -1266,6 +1619,29 @@ async def update_tunnel(
     if not tunnel:
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
+    core_changed = tunnel_update.core is not None and tunnel_update.core.lower() != (tunnel.core or "").lower()
+    type_changed = tunnel_update.type is not None and tunnel_update.type.lower() != (tunnel.type or "").lower()
+    
+    if core_changed or type_changed:
+        if tunnel_update.name is not None:
+            tunnel.name = tunnel_update.name
+        if tunnel_update.spec is not None:
+            # Apply user spec edits first so the change helper extracts the
+            # latest exposed ports (core change rebuilds the spec from them).
+            tunnel.spec = tunnel_update.spec
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(tunnel, "spec")
+        await db.commit()
+        await db.refresh(tunnel)
+        tunnel = await change_tunnel_core_type(
+            tunnel,
+            tunnel_update.core or tunnel.core,
+            tunnel_update.type,
+            request,
+            db,
+        )
+        return tunnel
+    
     spec_changed = tunnel_update.spec is not None and tunnel_update.spec != tunnel.spec
     
     if tunnel_update.name is not None:
@@ -1297,13 +1673,13 @@ async def update_tunnel(
                 await db.refresh(tunnel)
                 return tunnel
 
-            if tunnel.core == "udp2raw":
-                # udp2raw runs on both the iran and foreign nodes; delegate to
-                # apply_tunnel which rebuilds and pushes the split specs.
+            if tunnel.core in ("udp2raw", "trusttunnel"):
+                # udp2raw and trusttunnel run on both the iran and foreign nodes;
+                # delegate to apply_tunnel which rebuilds and pushes the split specs.
                 try:
                     await apply_tunnel(tunnel.id, request, db)
                 except HTTPException as e:
-                    logger.error(f"Failed to re-apply udp2raw tunnel {tunnel.id}: {e.detail}")
+                    logger.error(f"Failed to re-apply {tunnel.core} tunnel {tunnel.id}: {e.detail}")
                 await db.refresh(tunnel)
                 return tunnel
             
@@ -1503,6 +1879,192 @@ async def update_tunnel(
     return tunnel
 
 
+class BulkApplyRequest(BaseModel):
+    tunnel_ids: List[str]
+
+
+class BulkChangeRequest(BaseModel):
+    tunnel_ids: List[str]
+    core: str | None = None
+    type: str | None = None
+
+
+class BenchmarkStartRequest(BaseModel):
+    iran_node_id: str
+    foreign_node_id: str
+    cores: List[str] | None = None
+
+
+@router.post("/benchmark")
+async def start_benchmark(payload: BenchmarkStartRequest, db: AsyncSession = Depends(get_db)):
+    """Start a tunnel quality benchmark between an iran and a foreign node."""
+    from app.benchmark_manager import benchmark_manager
+
+    if benchmark_manager.is_running():
+        raise HTTPException(status_code=409, detail="A benchmark is already running")
+
+    result = await db.execute(select(Node).where(Node.id == payload.iran_node_id))
+    iran_node = result.scalar_one_or_none()
+    if not iran_node:
+        raise HTTPException(status_code=404, detail="Iran node not found")
+    if iran_node.node_metadata.get("role") != "iran":
+        raise HTTPException(status_code=400, detail="Selected node is not an iran node")
+
+    result = await db.execute(select(Node).where(Node.id == payload.foreign_node_id))
+    foreign_node = result.scalar_one_or_none()
+    if not foreign_node:
+        raise HTTPException(status_code=404, detail="Foreign node not found")
+    if foreign_node.node_metadata.get("role") != "foreign":
+        raise HTTPException(status_code=400, detail="Selected node is not a foreign node")
+
+    iran_ip = iran_node.node_metadata.get("ip_address")
+    foreign_ip = foreign_node.node_metadata.get("ip_address")
+    if not iran_ip:
+        raise HTTPException(status_code=400, detail="Iran node has no IP address")
+    if not foreign_ip:
+        raise HTTPException(status_code=400, detail="Foreign node has no IP address")
+
+    for node in (iran_node, foreign_node):
+        if not node.node_metadata.get("api_address"):
+            node.node_metadata["api_address"] = (
+                f"http://{node.node_metadata.get('ip_address', node.fingerprint)}:{node.node_metadata.get('api_port', 8888)}"
+            )
+    await db.commit()
+
+    try:
+        benchmark_id = benchmark_manager.start(
+            iran_node_id=iran_node.id,
+            iran_node_name=iran_node.name,
+            iran_ip=iran_ip,
+            foreign_node_id=foreign_node.id,
+            foreign_node_name=foreign_node.name,
+            foreign_ip=foreign_ip,
+            cores=payload.cores,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"status": "started", "benchmark_id": benchmark_id}
+
+
+@router.get("/benchmark/status")
+async def benchmark_status():
+    """Get the state of the current (or last) benchmark run."""
+    from app.benchmark_manager import benchmark_manager
+    return benchmark_manager.get_state()
+
+
+# NOTE: bulk routes must be registered before POST /{tunnel_id}/apply so the
+# literal "/bulk/..." paths are not captured by the {tunnel_id} parameter.
+@router.post("/bulk/apply")
+async def bulk_apply_tunnels(payload: BulkApplyRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Re-apply a list of tunnels, returning per-tunnel results."""
+    results = []
+    for tid in payload.tunnel_ids:
+        result = await db.execute(select(Tunnel).where(Tunnel.id == tid))
+        tunnel = result.scalar_one_or_none()
+        if not tunnel:
+            results.append({"tunnel_id": tid, "name": None, "status": "error", "message": "Tunnel not found"})
+            continue
+        name = tunnel.name
+        try:
+            await apply_tunnel(tid, request, db)
+            results.append({"tunnel_id": tid, "name": name, "status": "success", "message": "Applied"})
+        except HTTPException as e:
+            results.append({"tunnel_id": tid, "name": name, "status": "error", "message": str(e.detail)})
+        except Exception as e:
+            logger.error(f"Bulk apply failed for tunnel {tid}: {e}", exc_info=True)
+            results.append({"tunnel_id": tid, "name": name, "status": "error", "message": str(e)})
+    succeeded = sum(1 for r in results if r["status"] == "success")
+    return {
+        "status": "completed",
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
+
+
+@router.post("/bulk/change")
+async def bulk_change_tunnels(payload: BulkChangeRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Change core and/or type of a list of tunnels in place.
+
+    Each tunnel keeps its exposed ports (and forward targets); per-tunnel
+    success/error results are returned.
+    """
+    if not payload.core and not payload.type:
+        raise HTTPException(status_code=400, detail="Provide 'core' and/or 'type' to change")
+    
+    results = []
+    for tid in payload.tunnel_ids:
+        result = await db.execute(select(Tunnel).where(Tunnel.id == tid))
+        tunnel = result.scalar_one_or_none()
+        if not tunnel:
+            results.append({"tunnel_id": tid, "name": None, "status": "error", "message": "Tunnel not found"})
+            continue
+        name = tunnel.name
+        try:
+            tunnel = await change_tunnel_core_type(tunnel, payload.core, payload.type, request, db)
+            if tunnel.status == "error":
+                results.append({
+                    "tunnel_id": tid,
+                    "name": name,
+                    "status": "error",
+                    "message": tunnel.error_message or "Apply failed",
+                })
+            else:
+                results.append({
+                    "tunnel_id": tid,
+                    "name": name,
+                    "status": "success",
+                    "message": f"Changed to {tunnel.core}/{tunnel.type}",
+                })
+        except HTTPException as e:
+            results.append({"tunnel_id": tid, "name": name, "status": "error", "message": str(e.detail)})
+        except Exception as e:
+            logger.error(f"Bulk change failed for tunnel {tid}: {e}", exc_info=True)
+            results.append({"tunnel_id": tid, "name": name, "status": "error", "message": str(e)})
+    succeeded = sum(1 for r in results if r["status"] == "success")
+    return {
+        "status": "completed",
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
+
+
+@router.post("/bulk/delete")
+async def bulk_delete_tunnels(payload: BulkApplyRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Delete a list of tunnels, returning per-tunnel results."""
+    results = []
+    for tid in payload.tunnel_ids:
+        result = await db.execute(select(Tunnel).where(Tunnel.id == tid))
+        tunnel = result.scalar_one_or_none()
+        if not tunnel:
+            results.append({"tunnel_id": tid, "name": None, "status": "error", "message": "Tunnel not found"})
+            continue
+        name = tunnel.name
+        try:
+            await delete_tunnel(tid, request, db)
+            results.append({"tunnel_id": tid, "name": name, "status": "success", "message": "Deleted"})
+        except HTTPException as e:
+            results.append({"tunnel_id": tid, "name": name, "status": "error", "message": str(e.detail)})
+        except Exception as e:
+            logger.error(f"Bulk delete failed for tunnel {tid}: {e}", exc_info=True)
+            results.append({"tunnel_id": tid, "name": name, "status": "error", "message": str(e)})
+    succeeded = sum(1 for r in results if r["status"] == "success")
+    return {
+        "status": "completed",
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
+
+
 @router.post("/{tunnel_id}/apply")
 async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Apply tunnel configuration to node(s) - handles both single-node and reverse tunnels"""
@@ -1519,7 +2081,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
             return {"status": "applied", "message": "Tunnel reapplied successfully"}
         raise HTTPException(status_code=500, detail=tunnel.error_message or "Failed to apply zapret tunnel")
 
-    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw"}
+    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
     foreign_node = None
     iran_node = None
     
@@ -1823,6 +2385,64 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                     client_spec["key"] = key
                     client_spec["cipher_mode"] = cipher_mode
                     client_spec["auth_mode"] = auth_mode
+
+                elif tunnel.core == "trusttunnel":
+                    # Iran node runs rstund (server, public listener); foreign node
+                    # runs rstunc (client). server_spec -> iran, client_spec -> foreign.
+                    transport = (tunnel.type or spec.get("transport") or "tcp").lower()
+                    if transport not in {"tcp", "udp", "both"}:
+                        transport = "tcp"
+
+                    password = spec.get("password") or spec.get("token")
+                    if not password:
+                        from app.utils import generate_token
+                        password = generate_token(24)
+                        spec["password"] = password
+                        tunnel.spec["password"] = password
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(tunnel, "spec")
+                        await db.commit()
+                        await db.refresh(tunnel)
+
+                    ports = parse_ports_from_spec(spec)
+                    if not ports:
+                        single = spec.get("listen_port") or spec.get("public_port") or spec.get("remote_port")
+                        if single and str(single).isdigit():
+                            ports = [int(single)]
+                    if not ports:
+                        tunnel.status = "error"
+                        tunnel.error_message = "TrustTunnel requires ports"
+                        await db.commit()
+                        raise HTTPException(status_code=400, detail="TrustTunnel requires ports")
+
+                    import hashlib
+                    port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+                    control_port = spec.get("control_port") or (6100 + (port_hash % 800))
+                    target_host = spec.get("target_host", "127.0.0.1")
+
+                    iran_node_ip = iran_node.node_metadata.get("ip_address")
+                    if not iran_node_ip:
+                        tunnel.status = "error"
+                        tunnel.error_message = "Iran node has no IP address"
+                        await db.commit()
+                        raise HTTPException(status_code=400, detail="Iran node has no IP address")
+
+                    from app.utils import format_address_port
+                    server_spec = spec.copy()
+                    server_spec["mode"] = "server"
+                    server_spec["transport"] = transport
+                    server_spec["password"] = password
+                    server_spec["control_port"] = control_port
+                    server_spec["target_host"] = target_host
+                    server_spec["ports"] = ports
+
+                    client_spec = spec.copy()
+                    client_spec["mode"] = "client"
+                    client_spec["transport"] = transport
+                    client_spec["password"] = password
+                    client_spec["server_addr"] = format_address_port(iran_node_ip, int(control_port))
+                    client_spec["target_host"] = target_host
+                    client_spec["ports"] = ports
                 
                 if not iran_node.node_metadata.get("api_address"):
                     iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
@@ -1836,7 +2456,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         "tunnel_id": tunnel.id,
                         "core": tunnel.core,
                         "type": tunnel.type,
-                        "spec": server_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw"] else spec
+                        "spec": server_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel"] else spec
                     }
                 )
                 
@@ -1859,7 +2479,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         "tunnel_id": tunnel.id,
                         "core": tunnel.core,
                         "type": tunnel.type,
-                        "spec": client_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw"] else spec
+                        "spec": client_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel"] else spec
                     }
                 )
                 
@@ -2041,10 +2661,10 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
                 import logging
                 logging.error(f"Failed to stop FRP server: {e}")
     
-    if tunnel.core in ("udp2raw", "zapret"):
-        # udp2raw runs on both the iran and foreign nodes; zapret runs on one node
-        # but may have been registered under node_id/iran/foreign. Remove from each
-        # so the nfqws process and NFQUEUE iptables rules are always torn down.
+    if tunnel.core in ("udp2raw", "zapret", "trusttunnel"):
+        # udp2raw and trusttunnel run on both the iran and foreign nodes; zapret
+        # runs on one node but may have been registered under node_id/iran/foreign.
+        # Remove from each so every process (and any iptables rules) is torn down.
         client = NodeClient()
         node_ids = {tunnel.node_id, tunnel.iran_node_id, tunnel.foreign_node_id}
         for node_id in node_ids:

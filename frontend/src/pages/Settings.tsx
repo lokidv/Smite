@@ -29,6 +29,49 @@ interface SettingsData {
   tunnel?: TunnelSettings
 }
 
+interface ReleaseAsset {
+  name: string
+  size: number
+  url: string
+}
+
+interface Release {
+  tag: string
+  name: string
+  published_at?: string
+  prerelease?: boolean
+  assets: ReleaseAsset[]
+}
+
+interface UpdateNodeEntry {
+  node_id: string
+  name?: string
+  role?: string
+  status?: string
+  message?: string
+  from_version?: string
+  to_version?: string
+}
+
+interface UpdatePanelEntry {
+  status?: string
+  message?: string
+  from_version?: string
+  to_version?: string
+}
+
+interface UpdateState {
+  status: string
+  tag?: string
+  message?: string
+  current_version?: string
+  panel?: UpdatePanelEntry
+  nodes?: UpdateNodeEntry[]
+  relay_node?: { id: string; name: string }
+  started_at?: string
+  finished_at?: string
+}
+
 const Settings = () => {
   const { t } = useLanguage()
   const [settings, setSettings] = useState<SettingsData>({
@@ -40,9 +83,91 @@ const Settings = () => {
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
 
+  // Panel update state
+  const [releases, setReleases] = useState<Release[]>([])
+  const [releasesLoading, setReleasesLoading] = useState(false)
+  const [releasesError, setReleasesError] = useState('')
+  const [selectedTag, setSelectedTag] = useState('')
+  const [relayName, setRelayName] = useState('')
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null)
+  const [updateBusy, setUpdateBusy] = useState(false)
+
   useEffect(() => {
     loadSettings()
+    loadUpdateStatus()
   }, [])
+
+  const loadUpdateStatus = async () => {
+    try {
+      const response = await api.get('/update/status')
+      setUpdateState(response.data)
+    } catch {
+      // panel may be restarting during its own update; ignore
+    }
+  }
+
+  // Poll update status while a run is active (survives the panel's own restart)
+  useEffect(() => {
+    if (updateState?.status !== 'running') return
+    const id = setInterval(loadUpdateStatus, 4000)
+    return () => clearInterval(id)
+  }, [updateState?.status])
+
+  const loadReleases = async () => {
+    setReleasesLoading(true)
+    setReleasesError('')
+    try {
+      const response = await api.get('/update/releases', { params: { limit: 10 } })
+      const list: Release[] = response.data.releases || []
+      setReleases(list)
+      setRelayName(response.data.relay_node?.name || '')
+      setUpdateState(prev => prev
+        ? { ...prev, current_version: response.data.current_version }
+        : { status: 'idle', current_version: response.data.current_version })
+      if (list.length > 0) setSelectedTag(list[0].tag)
+    } catch (error: any) {
+      setReleasesError(error?.response?.data?.detail || 'Failed to load releases')
+    } finally {
+      setReleasesLoading(false)
+    }
+  }
+
+  const startUpdate = async () => {
+    if (!selectedTag) return
+    if (!confirm(t.settings.updateConfirm.replace('{tag}', selectedTag))) return
+    setUpdateBusy(true)
+    try {
+      await api.post('/update/start', { tag: selectedTag })
+      await loadUpdateStatus()
+    } catch (error: any) {
+      setReleasesError(error?.response?.data?.detail || 'Failed to start update')
+    } finally {
+      setUpdateBusy(false)
+    }
+  }
+
+  const updateStatusLabel = (status?: string): string => {
+    switch (status) {
+      case 'pending': return t.settings.statusPending
+      case 'uploading': return t.settings.statusUploading
+      case 'applying': return t.settings.statusApplying
+      case 'waiting': return t.settings.statusWaiting
+      case 'updated': return t.settings.statusUpdated
+      case 'failed': return t.settings.statusFailed
+      case 'skipped': return t.settings.statusSkipped
+      default: return status || '-'
+    }
+  }
+
+  const updateStatusColor = (status?: string): string => {
+    switch (status) {
+      case 'updated': return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+      case 'failed': return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+      case 'skipped': return 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+      case 'pending': return 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+      default: return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+    }
+  }
 
   const loadSettings = async () => {
     try {
@@ -399,6 +524,136 @@ const Settings = () => {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Panel Update */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">{t.settings.panelUpdate}</h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+            {t.settings.panelUpdateDescription}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              {t.settings.currentVersion}: <span className="font-mono font-semibold">{updateState?.current_version || '-'}</span>
+            </span>
+            {relayName && (
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                ({t.settings.updateRelayNode}: {relayName})
+              </span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={loadReleases}
+              disabled={releasesLoading || updateState?.status === 'running'}
+              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {releasesLoading ? t.settings.loadingReleases : t.settings.loadReleases}
+            </button>
+
+            {releases.length > 0 && (
+              <>
+                <select
+                  value={selectedTag}
+                  onChange={(e) => setSelectedTag(e.target.value)}
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                >
+                  {releases.map(release => (
+                    <option key={release.tag} value={release.tag}>
+                      {release.tag}{release.prerelease ? ' (pre)' : ''} - {release.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={startUpdate}
+                  disabled={updateBusy || !selectedTag || updateState?.status === 'running'}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {updateState?.status === 'running' ? t.settings.updateInProgress : t.settings.startUpdate}
+                </button>
+              </>
+            )}
+
+            {!releasesLoading && releases.length === 0 && releasesError === '' && updateState?.status !== 'running' && (
+              <span className="text-xs text-gray-500 dark:text-gray-400">{t.settings.noReleases}</span>
+            )}
+          </div>
+
+          {releasesError && (
+            <div className="mt-3 p-3 rounded-lg bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 text-sm">
+              {releasesError}
+            </div>
+          )}
+
+          {/* Update run progress */}
+          {updateState?.tag && (
+            <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-sm font-medium text-gray-900 dark:text-white">
+                  {updateState.status === 'running' && t.settings.updateInProgress}
+                  {updateState.status === 'done' && t.settings.updateDone}
+                  {updateState.status === 'failed' && t.settings.updateFailedTitle}
+                  {!['running', 'done', 'failed'].includes(updateState.status) && updateState.status}
+                  <span className="ml-2 font-mono text-gray-500 dark:text-gray-400">{updateState.tag}</span>
+                </div>
+                <button
+                  onClick={loadUpdateStatus}
+                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  {t.settings.updateRefresh}
+                </button>
+              </div>
+
+              {updateState.message && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">{updateState.message}</p>
+              )}
+
+              <div className="space-y-2">
+                {/* Panel row */}
+                {updateState.panel && (
+                  <div className="flex flex-wrap items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-700/50">
+                    <span className="text-sm font-medium text-gray-900 dark:text-white flex-1 min-w-[140px]">
+                      {t.settings.updatePanelRow}
+                    </span>
+                    <span className="text-xs font-mono text-gray-500 dark:text-gray-400">
+                      {updateState.panel.from_version || '?'}
+                      {updateState.panel.to_version ? ` \u2192 ${updateState.panel.to_version}` : ''}
+                    </span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${updateStatusColor(updateState.panel.status)}`}>
+                      {updateStatusLabel(updateState.panel.status)}
+                    </span>
+                    {updateState.panel.message && (
+                      <span className="w-full text-xs text-red-600 dark:text-red-400">{updateState.panel.message}</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Node rows */}
+                {(updateState.nodes || []).map(node => (
+                  <div key={node.node_id} className="flex flex-wrap items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-700/50">
+                    <span className="text-sm font-medium text-gray-900 dark:text-white flex-1 min-w-[140px]">
+                      {node.name || node.node_id}
+                      {node.role && (
+                        <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">({node.role})</span>
+                      )}
+                    </span>
+                    <span className="text-xs font-mono text-gray-500 dark:text-gray-400">
+                      {node.from_version || '?'}
+                      {node.to_version ? ` \u2192 ${node.to_version}` : ''}
+                    </span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${updateStatusColor(node.status)}`}>
+                      {updateStatusLabel(node.status)}
+                    </span>
+                    {node.message && (
+                      <span className="w-full text-xs text-red-600 dark:text-red-400">{node.message}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Save Button */}

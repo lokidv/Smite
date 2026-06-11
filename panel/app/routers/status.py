@@ -37,12 +37,19 @@ async def get_version():
     except:
         pass
     
-    version_file = Path("/app/VERSION")
-    if version_file.exists():
+    # VERSION file: /app (Docker image) or the app root (native install,
+    # e.g. /opt/smite/panel/VERSION written by install-native.sh).
+    version_candidates = [
+        Path("/app/VERSION"),
+        Path(__file__).resolve().parents[2] / "VERSION",
+        Path("/opt/smite/VERSION"),
+    ]
+    for version_file in version_candidates:
         try:
-            version = version_file.read_text().strip()
-            if version and version not in ["next", "latest"]:
-                return {"version": version.lstrip("v")}
+            if version_file.exists():
+                version = version_file.read_text().strip()
+                if version and version not in ["next", "latest", "offline"]:
+                    return {"version": version.lstrip("v")}
         except:
             pass
     

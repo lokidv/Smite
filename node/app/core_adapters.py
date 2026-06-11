@@ -1425,6 +1425,221 @@ class Udp2rawAdapter:
         }
 
 
+class TrustTunnelAdapter:
+    """TrustTunnel (rstun) reverse tunnel adapter - QUIC-based TCP/UDP tunnel.
+
+    TrustTunnel wraps the rstun project, shipping two binaries:
+      - rstund: the QUIC tunnel *server* (listens, accepts client dial-ins)
+      - rstunc: the QUIC tunnel *client* (dials the server, registers mappings)
+
+    Dual-node layout (same orchestration as the other reverse cores):
+      - Iran node runs rstund (server). It receives the foreign node's QUIC
+        connection (foreign -> iran, the direction that survives the censored
+        path) and opens the public listen ports that users connect to.
+      - Foreign node runs rstunc (client). It dials the iran server and, using
+        rstun "IN" mappings, makes the iran server forward incoming traffic to a
+        local target service on the foreign node (the free-internet egress).
+
+    rstun "IN" mapping format: ``IN^<client_local_target>^<server_listen_addr>``
+    e.g. ``IN^127.0.0.1:8080^0.0.0.0:8080``.
+    """
+    name = "trusttunnel"
+
+    TRANSPORTS = {"tcp", "udp", "both"}
+
+    def __init__(self):
+        self.config_dir = Path(os.environ.get("SMITE_TRUSTTUNNEL_DIR", "/etc/smite-node/trusttunnel"))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.log_handles: Dict[str, Any] = {}
+
+    def _resolve_binary_path(self, binary_name: str, env_var: str) -> Path:
+        """Resolve an rstun binary (rstund/rstunc) path."""
+        env_path = os.environ.get(env_var)
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+
+        for path in (Path(f"/usr/local/bin/{binary_name}"), Path(f"/usr/bin/{binary_name}")):
+            if path.exists() and path.is_file():
+                return path
+
+        resolved = shutil.which(binary_name)
+        if resolved:
+            return Path(resolved)
+
+        raise FileNotFoundError(
+            f"{binary_name} binary not found. Expected at {env_var}, '/usr/local/bin/{binary_name}', or in PATH."
+        )
+
+    def _normalize_ports(self, spec: Dict[str, Any]) -> List[int]:
+        raw = spec.get("ports") or []
+        if isinstance(raw, str):
+            raw = [p.strip() for p in raw.split(",") if p.strip()]
+        ports: List[int] = []
+        if isinstance(raw, list):
+            for p in raw:
+                if isinstance(p, dict):
+                    val = p.get("local") or p.get("remote") or p.get("port")
+                else:
+                    val = p
+                try:
+                    ports.append(int(val))
+                except (TypeError, ValueError):
+                    continue
+        if not ports:
+            single = spec.get("listen_port") or spec.get("public_port") or spec.get("remote_port")
+            if single:
+                try:
+                    ports.append(int(single))
+                except (TypeError, ValueError):
+                    pass
+        return ports
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Apply TrustTunnel tunnel - supports both server (rstund) and client (rstunc) modes."""
+        if tunnel_id in self.processes:
+            logger.info(f"TrustTunnel tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+
+        mode = spec.get("mode", "client")
+        transport = (spec.get("transport") or spec.get("type") or "tcp").lower()
+        if transport not in self.TRANSPORTS:
+            transport = "tcp"
+
+        password = spec.get("password") or spec.get("token") or spec.get("key")
+        if not password:
+            raise ValueError("TrustTunnel requires 'password' in spec")
+
+        ports = self._normalize_ports(spec)
+
+        timeouts = [
+            "--quic-timeout-ms", str(spec.get("quic_timeout_ms", 5000)),
+            "--tcp-timeout-ms", str(spec.get("tcp_timeout_ms", 5000)),
+            "--udp-timeout-ms", str(spec.get("udp_timeout_ms", 5000)),
+        ]
+
+        if mode == "server":
+            binary_path = self._resolve_binary_path("rstund", "RSTUND_BINARY")
+            control_port = spec.get("control_port") or spec.get("listen_port")
+            if not control_port:
+                raise ValueError("TrustTunnel server requires 'control_port' in spec")
+            bind_ip = spec.get("bind_ip", "0.0.0.0")
+            target_host = spec.get("target_host", "127.0.0.1")
+            upstream_port = ports[0] if ports else control_port
+            cmd = [
+                str(binary_path),
+                "--addr", f"{bind_ip}:{control_port}",
+                "--password", str(password),
+            ]
+            # rstund wants an upstream default for OUT/ANY mappings; harmless for IN.
+            if transport in ("tcp", "both"):
+                cmd += ["--tcp-upstream", f"{target_host}:{upstream_port}"]
+            if transport in ("udp", "both"):
+                cmd += ["--udp-upstream", f"{target_host}:{upstream_port}"]
+            cmd += timeouts
+        else:
+            binary_path = self._resolve_binary_path("rstunc", "RSTUNC_BINARY")
+            server_addr = spec.get("server_addr")
+            if not server_addr:
+                server_host = spec.get("server_host") or spec.get("remote_host")
+                server_port = spec.get("control_port") or spec.get("server_port")
+                if server_host and server_port:
+                    server_addr = f"{server_host}:{server_port}"
+            if not server_addr:
+                raise ValueError("TrustTunnel client requires 'server_addr' in spec")
+            if not ports:
+                raise ValueError("TrustTunnel client requires 'ports' in spec")
+            target_host = spec.get("target_host", "127.0.0.1")
+            mappings = ",".join(f"IN^{target_host}:{p}^0.0.0.0:{p}" for p in ports)
+            cmd = [
+                str(binary_path),
+                "--server-addr", str(server_addr),
+                "--password", str(password),
+            ]
+            if transport in ("tcp", "both"):
+                cmd += ["--tcp-mappings", mappings]
+            if transport in ("udp", "both"):
+                cmd += ["--udp-mappings", mappings]
+            cmd += timeouts + ["--wait-before-retry-ms", str(spec.get("wait_before_retry_ms", 3000))]
+
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, "w", buffering=1)
+        try:
+            log_f.write(f"Starting rstun {mode} for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            log_f.write(f"transport={transport}, ports={ports}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir),
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("rstun binary not found. Please install rstund/rstunc.")
+        except Exception:
+            log_f.close()
+            raise
+
+        self.log_handles[tunnel_id] = log_f
+        self.processes[tunnel_id] = proc
+        time.sleep(1.0)
+        if proc.poll() is not None:
+            stderr = ""
+            if log_file.exists():
+                with open(log_file, "r") as f:
+                    stderr = f.read()
+            if tunnel_id in self.log_handles:
+                try:
+                    self.log_handles[tunnel_id].close()
+                except Exception:
+                    pass
+                del self.log_handles[tunnel_id]
+            del self.processes[tunnel_id]
+            raise RuntimeError(f"rstun failed to start: {stderr[-500:] if len(stderr) > 500 else stderr}")
+
+        logger.info(
+            f"TrustTunnel {mode} started for tunnel {tunnel_id}: transport={transport}, ports={ports}"
+        )
+
+    def remove(self, tunnel_id: str):
+        """Remove TrustTunnel tunnel"""
+        if tunnel_id in self.processes:
+            proc = self.processes[tunnel_id]
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+            del self.processes[tunnel_id]
+
+        if tunnel_id in self.log_handles:
+            try:
+                self.log_handles[tunnel_id].close()
+            except Exception:
+                pass
+            del self.log_handles[tunnel_id]
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status"""
+        is_running = False
+        if tunnel_id in self.processes:
+            proc = self.processes[tunnel_id]
+            is_running = proc.poll() is None
+        return {
+            "active": is_running,
+            "type": "trusttunnel",
+            "process_running": is_running,
+        }
+
+
 class ZapretAdapter:
     """zapret DPI-desync adapter (nfqws + NFQUEUE).
 
@@ -1711,6 +1926,7 @@ class AdapterManager:
             "frp": FrpAdapter(),
             "gost": GostAdapter(),
             "udp2raw": Udp2rawAdapter(),
+            "trusttunnel": TrustTunnelAdapter(),
             "zapret": ZapretAdapter(),
         }
         self.active_tunnels: Dict[str, CoreAdapter] = {}
@@ -1832,7 +2048,7 @@ class AdapterManager:
                 mode = spec.get('mode', 'N/A')
                 logger.info(f"Restoring tunnel {tunnel_id}: core={tunnel_core}, mode={mode}, spec_keys={list(spec.keys())}")
                 
-                if tunnel_core in ["rathole", "backhaul", "chisel", "frp", "udp2raw"] and mode == 'N/A':
+                if tunnel_core in ["rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"] and mode == 'N/A':
                     logger.warning(f"Tunnel {tunnel_id}: Reverse tunnel missing mode field, defaulting to client")
                     spec['mode'] = 'client'
                 

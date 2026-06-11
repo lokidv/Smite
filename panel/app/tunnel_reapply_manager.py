@@ -120,7 +120,7 @@ class TunnelReapplyManager:
             
             for tunnel in tunnels:
                 try:
-                    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw"}
+                    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
                     
                     if is_reverse_tunnel:
                         iran_node_id = tunnel.iran_node_id or tunnel.node_id
@@ -357,6 +357,46 @@ class TunnelReapplyManager:
                                 client_spec["key"] = key
                                 client_spec["cipher_mode"] = cipher_mode
                                 client_spec["auth_mode"] = auth_mode
+
+                            elif tunnel.core == "trusttunnel":
+                                # Iran node runs rstund (server), foreign runs rstunc (client).
+                                transport = (tunnel.type or server_spec.get("transport") or "tcp").lower()
+                                if transport not in {"tcp", "udp", "both"}:
+                                    transport = "tcp"
+                                password = server_spec.get("password") or server_spec.get("token")
+                                ports = server_spec.get("ports") or []
+                                if isinstance(ports, str):
+                                    ports = [int(p) for p in ports.split(",") if p.strip().isdigit()]
+                                if not ports:
+                                    single = server_spec.get("listen_port") or server_spec.get("public_port")
+                                    if single and str(single).isdigit():
+                                        ports = [int(single)]
+                                if not password or not ports:
+                                    continue
+
+                                import hashlib
+                                port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+                                control_port = server_spec.get("control_port") or (6100 + (port_hash % 800))
+                                target_host = server_spec.get("target_host", "127.0.0.1")
+
+                                iran_node_ip = iran_node.node_metadata.get("ip_address")
+                                if not iran_node_ip:
+                                    continue
+
+                                from app.utils import format_address_port
+                                server_spec["mode"] = "server"
+                                server_spec["transport"] = transport
+                                server_spec["password"] = password
+                                server_spec["control_port"] = control_port
+                                server_spec["target_host"] = target_host
+                                server_spec["ports"] = ports
+
+                                client_spec["mode"] = "client"
+                                client_spec["transport"] = transport
+                                client_spec["password"] = password
+                                client_spec["server_addr"] = format_address_port(iran_node_ip, int(control_port))
+                                client_spec["target_host"] = target_host
+                                client_spec["ports"] = ports
                             
                             server_response = await client.send_to_node(
                                 node_id=iran_node.id,

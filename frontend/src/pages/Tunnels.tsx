@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, Edit2, RotateCw } from 'lucide-react'
+import { Plus, Trash2, Edit2, RotateCw, Gauge } from 'lucide-react'
 import api from '../api/client'
 import { parseAddressPort, formatAddressPort } from '../utils/addressUtils'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -10,6 +10,8 @@ interface Tunnel {
   core: string
   type: string
   node_id: string
+  iran_node_id?: string | null
+  foreign_node_id?: string | null
   spec: Record<string, any>
   status: string
   error_message?: string | null
@@ -44,6 +46,7 @@ interface BackhaulAdvancedServerState {
   tls_cert: string
   tls_key: string
   sniffer: boolean
+  sniffer_log: string
   web_port: string
   proxy_protocol: boolean
 }
@@ -91,6 +94,7 @@ const createDefaultBackhaulAdvancedState = (): BackhaulAdvancedState => ({
     tls_cert: '',
     tls_key: '',
     sniffer: false,
+    sniffer_log: '',
     web_port: '',
     proxy_protocol: false,
   },
@@ -198,6 +202,131 @@ const parseUdp2rawSpec = (spec: Record<string, any> | undefined, currentType?: s
   state.cipher_mode = spec.cipher_mode || state.cipher_mode
   state.auth_mode = spec.auth_mode || state.auth_mode
   return state
+}
+
+// ---- TrustTunnel (rstun, QUIC) ----
+type TrustTunnelTransport = 'tcp' | 'udp' | 'both'
+
+const TRUSTTUNNEL_TRANSPORTS: TrustTunnelTransport[] = ['tcp', 'udp', 'both']
+
+interface TrustTunnelFormState {
+  transport: TrustTunnelTransport
+  ports: string
+  control_port: string
+  target_host: string
+  password: string
+}
+
+const createDefaultTrustTunnelState = (): TrustTunnelFormState => ({
+  transport: 'tcp',
+  ports: '8080',
+  control_port: '',
+  target_host: '127.0.0.1',
+  password: '',
+})
+
+const buildTrustTunnelSpec = (state: TrustTunnelFormState, transportOverride?: string): Record<string, any> => {
+  const transportCandidate = (transportOverride || state.transport || 'tcp') as TrustTunnelTransport
+  const transport = TRUSTTUNNEL_TRANSPORTS.includes(transportCandidate) ? transportCandidate : 'tcp'
+
+  const ports = state.ports
+    .split(',')
+    .map((p) => parseInt(p.trim(), 10))
+    .filter((p) => !Number.isNaN(p) && p > 0 && p <= 65535)
+
+  const spec: Record<string, any> = {
+    transport,
+    target_host: state.target_host.trim() || '127.0.0.1',
+    ports,
+  }
+
+  if (ports.length > 0) {
+    spec.listen_port = ports[0]
+  }
+
+  const controlPort = parseInt(state.control_port, 10)
+  if (!Number.isNaN(controlPort) && controlPort > 0) {
+    spec.control_port = controlPort
+  }
+
+  if (state.password.trim()) {
+    spec.password = state.password.trim()
+  }
+
+  return spec
+}
+
+const parseTrustTunnelSpec = (spec: Record<string, any> | undefined, currentType?: string): TrustTunnelFormState => {
+  const state = createDefaultTrustTunnelState()
+  const transportCandidate = ((spec?.transport || currentType || 'tcp') as string).toLowerCase() as TrustTunnelTransport
+  if (TRUSTTUNNEL_TRANSPORTS.includes(transportCandidate)) {
+    state.transport = transportCandidate
+  }
+  if (!spec) {
+    return state
+  }
+  if (Array.isArray(spec.ports) && spec.ports.length > 0) {
+    state.ports = spec.ports.map((p: any) => (typeof p === 'object' && p?.local ? p.local : p)).join(',')
+  } else if (spec.listen_port) {
+    state.ports = String(spec.listen_port)
+  }
+  if (spec.control_port) {
+    state.control_port = String(spec.control_port)
+  }
+  if (spec.target_host) {
+    state.target_host = String(spec.target_host)
+  }
+  state.password = spec.password ?? ''
+  return state
+}
+
+// ---- In-place core/type change (reverse cores only) ----
+const CHANGEABLE_CORES = ['rathole', 'backhaul', 'chisel', 'frp', 'udp2raw', 'trusttunnel']
+
+const CORE_LABELS: Record<string, string> = {
+  rathole: 'Rathole',
+  backhaul: 'Backhaul',
+  chisel: 'Chisel',
+  frp: 'FRP',
+  udp2raw: 'udp2raw',
+  trusttunnel: 'TrustTunnel (QUIC)',
+}
+
+const CORE_TYPE_OPTIONS: Record<string, { value: string; label: string }[]> = {
+  rathole: [
+    { value: 'tcp', label: 'TCP' },
+    { value: 'ws', label: 'WebSocket (WS)' },
+  ],
+  backhaul: [
+    { value: 'tcp', label: 'TCP' },
+    { value: 'udp', label: 'UDP' },
+    { value: 'ws', label: 'WebSocket (WS)' },
+    { value: 'wsmux', label: 'WebSocket Mux' },
+    { value: 'tcpmux', label: 'TCPMux' },
+  ],
+  chisel: [{ value: 'chisel', label: 'Chisel' }],
+  frp: [
+    { value: 'tcp', label: 'TCP' },
+    { value: 'udp', label: 'UDP' },
+  ],
+  udp2raw: [
+    { value: 'faketcp', label: 'FakeTCP' },
+    { value: 'icmp', label: 'ICMP' },
+    { value: 'udp', label: 'UDP' },
+  ],
+  trusttunnel: [
+    { value: 'tcp', label: 'TCP' },
+    { value: 'udp', label: 'UDP' },
+    { value: 'both', label: 'TCP + UDP' },
+  ],
+}
+
+const defaultTypeForCore = (core: string, currentType: string): string => {
+  const options = CORE_TYPE_OPTIONS[core] || []
+  if (options.some((o) => o.value === currentType)) {
+    return currentType
+  }
+  return options[0]?.value || currentType
 }
 
 // ---- zapret (DPI desync / SNI bypass) ----
@@ -348,6 +477,12 @@ const Tunnels = () => {
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingTunnel, setEditingTunnel] = useState<Tunnel | null>(null)
   const [reapplyingAll, setReapplyingAll] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [showBulkChange, setShowBulkChange] = useState(false)
+  const [bulkResults, setBulkResults] = useState<any | null>(null)
+  const [showBenchmark, setShowBenchmark] = useState(false)
+  const [addPrefill, setAddPrefill] = useState<{ core?: string; type?: string; iran_node_id?: string; foreign_node_id?: string } | null>(null)
 
   useEffect(() => {
     fetchData()
@@ -430,6 +565,71 @@ const Tunnels = () => {
     }
   }
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => (prev.size === tunnels.length ? new Set<string>() : new Set(tunnels.map((tn) => tn.id))))
+  }
+
+  const runBulkApply = async () => {
+    setBulkBusy(true)
+    try {
+      const response = await api.post('/tunnels/bulk/apply', { tunnel_ids: Array.from(selectedIds) })
+      setBulkResults(response.data)
+      fetchData()
+    } catch (error: any) {
+      console.error('Bulk apply failed:', error)
+      alert(error.response?.data?.detail || error.message || 'Bulk apply failed')
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  const runBulkDelete = async () => {
+    if (!confirm(t.tunnels.bulkConfirmDelete)) return
+    setBulkBusy(true)
+    try {
+      const response = await api.post('/tunnels/bulk/delete', { tunnel_ids: Array.from(selectedIds) })
+      setBulkResults(response.data)
+      setSelectedIds(new Set())
+      fetchData()
+    } catch (error: any) {
+      console.error('Bulk delete failed:', error)
+      alert(error.response?.data?.detail || error.message || 'Bulk delete failed')
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  const runBulkChange = async (core: string | null, type: string | null) => {
+    setBulkBusy(true)
+    try {
+      const response = await api.post('/tunnels/bulk/change', {
+        tunnel_ids: Array.from(selectedIds),
+        core: core || undefined,
+        type: type || undefined,
+      })
+      setShowBulkChange(false)
+      setBulkResults(response.data)
+      fetchData()
+    } catch (error: any) {
+      console.error('Bulk change failed:', error)
+      alert(error.response?.data?.detail || error.message || 'Bulk change failed')
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -450,6 +650,13 @@ const Tunnels = () => {
         </div>
         <div className="flex gap-3">
           <button
+            onClick={() => setShowBenchmark(true)}
+            className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 transition-all duration-200 font-medium shadow-sm hover:shadow-md flex items-center gap-2"
+          >
+            <Gauge size={20} />
+            {t.tunnels.benchmarkButton}
+          </button>
+          <button
             onClick={handleReapplyAll}
             disabled={reapplyingAll}
             className="px-5 py-2.5 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 transition-all duration-200 font-medium shadow-sm hover:shadow-md flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -466,6 +673,50 @@ const Tunnels = () => {
           </button>
         </div>
       </div>
+
+      {tunnels.length > 0 && (
+        <div className="flex items-center gap-4 mb-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 px-5 py-3">
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={selectedIds.size === tunnels.length && tunnels.length > 0}
+              onChange={toggleSelectAll}
+              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="font-medium">
+              {selectedIds.size} {t.tunnels.bulkSelectedCount}
+            </span>
+          </label>
+          {selectedIds.size > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={runBulkApply}
+                disabled={bulkBusy}
+                className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              >
+                <RotateCw size={14} className={bulkBusy ? 'animate-spin' : ''} />
+                {bulkBusy ? t.tunnels.bulkRunning : t.tunnels.bulkApply}
+              </button>
+              <button
+                onClick={() => setShowBulkChange(true)}
+                disabled={bulkBusy}
+                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              >
+                <Edit2 size={14} />
+                {t.tunnels.bulkChange}
+              </button>
+              <button
+                onClick={runBulkDelete}
+                disabled={bulkBusy}
+                className="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              >
+                <Trash2 size={14} />
+                {t.tunnels.bulkDelete}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-3">
         {tunnels.map((tunnel) => {
@@ -504,6 +755,7 @@ const Tunnels = () => {
               frp: { bg: 'bg-cyan-100 dark:bg-cyan-900/30', text: 'text-cyan-800 dark:text-cyan-200', border: 'border-cyan-300 dark:border-cyan-700' },
               gost: { bg: 'bg-indigo-100 dark:bg-indigo-900/30', text: 'text-indigo-800 dark:text-indigo-200', border: 'border-indigo-300 dark:border-indigo-700' },
               udp2raw: { bg: 'bg-rose-100 dark:bg-rose-900/30', text: 'text-rose-800 dark:text-rose-200', border: 'border-rose-300 dark:border-rose-700' },
+              trusttunnel: { bg: 'bg-sky-100 dark:bg-sky-900/30', text: 'text-sky-800 dark:text-sky-200', border: 'border-sky-300 dark:border-sky-700' },
               zapret: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
             }
             return coreColors[tunnel.core] || { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-800 dark:text-gray-200', border: 'border-gray-300 dark:border-gray-600' }
@@ -522,6 +774,12 @@ const Tunnels = () => {
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-start gap-4 flex-1 min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(tunnel.id)}
+                    onChange={() => toggleSelect(tunnel.id)}
+                    className="w-4 h-4 mt-1.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                  />
                   {/* Status Badge */}
                   <span
                     className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap shrink-0 ${
@@ -567,6 +825,7 @@ const Tunnels = () => {
                             TCPMUX: { bg: 'bg-violet-100 dark:bg-violet-900/30', text: 'text-violet-800 dark:text-violet-200', border: 'border-violet-300 dark:border-violet-700' },
                             FAKETCP: { bg: 'bg-rose-100 dark:bg-rose-900/30', text: 'text-rose-800 dark:text-rose-200', border: 'border-rose-300 dark:border-rose-700' },
                             ICMP: { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-800 dark:text-amber-200', border: 'border-amber-300 dark:border-amber-700' },
+                            BOTH: { bg: 'bg-sky-100 dark:bg-sky-900/30', text: 'text-sky-800 dark:text-sky-200', border: 'border-sky-300 dark:border-sky-700' },
                             FAKE: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
                             FAKEDSPLIT: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
                             MULTISPLIT: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
@@ -619,6 +878,8 @@ const Tunnels = () => {
                           corePort = tunnel.spec?.bind_port || '7000'
                         } else if (tunnel.core === 'udp2raw') {
                           corePort = tunnel.spec?.raw_port
+                        } else if (tunnel.core === 'trusttunnel') {
+                          corePort = tunnel.spec?.control_port
                         } else if (tunnel.core === 'zapret') {
                           corePort = tunnel.spec?.queue_num || null
                         }
@@ -686,9 +947,14 @@ const Tunnels = () => {
         <AddTunnelModal
           nodes={nodes}
           servers={servers}
-          onClose={() => setShowAddModal(false)}
+          initial={addPrefill || undefined}
+          onClose={() => {
+            setShowAddModal(false)
+            setAddPrefill(null)
+          }}
           onSuccess={() => {
             setShowAddModal(false)
+            setAddPrefill(null)
             fetchData()
           }}
         />
@@ -705,6 +971,400 @@ const Tunnels = () => {
           }}
         />
       )}
+
+      {showBulkChange && (
+        <BulkChangeModal
+          tunnels={tunnels.filter((tn) => selectedIds.has(tn.id))}
+          busy={bulkBusy}
+          onClose={() => setShowBulkChange(false)}
+          onSubmit={runBulkChange}
+        />
+      )}
+
+      {bulkResults && (
+        <BulkResultsModal results={bulkResults} onClose={() => setBulkResults(null)} />
+      )}
+
+      {showBenchmark && (
+        <BenchmarkModal
+          nodes={nodes}
+          servers={servers}
+          onClose={() => setShowBenchmark(false)}
+          onUseConfig={(core, type, iranNodeId, foreignNodeId) => {
+            setShowBenchmark(false)
+            setAddPrefill({ core, type, iran_node_id: iranNodeId, foreign_node_id: foreignNodeId })
+            setShowAddModal(true)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+interface BulkChangeModalProps {
+  tunnels: Tunnel[]
+  busy: boolean
+  onClose: () => void
+  onSubmit: (core: string | null, type: string | null) => void
+}
+
+const BulkChangeModal = ({ tunnels, busy, onClose, onSubmit }: BulkChangeModalProps) => {
+  const { t } = useLanguage()
+  const [core, setCore] = useState('')
+  const [type, setType] = useState('')
+
+  // Type options: the target core's types, or (when keeping each tunnel's
+  // core) the union of the selected tunnels' core types.
+  const typeOptions = core
+    ? CORE_TYPE_OPTIONS[core] || []
+    : Array.from(new Set(tunnels.map((tn) => tn.core)))
+        .flatMap((c) => CORE_TYPE_OPTIONS[c] || [])
+        .filter((opt, idx, arr) => arr.findIndex((o) => o.value === opt.value) === idx)
+
+  const handleCoreChange = (value: string) => {
+    setCore(value)
+    if (value && type && !(CORE_TYPE_OPTIONS[value] || []).some((o) => o.value === type)) {
+      setType('')
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
+        <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{t.tunnels.bulkChange}</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+          {tunnels.length} {t.tunnels.bulkSelectedCount}
+        </p>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {t.tunnels.bulkNewCore}
+            </label>
+            <select
+              value={core}
+              onChange={(e) => handleCoreChange(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            >
+              <option value="">{t.tunnels.bulkKeepType}</option>
+              {CHANGEABLE_CORES.map((c) => (
+                <option key={c} value={c}>{CORE_LABELS[c] || c}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {t.tunnels.bulkNewType}
+            </label>
+            <select
+              value={type}
+              onChange={(e) => setType(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            >
+              <option value="">{t.tunnels.bulkKeepType}</option>
+              {typeOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-xs text-blue-800 dark:text-blue-200">
+            {t.tunnels.coreChangeHint.replace('{ports}', '...')}
+          </div>
+          <div className="flex gap-3 justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600"
+            >
+              {t.tunnels.cancel}
+            </button>
+            <button
+              type="button"
+              disabled={busy || (!core && !type)}
+              onClick={() => onSubmit(core || null, type || null)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {busy ? t.tunnels.bulkRunning : t.tunnels.bulkRun}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface BulkResultsModalProps {
+  results: {
+    total: number
+    succeeded: number
+    failed: number
+    results: { tunnel_id: string; name: string | null; status: string; message: string }[]
+  }
+  onClose: () => void
+}
+
+const BulkResultsModal = ({ results, onClose }: BulkResultsModalProps) => {
+  const { t } = useLanguage()
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-lg max-h-[80vh] flex flex-col">
+        <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{t.tunnels.bulkResultsTitle}</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+          <span className="text-green-600 dark:text-green-400 font-semibold">{results.succeeded}</span>
+          {' / '}
+          <span className="font-semibold">{results.total}</span>
+          {results.failed > 0 && (
+            <span className="text-red-600 dark:text-red-400 font-semibold"> ({results.failed} {t.tunnels.benchmarkFailed.toLowerCase()})</span>
+          )}
+        </p>
+        <div className="overflow-y-auto space-y-2 flex-1">
+          {results.results.map((r, idx) => (
+            <div
+              key={`${r.tunnel_id}-${idx}`}
+              className={`p-3 rounded-lg border text-sm ${
+                r.status === 'success'
+                  ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                  : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+              }`}
+            >
+              <div className="font-medium text-gray-900 dark:text-white">{r.name || r.tunnel_id}</div>
+              <div className={r.status === 'success' ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}>
+                {r.message}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-end mt-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface BenchmarkModalProps {
+  nodes: any[]
+  servers: any[]
+  onClose: () => void
+  onUseConfig: (core: string, type: string, iranNodeId: string, foreignNodeId: string) => void
+}
+
+const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModalProps) => {
+  const { t } = useLanguage()
+  const [iranNodeId, setIranNodeId] = useState('')
+  const [foreignNodeId, setForeignNodeId] = useState('')
+  const [state, setState] = useState<any | null>(null)
+  const [starting, setStarting] = useState(false)
+
+  const fetchState = async () => {
+    try {
+      const res = await api.get('/tunnels/benchmark/status')
+      setState(res.data)
+    } catch (error) {
+      console.error('Failed to fetch benchmark status:', error)
+    }
+  }
+
+  useEffect(() => {
+    fetchState()
+    const interval = setInterval(fetchState, 3000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const startBenchmark = async () => {
+    if (!iranNodeId || !foreignNodeId) return
+    setStarting(true)
+    try {
+      await api.post('/tunnels/benchmark', {
+        iran_node_id: iranNodeId,
+        foreign_node_id: foreignNodeId,
+      })
+      await fetchState()
+    } catch (error: any) {
+      console.error('Failed to start benchmark:', error)
+      alert(error.response?.data?.detail || error.message || 'Failed to start benchmark')
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  const running = state?.status === 'running'
+  const results: any[] = Array.isArray(state?.results) ? state.results : []
+  const progressPercent = running && state?.total ? Math.round((state.completed / state.total) * 100) : 0
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100] p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-3xl max-h-[85vh] flex flex-col">
+        <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{t.tunnels.benchmarkTitle}</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">{t.tunnels.benchmarkHint}</p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {t.tunnels.iranNode}
+            </label>
+            <select
+              value={iranNodeId}
+              onChange={(e) => setIranNodeId(e.target.value)}
+              disabled={running}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            >
+              <option value="">{t.tunnels.selectIranNode}</option>
+              {nodes.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.name || node.id.substring(0, 8)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {t.tunnels.foreignServer}
+            </label>
+            <select
+              value={foreignNodeId}
+              onChange={(e) => setForeignNodeId(e.target.value)}
+              disabled={running}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            >
+              <option value="">{t.tunnels.selectForeignServer}</option>
+              {servers.map((server) => (
+                <option key={server.id} value={server.id}>
+                  {server.name || server.id.substring(0, 8)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={startBenchmark}
+              disabled={running || starting || !iranNodeId || !foreignNodeId}
+              className="w-full px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              <Gauge size={18} className={running || starting ? 'animate-pulse' : ''} />
+              {running || starting ? t.tunnels.benchmarkRunning : t.tunnels.benchmarkRun}
+            </button>
+          </div>
+        </div>
+
+        {running && (
+          <div className="mb-4">
+            <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
+              <span>
+                {state.current ? `${state.current.core} / ${state.current.mode}` : '...'}
+              </span>
+              <span>
+                {state.completed} / {state.total}
+              </span>
+            </div>
+            <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-500"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {state?.status === 'error' && state?.error && (
+          <div className="mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
+            {state.error}
+          </div>
+        )}
+
+        <div className="overflow-y-auto flex-1">
+          {results.length > 0 && (
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs uppercase text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                <tr>
+                  <th className="py-2 pr-2">#</th>
+                  <th className="py-2 pr-2">{t.tunnels.benchmarkCoreMode}</th>
+                  <th className="py-2 pr-2">{t.tunnels.benchmarkLatency}</th>
+                  <th className="py-2 pr-2">{t.tunnels.benchmarkThroughput}</th>
+                  <th className="py-2 pr-2">{t.tunnels.benchmarkLoss}</th>
+                  <th className="py-2 pr-2">{t.tunnels.benchmarkScore}</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((r, idx) => (
+                  <tr
+                    key={`${r.core}-${r.mode}`}
+                    className={`border-b border-gray-100 dark:border-gray-700/50 ${
+                      r.ok ? '' : 'opacity-60'
+                    }`}
+                  >
+                    <td className="py-2 pr-2 font-semibold text-gray-500 dark:text-gray-400">{idx + 1}</td>
+                    <td className="py-2 pr-2">
+                      <span className="font-semibold text-gray-900 dark:text-white">{CORE_LABELS[r.core] || r.core}</span>
+                      <span className="text-gray-500 dark:text-gray-400"> / {r.mode}</span>
+                      {!r.ok && r.error && (
+                        <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={r.error}>
+                          {r.error}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
+                      {r.ok && r.latency_ms != null ? `${r.latency_ms} ms` : '-'}
+                    </td>
+                    <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
+                      {r.ok && r.throughput_mbps != null ? `${r.throughput_mbps} Mbps` : '-'}
+                    </td>
+                    <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
+                      {r.ok && r.loss_percent != null ? `${r.loss_percent}%` : '-'}
+                    </td>
+                    <td className="py-2 pr-2">
+                      {r.ok ? (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200">
+                          {r.score}
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200">
+                          {t.tunnels.benchmarkFailed}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-2 text-right">
+                      {r.ok && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUseConfig(
+                              r.core,
+                              r.mode,
+                              state?.iran_node_id || iranNodeId,
+                              state?.foreign_node_id || foreignNodeId,
+                            )
+                          }
+                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                        >
+                          {t.tunnels.benchmarkUseConfig}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="flex justify-end mt-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            {t.tunnels.cancel}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -767,17 +1427,60 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
     frp_token: tunnel.spec?.token || '',
     frp_local_ip: tunnel.spec?.local_ip || '127.0.0.1',
     node_ipv6: tunnel.spec?.node_ipv6 || '',
+    rathole_local_port: (tunnel.spec?.local_port || '').toString(),
   })
   const parsedBackhaul = parseBackhaulSpec(tunnel.spec, tunnel.type)
   const [backhaulState, setBackhaulState] = useState<BackhaulFormState>(parsedBackhaul.state)
   const [backhaulAdvanced, setBackhaulAdvanced] = useState<BackhaulAdvancedState>(parsedBackhaul.advanced)
   const [showBackhaulAdvanced, setShowBackhaulAdvanced] = useState(false)
   const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(() => parseUdp2rawSpec(tunnel.spec, tunnel.type))
+  const [trustTunnelState, setTrustTunnelState] = useState<TrustTunnelFormState>(() => parseTrustTunnelSpec(tunnel.spec, tunnel.type))
   const [zapretState, setZapretState] = useState<ZapretFormState>(() => parseZapretSpec(tunnel.spec, tunnel.type))
+
+  // In-place core/type change (reverse cores only)
+  const coreChangeable = CHANGEABLE_CORES.includes(tunnel.core)
+  const [editCore, setEditCore] = useState(tunnel.core)
+  const [editType, setEditType] = useState(tunnel.type)
+  const coreChanged = coreChangeable && editCore !== tunnel.core
+  const typeChanged = coreChangeable && editType !== tunnel.type
+  const [saving, setSaving] = useState(false)
+
+  const handleCoreSelect = (newCore: string) => {
+    setEditCore(newCore)
+    setEditType(defaultTypeForCore(newCore, editType))
+  }
+
+  const handleTypeSelect = (newType: string) => {
+    setEditType(newType)
+    if (editCore === 'backhaul') {
+      setBackhaulState((prev) => ({ ...prev, transport: newType as BackhaulTransport }))
+    }
+    if (editCore === 'udp2raw') {
+      setUdp2rawState((prev) => ({ ...prev, raw_mode: newType as Udp2rawRawMode }))
+    }
+    if (editCore === 'trusttunnel') {
+      setTrustTunnelState((prev) => ({ ...prev, transport: newType as TrustTunnelTransport }))
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (saving) return
     try {
+      setSaving(true)
+      
+      if (coreChanged) {
+        // Core change: backend rebuilds the spec for the new core, preserving
+        // the currently exposed ports and their forward targets.
+        await api.put(`/tunnels/${tunnel.id}`, {
+          name: formData.name,
+          core: editCore,
+          type: editType,
+        })
+        onSuccess()
+        return
+      }
+      
       let updatedSpec = { ...tunnel.spec }
       
       const useV4ToV6 = updatedSpec.use_ipv6 || false
@@ -845,14 +1548,16 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
         updatedSpec.local_port = ports[0]  // Keep for backward compatibility
         updatedSpec.type = tunnel.type === 'udp' ? 'udp' : 'tcp'
       } else if (tunnel.core === 'backhaul') {
-        updatedSpec = buildBackhaulSpec(backhaulState, backhaulAdvanced, tunnel.type as BackhaulTransport)
+        updatedSpec = buildBackhaulSpec(backhaulState, backhaulAdvanced, editType as BackhaulTransport)
         // Override ports if provided
         if (ports.length > 0) {
           const targetHost = updatedSpec.target_host || '127.0.0.1'
           updatedSpec.ports = ports.map(p => `${p}=${targetHost}:${p}`)
         }
       } else if (tunnel.core === 'udp2raw') {
-        updatedSpec = { ...tunnel.spec, ...buildUdp2rawSpec(udp2rawState, tunnel.type) }
+        updatedSpec = { ...tunnel.spec, ...buildUdp2rawSpec(udp2rawState, editType) }
+      } else if (tunnel.core === 'trusttunnel') {
+        updatedSpec = { ...tunnel.spec, ...buildTrustTunnelSpec(trustTunnelState, editType) }
       } else if (tunnel.core === 'zapret') {
         updatedSpec = { ...tunnel.spec, ...buildZapretSpec(zapretState, tunnel.type) }
       }
@@ -860,11 +1565,14 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
       await api.put(`/tunnels/${tunnel.id}`, {
         name: formData.name,
         spec: updatedSpec,
+        ...(typeChanged ? { type: editType } : {}),
       })
       onSuccess()
     } catch (error) {
       console.error('Failed to update tunnel:', error)
       alert('Failed to update tunnel')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -885,6 +1593,44 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
               required
             />
           </div>
+          {coreChangeable && (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {t.tunnels.core}
+                </label>
+                <select
+                  value={editCore}
+                  onChange={(e) => handleCoreSelect(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                >
+                  {CHANGEABLE_CORES.map((core) => (
+                    <option key={core} value={core}>{CORE_LABELS[core] || core}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {t.tunnels.type}
+                </label>
+                <select
+                  value={editType}
+                  onChange={(e) => handleTypeSelect(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                  disabled={editCore === 'chisel'}
+                >
+                  {(CORE_TYPE_OPTIONS[editCore] || []).map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+          {coreChanged && (
+            <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-sm text-blue-800 dark:text-blue-200">
+              {t.tunnels.coreChangeHint.replace('{ports}', formData.ports || '-')}
+            </div>
+          )}
           {tunnel.core === 'gost' && (tunnel.type === 'tcp' || tunnel.type === 'udp' || tunnel.type === 'grpc' || tunnel.type === 'tcpmux') && (
             <>
               <div>
@@ -924,7 +1670,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             </>
           )}
           
-          {tunnel.core === 'backhaul' && (
+          {!coreChanged && tunnel.core === 'backhaul' && (
             <BackhaulForm
               state={backhaulState}
               onChange={(partial) => {
@@ -937,11 +1683,20 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             />
           )}
           
-          {tunnel.core === 'udp2raw' && (
+          {!coreChanged && tunnel.core === 'udp2raw' && (
             <Udp2rawForm
               state={udp2rawState}
               onChange={(partial) => {
                 setUdp2rawState((prev) => ({ ...prev, ...partial }))
+              }}
+            />
+          )}
+
+          {!coreChanged && tunnel.core === 'trusttunnel' && (
+            <TrustTunnelForm
+              state={trustTunnelState}
+              onChange={(partial) => {
+                setTrustTunnelState((prev) => ({ ...prev, ...partial }))
               }}
             />
           )}
@@ -955,7 +1710,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             />
           )}
           
-          {tunnel.core === 'rathole' && (
+          {!coreChanged && tunnel.core === 'rathole' && (
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Ports
@@ -975,7 +1730,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             </div>
           )}
           
-          {tunnel.core === 'rathole' && (
+          {!coreChanged && tunnel.core === 'rathole' && (
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -1015,7 +1770,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             </>
           )}
           
-          {tunnel.core === 'chisel' && (
+          {!coreChanged && tunnel.core === 'chisel' && (
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -1077,7 +1832,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             </>
           )}
           
-          {tunnel.core === 'frp' && (
+          {!coreChanged && tunnel.core === 'frp' && (
             <>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -1138,7 +1893,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
           )}
           
           {/* Node IPv6 address field for Rathole when v4 to v6 is enabled */}
-          {tunnel.core === 'rathole' && tunnel.spec?.use_ipv6 && (
+          {!coreChanged && tunnel.core === 'rathole' && tunnel.spec?.use_ipv6 && (
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Node IPv6 Address (Optional)
@@ -1168,9 +1923,10 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              disabled={saving}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Save Changes
+              {saving ? '...' : 'Save Changes'}
             </button>
           </div>
         </form>
@@ -1190,17 +1946,23 @@ interface AddTunnelModalProps {
   servers: any[]
   onClose: () => void
   onSuccess: () => void
+  initial?: {
+    core?: string
+    type?: string
+    iran_node_id?: string
+    foreign_node_id?: string
+  }
 }
 
-const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalProps) => {
+const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunnelModalProps) => {
   const { t } = useLanguage()
   const [formData, setFormData] = useState({
     name: '',
-    core: 'gost',
-    type: 'tcp',
-    node_id: '',
-    foreign_node_id: '',
-    iran_node_id: '',
+    core: initial?.core || 'gost',
+    type: initial?.type || 'tcp',
+    node_id: initial?.iran_node_id || '',
+    foreign_node_id: initial?.foreign_node_id || '',
+    iran_node_id: initial?.iran_node_id || '',
     ports: '8080',  // Comma-separated ports (e.g., "8080,8081,8082")
     remote_ip: '127.0.0.1',
     rathole_remote_addr: '23333',
@@ -1213,10 +1975,29 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
     node_ipv6: '',  // Optional IPv6 address for node (Rathole/Chisel)
     spec: {} as Record<string, any>,
   })
-  const [backhaulState, setBackhaulState] = useState<BackhaulFormState>(createDefaultBackhaulState())
+  const [backhaulState, setBackhaulState] = useState<BackhaulFormState>(() => {
+    const state = createDefaultBackhaulState()
+    if (initial?.core === 'backhaul' && initial.type) {
+      state.transport = initial.type as BackhaulTransport
+    }
+    return state
+  })
   const [backhaulAdvanced, setBackhaulAdvanced] = useState<BackhaulAdvancedState>(createDefaultBackhaulAdvancedState())
   const [showBackhaulAdvanced, setShowBackhaulAdvanced] = useState(false)
-  const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(createDefaultUdp2rawState())
+  const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(() => {
+    const state = createDefaultUdp2rawState()
+    if (initial?.core === 'udp2raw' && initial.type && UDP2RAW_RAW_MODES.includes(initial.type as Udp2rawRawMode)) {
+      state.raw_mode = initial.type as Udp2rawRawMode
+    }
+    return state
+  })
+  const [trustTunnelState, setTrustTunnelState] = useState<TrustTunnelFormState>(() => {
+    const state = createDefaultTrustTunnelState()
+    if (initial?.core === 'trusttunnel' && initial.type && TRUSTTUNNEL_TRANSPORTS.includes(initial.type as TrustTunnelTransport)) {
+      state.transport = initial.type as TrustTunnelTransport
+    }
+    return state
+  })
   const [zapretState, setZapretState] = useState<ZapretFormState>(createDefaultZapretState())
 
   // Auto-populate remote_ip with foreign server IP when GOST is selected
@@ -1381,6 +2162,20 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
         tunnelType = udp2rawState.raw_mode
       }
 
+      if (formData.core === 'trusttunnel') {
+        if (!formData.node_id && !formData.iran_node_id) {
+          alert('TrustTunnel tunnels require an iran node')
+          return
+        }
+        spec = buildTrustTunnelSpec(trustTunnelState)
+        if (!Array.isArray(spec.ports) || spec.ports.length === 0) {
+          alert('Please enter at least one valid port for TrustTunnel')
+          return
+        }
+        spec.use_ipv6 = formData.use_ipv6 || false
+        tunnelType = trustTunnelState.transport
+      }
+
       if (formData.core === 'zapret') {
         if (!formData.node_id && !formData.iran_node_id) {
           alert('zapret requires a node (the server running the proxy / outbound TLS)')
@@ -1435,9 +2230,11 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
       newType = backhaulState.transport
     } else if (core === 'udp2raw') {
       newType = udp2rawState.raw_mode
+    } else if (core === 'trusttunnel') {
+      newType = trustTunnelState.transport
     } else if (core === 'zapret') {
       newType = zapretState.desync_mode
-    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul' || formData.core === 'udp2raw' || formData.core === 'zapret') {
+    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'zapret') {
       newType = 'tcp'
     }
     setFormData({ ...formData, core, type: newType })
@@ -1478,7 +2275,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                 value={formData.iran_node_id || formData.node_id}
                 onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw'}
+                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'trusttunnel'}
               >
                 <option value="">{t.tunnels.selectIranNode}</option>
                 {nodes.map((node) => (
@@ -1496,7 +2293,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                 value={formData.foreign_node_id}
                 onChange={(e) => setFormData({ ...formData, foreign_node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw'}
+                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'trusttunnel'}
               >
                 <option value="">{t.tunnels.selectForeignServer}</option>
                 {servers.map((server) => (
@@ -1549,6 +2346,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                 <option value="chisel">Chisel</option>
                 <option value="frp">FRP</option>
                 <option value="udp2raw">udp2raw</option>
+                <option value="trusttunnel">TrustTunnel (QUIC)</option>
                 <option value="zapret">Zapret (DPI bypass)</option>
               </select>
             </div>
@@ -1566,6 +2364,9 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                   }
                   if (formData.core === 'udp2raw') {
                     setUdp2rawState((prev) => ({ ...prev, raw_mode: e.target.value as Udp2rawRawMode }))
+                  }
+                  if (formData.core === 'trusttunnel') {
+                    setTrustTunnelState((prev) => ({ ...prev, transport: e.target.value as TrustTunnelTransport }))
                   }
                   if (formData.core === 'zapret') {
                     setZapretState((prev) => ({ ...prev, desync_mode: e.target.value }))
@@ -1599,6 +2400,12 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                     <option value="faketcp">FakeTCP</option>
                     <option value="icmp">ICMP</option>
                     <option value="udp">UDP</option>
+                  </>
+                ) : formData.core === 'trusttunnel' ? (
+                  <>
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                    <option value="both">TCP + UDP</option>
                   </>
                 ) : formData.core === 'zapret' ? (
                   <>
@@ -1681,6 +2488,18 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess }: AddTunnelModalPr
                 setUdp2rawState((prev) => ({ ...prev, ...partial }))
                 if (partial.raw_mode) {
                   setFormData((prev) => ({ ...prev, type: partial.raw_mode as string }))
+                }
+              }}
+            />
+          )}
+
+          {formData.core === 'trusttunnel' && (
+            <TrustTunnelForm
+              state={trustTunnelState}
+              onChange={(partial) => {
+                setTrustTunnelState((prev) => ({ ...prev, ...partial }))
+                if (partial.transport) {
+                  setFormData((prev) => ({ ...prev, type: partial.transport as string }))
                 }
               }}
             />
@@ -2130,6 +2949,91 @@ function Udp2rawForm({
               </option>
             ))}
           </select>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TrustTunnelForm({
+  state,
+  onChange,
+}: {
+  state: TrustTunnelFormState
+  onChange: (partial: Partial<TrustTunnelFormState>) => void
+}) {
+  const { t } = useLanguage()
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        {t.tunnels.trusttunnelHint}
+      </p>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Ports
+          </label>
+          <input
+            type="text"
+            value={state.ports}
+            onChange={(e) => onChange({ ports: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="8080,8081,8082"
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Public ports on the iran node (comma-separated, same on the foreign target)
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Control Port (Optional)
+          </label>
+          <input
+            type="number"
+            value={state.control_port}
+            onChange={(e) => onChange({ control_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="Auto"
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            QUIC (UDP) port the foreign node dials on the iran node (auto if empty)
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Target Host
+          </label>
+          <input
+            type="text"
+            value={state.target_host}
+            onChange={(e) => onChange({ target_host: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="127.0.0.1"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Service host on the foreign server (traffic is forwarded there)
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Password (Optional - Auto-generated if empty)
+          </label>
+          <input
+            type="text"
+            value={state.password}
+            onChange={(e) => onChange({ password: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="Leave empty for auto-generation"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Shared QUIC password used by both sides
+          </p>
         </div>
       </div>
     </div>
@@ -2824,9 +3728,9 @@ function parseBackhaulSpec(spec: Record<string, any>, currentType: string): {
       return
     }
     if (typeof defaultValue === 'boolean') {
-      advanced.server[key as keyof BackhaulAdvancedServerState] = Boolean(value)
+      ;(advanced.server as unknown as Record<string, string | boolean>)[key] = Boolean(value)
     } else {
-      advanced.server[key as keyof BackhaulAdvancedServerState] = String(value)
+      ;(advanced.server as unknown as Record<string, string | boolean>)[key] = String(value)
     }
   })
 
@@ -2837,9 +3741,9 @@ function parseBackhaulSpec(spec: Record<string, any>, currentType: string): {
       return
     }
     if (typeof defaultValue === 'boolean') {
-      advanced.client[key as keyof BackhaulAdvancedClientState] = Boolean(value)
+      ;(advanced.client as unknown as Record<string, string | boolean>)[key] = Boolean(value)
     } else {
-      advanced.client[key as keyof BackhaulAdvancedClientState] = String(value)
+      ;(advanced.client as unknown as Record<string, string | boolean>)[key] = String(value)
     }
   })
 

@@ -6,6 +6,11 @@
 # by scripts/build-offline-bundle.sh on a machine that has internet access.
 #
 # Run this from inside the extracted bundle:  sudo bash scripts/install-native.sh
+#
+# Non-interactive mode (for self-update / automation):
+#   sudo bash scripts/install-native.sh --yes
+#   (or SMITE_NONINTERACTIVE=1) - keeps the existing /opt/smite/.env untouched
+#   and uses PANEL_PORT from the environment (default 8000) on first install.
 
 set -e
 
@@ -16,6 +21,13 @@ NC='\033[0m'
 
 progress() { echo -e "${GREEN}OK${NC} $1"; }
 warn() { echo -e "${YELLOW}!${NC} $1"; }
+
+NONINTERACTIVE="${SMITE_NONINTERACTIVE:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y|--non-interactive) NONINTERACTIVE=1 ;;
+    esac
+done
 
 echo "=== Smite Panel Offline Native Installer (no Docker) ==="
 echo ""
@@ -68,9 +80,14 @@ progress "Prerequisites present"
 
 # --- Configuration ---
 echo ""
-echo "Configuration:"
-read -p "Panel port (default: 8000): " PANEL_PORT
-PANEL_PORT=${PANEL_PORT:-8000}
+if [ "$NONINTERACTIVE" = "1" ]; then
+    PANEL_PORT=${PANEL_PORT:-8000}
+    progress "Non-interactive mode: panel port $PANEL_PORT"
+else
+    echo "Configuration:"
+    read -p "Panel port (default: 8000): " PANEL_PORT
+    PANEL_PORT=${PANEL_PORT:-8000}
+fi
 
 # --- Copy application source ---
 mkdir -p "$INSTALL_DIR"
@@ -92,6 +109,11 @@ rm -rf "$INSTALL_DIR/panel.bak"
 rm -rf "$INSTALL_DIR/cli"
 cp -r "$BUNDLE_DIR/cli" "$INSTALL_DIR/cli"
 mkdir -p "$INSTALL_DIR/panel/data" "$INSTALL_DIR/panel/certs"
+# Version marker so the panel reports the installed bundle version
+if [ -f "$BUNDLE_DIR/VERSION" ]; then
+    cp "$BUNDLE_DIR/VERSION" "$INSTALL_DIR/panel/VERSION"
+    cp "$BUNDLE_DIR/VERSION" "$INSTALL_DIR/VERSION"
+fi
 progress "Application files installed to $INSTALL_DIR"
 
 # --- Prebuilt frontend (no npm needed) ---
@@ -109,7 +131,7 @@ if [ -d "$BUNDLE_DIR/bin" ]; then
         [ -f "$b" ] || continue
         install -m 0755 "$b" "/usr/local/bin/$(basename "$b")"
     done
-    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws)"
+    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws, rstund, rstunc)"
 else
     warn "No bin/ directory in bundle; panel-side cores (gost/frp) may be unavailable"
 fi
@@ -137,6 +159,19 @@ EOF
     progress "Configuration written to $INSTALL_DIR/.env"
 else
     warn "$INSTALL_DIR/.env already exists, keeping it"
+fi
+
+# Refresh SMITE_VERSION in .env so the panel reports the installed version
+if [ -f "$BUNDLE_DIR/VERSION" ]; then
+    BUNDLE_VERSION="$(cat "$BUNDLE_DIR/VERSION" | tr -d '[:space:]')"
+    if [ -n "$BUNDLE_VERSION" ] && [ "$BUNDLE_VERSION" != "offline" ]; then
+        if grep -q "^SMITE_VERSION=" "$INSTALL_DIR/.env"; then
+            sed -i "s|^SMITE_VERSION=.*|SMITE_VERSION=$BUNDLE_VERSION|" "$INSTALL_DIR/.env"
+        else
+            echo "SMITE_VERSION=$BUNDLE_VERSION" >> "$INSTALL_DIR/.env"
+        fi
+        progress "Version set to $BUNDLE_VERSION"
+    fi
 fi
 
 # --- CA certificate placeholder ---

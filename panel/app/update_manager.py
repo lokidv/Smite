@@ -531,8 +531,12 @@ class UpdateManager:
         Extraction happens OUTSIDE /opt/smite (in /tmp) because the installer
         replaces /opt/smite/panel while running - extracting under the panel's
         data dir would let the installer delete its own running script.
+
+        We use a panel-private work dir (NOT the node updater's /tmp/smite-update)
+        so that, when the panel and an iran node run on the same host, the node
+        updater's cleanup `rm -rf` cannot race-delete the panel's extracted files.
         """
-        work_dir = Path("/tmp/smite-update")
+        work_dir = Path("/tmp/smite-panel-update")
         work_dir.mkdir(parents=True, exist_ok=True)
         extract_dir = work_dir / f"{download_id}-extract"
         if extract_dir.exists():
@@ -543,7 +547,7 @@ class UpdateManager:
             tar.extractall(extract_dir)
         bundle_root = _find_bundle_root(extract_dir, "install-native.sh")
 
-        runner = work_dir / f"run-{download_id}.sh"
+        runner = work_dir / f"run-panel-{download_id}.sh"
         runner.write_text(
             "#!/bin/bash\n"
             f"exec >> {PANEL_UPDATE_LOG} 2>&1\n"

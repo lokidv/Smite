@@ -115,14 +115,16 @@ default_token = "{token}"
 """
             
             if use_websocket:
+                # rathole's websocket transport REQUIRES the `tls` field; an empty
+                # [server.transport.websocket] section fails with
+                # "missing field `tls`". Always emit it (false unless certs given).
                 config += f"""
 [server.transport]
 type = "websocket"
 
 [server.transport.websocket]
+tls = {"true" if websocket_tls else "false"}
 """
-                if websocket_tls:
-                    config += "tls = true\n"
             
             for i, port in enumerate(ports):
                 port_num = int(port) if isinstance(port, (int, str)) and str(port).isdigit() else port
@@ -181,14 +183,15 @@ default_token = "{token}"
 """
             
             if use_websocket:
+                # Mirror the server: the `tls` field is mandatory for the
+                # websocket transport, so always write it explicitly.
                 config += f"""
 [client.transport]
 type = "websocket"
 
 [client.transport.websocket]
+tls = {"true" if websocket_tls else "false"}
 """
-                if websocket_tls:
-                    config += "tls = true\n"
             
             # Create multiple service sections for multiple ports
             for i, port in enumerate(ports):
@@ -2368,7 +2371,9 @@ class Hysteria2Adapter:
             sni = spec.get("sni") or "www.bing.com"
             cert, key = self._ensure_cert(tunnel_id, sni)
             config: Dict[str, Any] = {
-                "listen": f":{listen_port}",
+                # Bind IPv4 explicitly: ":port" asks Go for a dual-stack [::]
+                # socket, which fails to bind on hosts with IPv6 disabled.
+                "listen": f"0.0.0.0:{listen_port}",
                 "tls": {"cert": str(cert), "key": str(key)},
                 "auth": {"type": "password", "password": str(auth)},
             }
@@ -2445,7 +2450,7 @@ class Hysteria2Adapter:
 
         self.log_handles[tunnel_id] = log_f
         self.processes[tunnel_id] = proc
-        time.sleep(1.2)
+        time.sleep(2.5)
         if proc.poll() is not None:
             err = ""
             if log_file.exists():
@@ -2637,6 +2642,11 @@ class TuicAdapter:
             config: Dict[str, Any] = {
                 "log_level": log_level,
                 "server": f"0.0.0.0:{listen_port}",
+                # We bind an IPv4 wildcard, so dual-stack MUST be off: the
+                # Itsusinn server only skips the IPV6_V6ONLY setsockopt when
+                # dual_stack is false, and that syscall fails on an IPv4 socket
+                # with "Protocol not available (os error 92)".
+                "dual_stack": False,
                 "users": {str(uuid_val): str(password)},
                 "tls": {"self_sign": False, "certificate": str(cert), "private_key": str(key)},
             }
@@ -2703,7 +2713,7 @@ class TuicAdapter:
 
         self.log_handles[tunnel_id] = log_f
         self.processes[tunnel_id] = proc
-        time.sleep(1.2)
+        time.sleep(2.5)
         if proc.poll() is not None:
             err = ""
             if log_file.exists():

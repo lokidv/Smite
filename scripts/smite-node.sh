@@ -130,7 +130,7 @@ fi
 if [ ! -f "Dockerfile" ]; then
     echo "Cloning node files from GitHub..."
     TEMP_DIR=$(mktemp -d)
-    git clone --depth 1 $GIT_BRANCH https://github.com/zZedix/Smite.git "$TEMP_DIR" || {
+    git clone --depth 1 $GIT_BRANCH https://github.com/lokidv/Smite.git "$TEMP_DIR" || {
         echo "Error: Failed to clone repository"
         exit 1
     }
@@ -142,7 +142,7 @@ else
     # Update docker-compose.yml and Dockerfile if they exist
     echo "Updating node files from GitHub..."
     TEMP_DIR=$(mktemp -d)
-    git clone --depth 1 $GIT_BRANCH https://github.com/zZedix/Smite.git "$TEMP_DIR" || {
+    git clone --depth 1 $GIT_BRANCH https://github.com/lokidv/Smite.git "$TEMP_DIR" || {
         echo "Warning: Failed to clone repository for updates"
         rm -rf "$TEMP_DIR"
     } || true
@@ -167,7 +167,7 @@ else
     if [ "${SMITE_VERSION:-latest}" = "next" ]; then
         CLI_BRANCH="next"
     fi
-    sudo curl -L https://raw.githubusercontent.com/zZedix/Smite/${CLI_BRANCH}/cli/smite-node.py -o /usr/local/bin/smite-node
+    sudo curl -L https://raw.githubusercontent.com/lokidv/Smite/${CLI_BRANCH}/cli/smite-node.py -o /usr/local/bin/smite-node
     sudo chmod +x /usr/local/bin/smite-node
 fi
 

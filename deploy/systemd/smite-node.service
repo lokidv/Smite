@@ -1,6 +1,6 @@
 [Unit]
 Description=Smite Node Agent (native, Docker-free)
-Documentation=https://github.com/zZedix/Smite
+Documentation=https://github.com/lokidv/Smite
 After=network-online.target
 Wants=network-online.target
 

@@ -151,7 +151,7 @@ def cmd_update(args):
         print("Downloading latest docker-compose.yml...")
         try:
             import urllib.request
-            compose_url = "https://raw.githubusercontent.com/zZedix/Smite/main/node/docker-compose.yml"
+            compose_url = "https://raw.githubusercontent.com/lokidv/Smite/main/node/docker-compose.yml"
             urllib.request.urlretrieve(compose_url, node_dir / "docker-compose.yml")
             print("docker-compose.yml updated")
         except Exception as e:

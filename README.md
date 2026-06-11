@@ -21,6 +21,19 @@
 
 ---
 
+> **About this fork** ([`lokidv/Smite`](https://github.com/lokidv/Smite), forked from [`zZedix/Smite`](https://github.com/zZedix/Smite)) — adds a fully **offline, Docker-free installer** for restricted/Iran servers, the **udp2raw** tunnel core (FakeTCP / ICMP / UDP), and the **zapret** DPI-bypass core (SNI spoofing).
+
+### Which install should I use?
+
+| Your situation | Use this |
+| --- | --- |
+| 🇮🇷 Server has **no Docker / no GitHub / no international internet** | **[Offline Native Install](#-offline-native-install-no-docker)** (recommended) |
+| Server can reach Docker Hub & GitHub | **[Docker Install](#-panel-installation-docker)** |
+
+> راهنمای فارسی: اگر روی **سرور ایران** و بدون دسترسی به داکر/گیت‌هاب هستید، از بخش **[نصب بومی آفلاین](#-offline-native-install-no-docker)** استفاده کنید. راهنمای کامل روش `zapret` (دور زدن DPI / جعل SNI) در **[docs/ZAPRET.md](docs/ZAPRET.md)** است.
+
+---
+
 ## 🚀 Features
 
 - **Multiple Tunnel Types**: Support for TCP, UDP, WebSocket, gRPC, TCPMux via GOST, Backhaul, Rathole, Chisel, FRP, and udp2raw (FakeTCP / ICMP / UDP)
@@ -45,12 +58,14 @@
 
 ---
 
-## 🔧 Panel Installation
+## 🔧 Panel Installation (Docker)
+
+> For servers that can reach Docker Hub and GitHub. If your server is in Iran / behind heavy filtering, skip to **[Offline Native Install](#-offline-native-install-no-docker)** instead.
 
 ### Quick Install
 
 ```bash
-sudo bash -c "$(curl -sL https://raw.githubusercontent.com/zZedix/Smite/main/scripts/install.sh)"
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/lokidv/Smite/main/scripts/install.sh)"
 ```
 
 <details>
@@ -58,7 +73,7 @@ sudo bash -c "$(curl -sL https://raw.githubusercontent.com/zZedix/Smite/main/scr
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/zZedix/Smite.git
+git clone https://github.com/lokidv/Smite.git
 cd Smite
 ```
 
@@ -89,7 +104,9 @@ smite admin create
 
 ---
 
-## 🖥️ Node Installation
+## 🖥️ Node Installation (Docker)
+
+> Docker-based node install. For offline/Iran node servers, use **[Offline Native Install → Step 4](#step-4--install-nodes-offline-servers)**.
 
 ### Architecture
 
@@ -99,7 +116,7 @@ smite admin create
 ### Quick Install
 
 ```bash
-sudo bash -c "$(curl -sL https://raw.githubusercontent.com/zZedix/Smite/main/scripts/smite-node.sh)"
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/lokidv/Smite/main/scripts/smite-node.sh)"
 ```
 
 <details>
@@ -147,7 +164,7 @@ For servers with **no access to Docker, GitHub, PyPI, npm, or international inte
 ### Step 1 — Build the offline bundle (on a machine WITH internet)
 
 ```bash
-git clone https://github.com/zZedix/Smite.git
+git clone https://github.com/lokidv/Smite.git
 cd Smite
 bash scripts/build-offline-bundle.sh
 ```
@@ -261,6 +278,16 @@ smite-node edit-env     # Edit .env file
 
 ---
 
+## 📚 Documentation & Guides
+
+- **[Offline Native Install (No Docker)](#-offline-native-install-no-docker)** — build a bundle on an internet machine and install the panel/nodes on restricted/Iran servers with `systemd` + Python `venv`.
+- **[Tunnel Types](#-tunnel-types)** — GOST, Backhaul, Rathole, Chisel, FRP and how each one works.
+- **[udp2raw Tunnels](#udp2raw-tunnels-dual-node-udp-obfuscation)** — dual-node UDP obfuscation (FakeTCP / ICMP / UDP).
+- **[Zapret — DPI Bypass / SNI Spoofing](docs/ZAPRET.md)** — full walkthrough (Persian + English): when to use it, the desync strategies, and the companion `xray` / `config.json` setup. Quick summary in **[Zapret section below](#zapret-single-node-dpi-bypass--sni-spoofing)**.
+- **[CLI Tools](#-cli-tools)** — managing the panel and nodes from the command line (works for both Docker and native installs).
+
+---
+
 ## 📖 Tunnel Types
 
 ### GOST Tunnels (Iran Node Forwarding)
@@ -343,7 +370,7 @@ If you find Smite useful and want to support its development, consider making a 
 
 <div align="center">
   
-  **Made with ❤️ by [zZedix](https://github.com/zZedix)**
+  **Originally made with ❤️ by [zZedix](https://github.com/zZedix)** · This fork (offline install, udp2raw, zapret) maintained by [lokidv](https://github.com/lokidv)
   
   *Securing the digital world, one line of code at a time!*
   

@@ -98,7 +98,7 @@ else
     if [ "${SMITE_VERSION:-latest}" = "next" ]; then
         GIT_BRANCH="-b next"
     fi
-    git clone --depth 1 $GIT_BRANCH https://github.com/zZedix/Smite.git "$INSTALL_DIR" || {
+    git clone --depth 1 $GIT_BRANCH https://github.com/lokidv/Smite.git "$INSTALL_DIR" || {
         echo -e "${RED}Error: Failed to clone repository${NC}"
         exit 1
     }

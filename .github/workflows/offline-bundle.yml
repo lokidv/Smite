@@ -42,7 +42,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             git curl ca-certificates gnupg tar unzip gzip xz-utils \
-            python3 python3-pip python3-venv
+            python3 python3-pip python3-venv python3-dev build-essential
           curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
           apt-get install -y nodejs
           echo "--- toolchain ---"

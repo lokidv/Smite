@@ -56,8 +56,9 @@ if [ -z "$ARCH" ]; then
     esac
 fi
 case "$ARCH" in
-    amd64) RATHOLE_ARCH="x86_64"; UDP2RAW_ASSET="udp2raw_amd64"; ZAPRET_ARCH="linux-x86_64" ;;
-    arm64) RATHOLE_ARCH="aarch64"; UDP2RAW_ASSET="udp2raw_arm"; ZAPRET_ARCH="linux-arm64" ;;
+    # rathole publishes no gnu build for aarch64 -> use the static musl build there
+    amd64) RATHOLE_TARGET="x86_64-unknown-linux-gnu"; UDP2RAW_ASSET="udp2raw_amd64"; ZAPRET_ARCH="linux-x86_64" ;;
+    arm64) RATHOLE_TARGET="aarch64-unknown-linux-musl"; UDP2RAW_ASSET="udp2raw_arm"; ZAPRET_ARCH="linux-arm64" ;;
     *) fail "Unsupported TARGET_ARCH: $ARCH (use amd64 or arm64)" ;;
 esac
 progress "Target architecture: $ARCH"
@@ -129,6 +130,25 @@ else
 fi
 python3 -m pip download "${PIP_XARGS[@]}" -r "$REPO_ROOT/panel/requirements.txt" -d "$STAGE/wheels/panel"
 python3 -m pip download "${PIP_XARGS[@]}" -r "$REPO_ROOT/node/requirements.txt" -d "$STAGE/wheels/node"
+
+# Some packages have no prebuilt wheel on PyPI for this arch/python (e.g. psutil
+# on aarch64). pip then downloads the sdist, which the OFFLINE server could not
+# build (no compiler). Build those into real wheels here, on the build machine.
+build_missing_wheels() {
+    local dir="$1" f found=0
+    for f in "$dir"/*.tar.gz "$dir"/*.zip; do
+        [ -e "$f" ] || continue
+        found=1
+        warn "No PyPI wheel for $(basename "$f") - building it locally"
+        python3 -m pip wheel --no-deps --wheel-dir "$dir" "$f" \
+            || fail "Could not build a wheel from $(basename "$f"). Install build tools on THIS machine (apt install -y build-essential python3-dev) and re-run."
+        rm -f "$f"
+    done
+    [ "$found" = "1" ] && progress "Built wheels from sdists in $(basename "$dir")"
+    return 0
+}
+build_missing_wheels "$STAGE/wheels/panel"
+build_missing_wheels "$STAGE/wheels/node"
 progress "Wheels downloaded"
 
 # --- 4. Download tunnel binaries ---
@@ -145,7 +165,7 @@ install -m 0755 "$(find "$DL" -type f -name frps | head -n1)" "$STAGE/bin/frps"
 progress "frp ${FRP_VERSION} (frpc, frps)"
 
 # rathole
-dl "https://github.com/rapiz1/rathole/releases/download/v${RATHOLE_VERSION}/rathole-${RATHOLE_ARCH}-unknown-linux-gnu.zip" "$DL/rathole.zip"
+dl "https://github.com/rapiz1/rathole/releases/download/v${RATHOLE_VERSION}/rathole-${RATHOLE_TARGET}.zip" "$DL/rathole.zip"
 unzip -qo "$DL/rathole.zip" -d "$DL/rathole"
 install -m 0755 "$(find "$DL/rathole" -type f -name rathole | head -n1)" "$STAGE/bin/rathole"
 progress "rathole ${RATHOLE_VERSION}"

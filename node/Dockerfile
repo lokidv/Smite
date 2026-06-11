@@ -188,6 +188,52 @@ RUN set -eux; \
     rm -rf "$TMP_DIR"; \
     /usr/local/bin/xray version > /dev/null 2>&1 || true
 
+# Stage 3f: Install hysteria2 (QUIC carrier core, cached layer)
+FROM base AS hysteria-bin
+ARG HYSTERIA_VERSION=2.9.2
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+        x86_64|amd64) HYSTERIA_ASSET="hysteria-linux-amd64" ;; \
+        aarch64|arm64) HYSTERIA_ASSET="hysteria-linux-arm64" ;; \
+        *) HYSTERIA_ASSET="hysteria-linux-amd64" ;; \
+    esac; \
+    curl -fsSL "https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/${HYSTERIA_ASSET}" -o /usr/local/bin/hysteria; \
+    chmod 0755 /usr/local/bin/hysteria; \
+    /usr/local/bin/hysteria version > /dev/null 2>&1 || true
+
+# Stage 3g: Install tuic (second QUIC carrier, cached layer)
+FROM base AS tuic-bin
+ARG TUIC_VERSION=1.8.6
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+        x86_64|amd64) TUIC_SERVER_ASSET="tuic-server-x86_64-linux"; TUIC_CLIENT_ASSET="tuic-client-x86_64-linux" ;; \
+        aarch64|arm64) TUIC_SERVER_ASSET="tuic-server-aarch64-linux"; TUIC_CLIENT_ASSET="tuic-client-aarch64-linux" ;; \
+        *) TUIC_SERVER_ASSET="tuic-server-x86_64-linux"; TUIC_CLIENT_ASSET="tuic-client-x86_64-linux" ;; \
+    esac; \
+    curl -fsSL "https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/${TUIC_SERVER_ASSET}" -o /usr/local/bin/tuic-server; \
+    curl -fsSL "https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/${TUIC_CLIENT_ASSET}" -o /usr/local/bin/tuic-client; \
+    chmod 0755 /usr/local/bin/tuic-server /usr/local/bin/tuic-client; \
+    /usr/local/bin/tuic-server --version > /dev/null 2>&1 || true; \
+    /usr/local/bin/tuic-client --version > /dev/null 2>&1 || true
+
+# Stage 3h: Install usque (Cloudflare WARP-MASQUE client, cached layer)
+FROM base AS usque-bin
+ARG USQUE_VERSION=3.0.0
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+        x86_64|amd64) USQUE_ASSET="usque_${USQUE_VERSION}_linux_amd64.zip" ;; \
+        aarch64|arm64) USQUE_ASSET="usque_${USQUE_VERSION}_linux_arm64.zip" ;; \
+        *) USQUE_ASSET="usque_${USQUE_VERSION}_linux_amd64.zip" ;; \
+    esac; \
+    curl -fsSL "https://github.com/Diniboy1123/usque/releases/download/v${USQUE_VERSION}/${USQUE_ASSET}" -o /tmp/usque.zip; \
+    unzip -o /tmp/usque.zip -d /tmp/usque; \
+    install -m 0755 "$(find /tmp/usque -type f -name usque | head -n1)" /usr/local/bin/usque; \
+    rm -rf /tmp/usque /tmp/usque.zip; \
+    /usr/local/bin/usque --help > /dev/null 2>&1 || true
+
 # Stage 4: Python dependencies (cached layer)
 FROM base AS deps
 WORKDIR /app
@@ -216,6 +262,10 @@ COPY --from=zapret-bin /usr/local/bin/nfqws /usr/local/bin/nfqws
 COPY --from=rstun-bin /usr/local/bin/rstund /usr/local/bin/rstund
 COPY --from=rstun-bin /usr/local/bin/rstunc /usr/local/bin/rstunc
 COPY --from=xray-bin /usr/local/bin/xray /usr/local/bin/xray
+COPY --from=hysteria-bin /usr/local/bin/hysteria /usr/local/bin/hysteria
+COPY --from=tuic-bin /usr/local/bin/tuic-server /usr/local/bin/tuic-server
+COPY --from=tuic-bin /usr/local/bin/tuic-client /usr/local/bin/tuic-client
+COPY --from=usque-bin /usr/local/bin/usque /usr/local/bin/usque
 
 # Copy Python dependencies from deps stage
 COPY --from=deps /usr/local /usr/local

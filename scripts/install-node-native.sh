@@ -214,7 +214,7 @@ if [ -d "$BUNDLE_DIR/bin" ]; then
         [ -f "$b" ] || continue
         install -m 0755 "$b" "/usr/local/bin/$(basename "$b")"
     done
-    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws, rstund, rstunc, xray)"
+    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws, rstund, rstunc, xray, hysteria, tuic-server, tuic-client, usque)"
 else
     echo -e "${RED}No bin/ directory in bundle; node cannot run tunnels without binaries.${NC}"
     exit 1

@@ -41,6 +41,10 @@ BENCH_COMBOS: List[Tuple[str, str, str]] = [
     ("trusttunnel", "tcp", "tcp"),
     ("trusttunnel", "udp", "udp"),
     ("trusttunnel", "both", "tcp"),
+    ("hysteria2", "tcp", "tcp"),
+    ("hysteria2", "udp", "udp"),
+    ("tuic", "tcp", "tcp"),
+    ("tuic", "udp", "udp"),
 ]
 
 # Dedicated port ranges so test tunnels never collide with real ones.
@@ -174,6 +178,58 @@ def _build_specs(
             "ports": [test_port],
         }
         return server, client
+
+    if core == "hysteria2":
+        # Inverted roles (like udp2raw): iran runs the hysteria CLIENT (public
+        # forward listener -> probe entry), foreign runs the hysteria SERVER
+        # (dials the local sink). server -> iran, client -> foreign.
+        obfs = generate_token(16)
+        iran_spec = {
+            "mode": "client",
+            "type": mode,
+            "server_addr": format_address_port(foreign_ip, control_port),
+            "sni": "www.bing.com",
+            "auth": token,
+            "obfs_password": obfs,
+            "forwards": [{"listen": f"0.0.0.0:{test_port}", "remote": f"127.0.0.1:{test_port}", "protocol": mode}],
+        }
+        foreign_spec = {
+            "mode": "server",
+            "type": mode,
+            "listen_port": control_port,
+            "control_port": control_port,
+            "sni": "www.bing.com",
+            "auth": token,
+            "obfs_password": obfs,
+        }
+        return iran_spec, foreign_spec
+
+    if core == "tuic":
+        # Inverted roles (like hysteria2): iran runs the tuic CLIENT (public
+        # forward listener -> probe entry), foreign runs the tuic SERVER (dials
+        # the local sink). server -> iran, client -> foreign.
+        import uuid as uuid_mod
+        tuic_uuid = str(uuid_mod.uuid4())
+        iran_spec = {
+            "mode": "client",
+            "type": mode,
+            "server_addr": format_address_port(foreign_ip, control_port),
+            "sni": "www.bing.com",
+            "uuid": tuic_uuid,
+            "password": token,
+            "udp_relay_mode": "native",
+            "forwards": [{"listen": f"0.0.0.0:{test_port}", "remote": f"127.0.0.1:{test_port}", "protocol": mode}],
+        }
+        foreign_spec = {
+            "mode": "server",
+            "type": mode,
+            "listen_port": control_port,
+            "control_port": control_port,
+            "sni": "www.bing.com",
+            "uuid": tuic_uuid,
+            "password": token,
+        }
+        return iran_spec, foreign_spec
 
     raise ValueError(f"Unsupported benchmark core: {core}")
 

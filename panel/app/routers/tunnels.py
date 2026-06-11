@@ -171,19 +171,329 @@ def normalize_snispoof_spec(spec: dict) -> dict:
     return s
 
 
+def normalize_warp_spec(spec: dict) -> dict:
+    """Apply WARP-MASQUE egress (usque SOCKS5) defaults.
+
+    Single-node core: runs `usque socks` on one node (normally the foreign
+    server) so a co-located proxy can egress through Cloudflare WARP over MASQUE,
+    hiding the server's real IP. Bound to 127.0.0.1 by default (local-only).
+    """
+    s = dict(spec or {})
+    s.setdefault("listen_addr", "127.0.0.1")
+    s.setdefault("listen_port", 1080)
+    # Empty SNI -> usque default (consumer-masque...); a custom domain can dodge SNI blocks.
+    s.setdefault("sni", "")
+    return s
+
+
+def normalize_hysteria2_spec(spec: dict) -> dict:
+    """Apply Hysteria2 carrier defaults + auto-generate secrets.
+
+    Hysteria2 is a dual-node QUIC carrier: the iran node forwards public TCP/UDP
+    ports to a service on the foreign node (e.g. its local WireGuard UDP port or
+    a V2Ray TCP port) through an obfuscated QUIC session. We generate a strong
+    shared auth password and a Salamander obfs password once, so the values stay
+    stable across re-applies. Set obfs_password to "off" to disable obfuscation.
+    """
+    from app.utils import generate_token
+    s = dict(spec or {})
+    s.setdefault("type", "udp")  # WireGuard carrier is the headline use-case
+    s.setdefault("target_host", "127.0.0.1")
+    s.setdefault("control_port", 443)  # QUIC port on the foreign node (looks like HTTP/3)
+    s.setdefault("sni", "www.bing.com")
+    if not s.get("auth") and not s.get("password") and not s.get("token"):
+        s["auth"] = generate_token(24)
+    if s.get("obfs_password") is None:
+        s["obfs_password"] = generate_token(16)  # Salamander on by default
+    return s
+
+
+def build_hysteria2_specs(spec: dict, tunnel_id: str, ttype: str, iran_ip: str, foreign_ip: str):
+    """Build (iran_spec, foreign_spec, resolved) for a Hysteria2 carrier.
+
+    Topology (same inversion as udp2raw): FOREIGN = hysteria SERVER (QUIC
+    listener that dials the local target service), IRAN = hysteria CLIENT (the
+    public TCP/UDP forward listeners users connect to). server_spec -> iran,
+    client_spec -> foreign, matching every other reverse core's send sites.
+
+    ``resolved`` carries the secrets/ports the caller should persist on the
+    tunnel so re-applies reuse the same auth/obfs/ports.
+    """
+    import hashlib
+    from app.utils import generate_token, format_address_port
+
+    s = dict(spec or {})
+    ttype = (ttype or s.get("type") or "udp").lower()
+    if ttype not in ("tcp", "udp", "both"):
+        ttype = "udp"
+
+    auth = s.get("auth") or s.get("password") or s.get("token") or generate_token(24)
+    obfs = s.get("obfs_password")
+    if obfs is None:
+        obfs = generate_token(16)
+    elif str(obfs).strip().lower() in ("off", "none", "false", "0", ""):
+        obfs = ""
+    sni = (s.get("sni") or "www.bing.com").strip() or "www.bing.com"
+
+    port_hash = int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16)
+    control_port = int(s.get("control_port") or 443)
+    target_host = s.get("target_host", "127.0.0.1")
+
+    ports = parse_ports_from_spec(s)
+    if not ports:
+        single = s.get("listen_port") or s.get("public_port")
+        if single and str(single).isdigit():
+            ports = [int(single)]
+
+    explicit_target = s.get("target_port")
+    forwards = []
+    for p in ports:
+        try:
+            pub = int(p)
+        except (TypeError, ValueError):
+            continue
+        if explicit_target and len(ports) == 1:
+            try:
+                tgt = int(explicit_target)
+            except (TypeError, ValueError):
+                tgt = pub
+        else:
+            tgt = pub
+        forwards.append({"listen": f"0.0.0.0:{pub}", "remote": f"{target_host}:{tgt}", "protocol": ttype})
+
+    iran_spec = dict(s)
+    iran_spec.update({
+        "mode": "client",
+        "type": ttype,
+        "server_addr": format_address_port(foreign_ip, control_port),
+        "sni": sni,
+        "auth": auth,
+        "obfs_password": obfs,
+        "forwards": forwards,
+    })
+
+    foreign_spec = dict(s)
+    foreign_spec.update({
+        "mode": "server",
+        "type": ttype,
+        "listen_port": control_port,
+        "control_port": control_port,
+        "sni": sni,
+        "auth": auth,
+        "obfs_password": obfs,
+    })
+
+    resolved = {
+        "auth": auth,
+        "obfs_password": obfs,
+        "sni": sni,
+        "control_port": control_port,
+        "target_host": target_host,
+        "type": ttype,
+        "ports": ports,
+    }
+    return iran_spec, foreign_spec, resolved
+
+
+def normalize_tuic_spec(spec: dict) -> dict:
+    """Apply TUIC carrier defaults + auto-generate secrets.
+
+    TUIC is a second QUIC carrier (sibling of Hysteria2) for WireGuard UDP and
+    V2Ray TCP. It authenticates with a uuid + password pair that we generate once
+    and keep stable across re-applies, so the operator can flip a tunnel between
+    Hysteria2 and TUIC for protocol diversity without re-provisioning anything.
+    """
+    import uuid as uuid_mod
+    from app.utils import generate_token
+    s = dict(spec or {})
+    s.setdefault("type", "udp")  # WireGuard carrier is the headline use-case
+    s.setdefault("target_host", "127.0.0.1")
+    s.setdefault("control_port", 443)  # QUIC port on the foreign node (looks like HTTP/3)
+    s.setdefault("sni", "www.bing.com")
+    s.setdefault("udp_relay_mode", "native")
+    s.setdefault("congestion_control", "bbr")
+    if not s.get("uuid"):
+        s["uuid"] = str(uuid_mod.uuid4())
+    if not s.get("password") and not s.get("auth") and not s.get("token"):
+        s["password"] = generate_token(24)
+    return s
+
+
+def build_tuic_specs(spec: dict, tunnel_id: str, ttype: str, iran_ip: str, foreign_ip: str):
+    """Build (iran_spec, foreign_spec, resolved) for a TUIC carrier.
+
+    Same inversion as udp2raw/hysteria2: FOREIGN = tuic-server (QUIC listener that
+    dials the local target), IRAN = tuic-client (the public TCP/UDP forward
+    listeners users connect to). server_spec -> iran, client_spec -> foreign,
+    matching every other reverse core's send sites. ``resolved`` carries the
+    uuid/password/ports to persist so re-applies reuse them.
+    """
+    import uuid as uuid_mod
+    from app.utils import generate_token, format_address_port
+
+    s = dict(spec or {})
+    ttype = (ttype or s.get("type") or "udp").lower()
+    if ttype not in ("tcp", "udp", "both"):
+        ttype = "udp"
+
+    uuid_val = s.get("uuid") or str(uuid_mod.uuid4())
+    password = s.get("password") or s.get("auth") or s.get("token") or generate_token(24)
+    sni = (s.get("sni") or "www.bing.com").strip() or "www.bing.com"
+    udp_relay_mode = (s.get("udp_relay_mode") or "native").lower()
+    if udp_relay_mode not in ("native", "quic"):
+        udp_relay_mode = "native"
+    congestion = (s.get("congestion_control") or "bbr").lower()
+
+    control_port = int(s.get("control_port") or 443)
+    target_host = s.get("target_host", "127.0.0.1")
+
+    ports = parse_ports_from_spec(s)
+    if not ports:
+        single = s.get("listen_port") or s.get("public_port")
+        if single and str(single).isdigit():
+            ports = [int(single)]
+
+    explicit_target = s.get("target_port")
+    forwards = []
+    for p in ports:
+        try:
+            pub = int(p)
+        except (TypeError, ValueError):
+            continue
+        if explicit_target and len(ports) == 1:
+            try:
+                tgt = int(explicit_target)
+            except (TypeError, ValueError):
+                tgt = pub
+        else:
+            tgt = pub
+        forwards.append({"listen": f"0.0.0.0:{pub}", "remote": f"{target_host}:{tgt}", "protocol": ttype})
+
+    iran_spec = dict(s)
+    iran_spec.update({
+        "mode": "client",
+        "type": ttype,
+        "server_addr": format_address_port(foreign_ip, control_port),
+        "sni": sni,
+        "uuid": uuid_val,
+        "password": password,
+        "udp_relay_mode": udp_relay_mode,
+        "congestion_control": congestion,
+        "forwards": forwards,
+    })
+
+    foreign_spec = dict(s)
+    foreign_spec.update({
+        "mode": "server",
+        "type": ttype,
+        "listen_port": control_port,
+        "control_port": control_port,
+        "sni": sni,
+        "uuid": uuid_val,
+        "password": password,
+    })
+
+    resolved = {
+        "uuid": uuid_val,
+        "password": password,
+        "sni": sni,
+        "control_port": control_port,
+        "target_host": target_host,
+        "type": ttype,
+        "udp_relay_mode": udp_relay_mode,
+        "congestion_control": congestion,
+        "ports": ports,
+    }
+    return iran_spec, foreign_spec, resolved
+
+
+def build_obfs4_specs(spec: dict, tunnel_id: str, iran_ip: str, foreign_ip: str):
+    """Build (iran_spec, foreign_spec, resolved) for an obfs4 TCP carrier.
+
+    Same inversion as the QUIC carriers: FOREIGN = obfs4 server (gost proxy over
+    obfs4 that dials the local target), IRAN = obfs4 client (public TCP forward
+    listeners). obfs4 is TCP-only, so it carries any TCP-based V2Ray transport
+    (raw/WS/gRPC/XHTTP) on a single forwarded port.
+
+    The client needs the server's ``cert``, which only exists after the server
+    starts; we leave it empty here and the create/apply flow fills it in after
+    applying the foreign side and fetching the cert from the node.
+    """
+    from app.utils import format_address_port
+
+    s = dict(spec or {})
+    control_port = int(s.get("control_port") or 443)
+    target_host = s.get("target_host", "127.0.0.1")
+    iat_mode = str(s.get("iat_mode", "0"))
+    if iat_mode not in ("0", "1", "2"):
+        iat_mode = "0"
+
+    ports = parse_ports_from_spec(s)
+    if not ports:
+        single = s.get("listen_port") or s.get("public_port")
+        if single and str(single).isdigit():
+            ports = [int(single)]
+
+    explicit_target = s.get("target_port")
+    forwards = []
+    for p in ports:
+        try:
+            pub = int(p)
+        except (TypeError, ValueError):
+            continue
+        if explicit_target and len(ports) == 1:
+            try:
+                tgt = int(explicit_target)
+            except (TypeError, ValueError):
+                tgt = pub
+        else:
+            tgt = pub
+        forwards.append({"listen": f"0.0.0.0:{pub}", "remote": f"{target_host}:{tgt}"})
+
+    iran_spec = dict(s)
+    iran_spec.update({
+        "mode": "client",
+        "type": "tcp",
+        "server_addr": format_address_port(foreign_ip, control_port),
+        "control_port": control_port,
+        "iat_mode": iat_mode,
+        "forwards": forwards,
+        "cert": s.get("cert", ""),  # filled in after the server starts
+    })
+
+    foreign_spec = dict(s)
+    foreign_spec.update({
+        "mode": "server",
+        "type": "tcp",
+        "listen_port": control_port,
+        "control_port": control_port,
+        "iat_mode": iat_mode,
+    })
+
+    resolved = {
+        "control_port": control_port,
+        "target_host": target_host,
+        "type": "tcp",
+        "iat_mode": iat_mode,
+        "ports": ports,
+    }
+    return iran_spec, foreign_spec, resolved
+
+
 # Single-node cores: run on exactly one node (no iran/foreign pair).
-SINGLE_NODE_CORES = {"zapret", "snispoof"}
+SINGLE_NODE_CORES = {"zapret", "snispoof", "warp"}
 
 SINGLE_NODE_NORMALIZERS = {
     "zapret": normalize_zapret_spec,
     "snispoof": normalize_snispoof_spec,
+    "warp": normalize_warp_spec,
 }
 
 
 # Cores that support in-place core/type change (dual-node reverse cores).
 # zapret (single-node DPI bypass) and gost (panel-side forwarder) are excluded
 # because their semantics/topology differ from the reverse cores.
-CHANGEABLE_CORES = {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
+CHANGEABLE_CORES = {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic"}
 
 # Valid tunnel types per changeable core (first entry = default).
 CORE_TYPE_OPTIONS = {
@@ -193,6 +503,8 @@ CORE_TYPE_OPTIONS = {
     "frp": ["tcp", "udp"],
     "udp2raw": ["faketcp", "icmp", "udp"],
     "trusttunnel": ["tcp", "udp", "both"],
+    "hysteria2": ["udp", "tcp", "both"],
+    "tuic": ["udp", "tcp", "both"],
 }
 
 
@@ -331,6 +643,22 @@ def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: 
         return {
             "transport": new_type,
             "target_host": target_host,
+            "ports": ports_int,
+        }
+    if new_core == "hysteria2":
+        return {
+            "type": new_type,
+            "target_host": target_host,
+            "target_port": int(primary.get("target_port") or primary["port"]),
+            "control_port": 443,
+            "ports": ports_int,
+        }
+    if new_core == "tuic":
+        return {
+            "type": new_type,
+            "target_host": target_host,
+            "target_port": int(primary.get("target_port") or primary["port"]),
+            "control_port": 443,
             "ports": ports_int,
         }
     raise HTTPException(status_code=400, detail=f"Unsupported core for change: {new_core}")
@@ -552,6 +880,111 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
 apply_zapret_tunnel = apply_singlenode_tunnel
 
 
+async def apply_obfs4_tunnel(db_tunnel: Tunnel, foreign_node, iran_node, db: AsyncSession, client) -> Tunnel:
+    """Apply an obfs4 dual-node carrier with the required two-phase cert exchange.
+
+    obfs4's cert is generated by the server at startup, so unlike the other
+    reverse cores we must: (1) apply the FOREIGN server, (2) read its cert from
+    the node, (3) apply the IRAN client with that cert. The cert is persisted in
+    the tunnel spec so re-applies and resets reuse the same (stable) state-dir.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    ttype = (db_tunnel.type or "tcp").lower()
+    ports = parse_ports_from_spec(db_tunnel.spec)
+    if not ports:
+        single = (db_tunnel.spec or {}).get("listen_port") or (db_tunnel.spec or {}).get("public_port")
+        if single and str(single).isdigit():
+            ports = [int(single)]
+    if not ports:
+        db_tunnel.status = "error"
+        db_tunnel.error_message = "obfs4 requires ports (public ports on the iran node)"
+        await db.commit(); await db.refresh(db_tunnel)
+        return db_tunnel
+
+    foreign_ip = foreign_node.node_metadata.get("ip_address")
+    iran_ip = iran_node.node_metadata.get("ip_address")
+    if not foreign_ip:
+        db_tunnel.status = "error"
+        db_tunnel.error_message = "Foreign node has no IP address"
+        await db.commit(); await db.refresh(db_tunnel)
+        return db_tunnel
+
+    db_tunnel.spec["ports"] = ports
+    iran_spec, foreign_spec, resolved = build_obfs4_specs(
+        db_tunnel.spec, db_tunnel.id, iran_ip or "", foreign_ip
+    )
+
+    for node in (foreign_node, iran_node):
+        if not node.node_metadata.get("api_address"):
+            node.node_metadata["api_address"] = (
+                f"http://{node.node_metadata.get('ip_address', node.fingerprint)}:{node.node_metadata.get('api_port', 8888)}"
+            )
+            await db.commit()
+
+    # Phase 1: foreign obfs4 server (generates the cert).
+    foreign_resp = await client.send_to_node(
+        node_id=foreign_node.id,
+        endpoint="/api/agent/tunnels/apply",
+        data={"tunnel_id": db_tunnel.id, "core": "obfs4", "type": ttype, "spec": foreign_spec},
+    )
+    if foreign_resp.get("status") == "error":
+        db_tunnel.status = "error"
+        db_tunnel.error_message = f"Foreign node error: {foreign_resp.get('message', 'unknown')}"
+        await db.commit(); await db.refresh(db_tunnel)
+        return db_tunnel
+
+    # Phase 2: read the cert back from the foreign node (retry briefly).
+    cert = (db_tunnel.spec or {}).get("cert") or ""
+    import asyncio as _asyncio
+    for _ in range(8):
+        cert_resp = await client.send_to_node(
+            node_id=foreign_node.id,
+            endpoint="/api/agent/obfs4/cert",
+            data={"tunnel_id": db_tunnel.id},
+        )
+        if cert_resp.get("status") == "success" and cert_resp.get("ok") and cert_resp.get("cert"):
+            cert = cert_resp["cert"]
+            break
+        await _asyncio.sleep(0.5)
+    if not cert:
+        db_tunnel.status = "error"
+        db_tunnel.error_message = "obfs4: could not obtain server cert from foreign node"
+        await db.commit(); await db.refresh(db_tunnel)
+        return db_tunnel
+
+    iran_spec["cert"] = cert
+
+    # Phase 3: iran obfs4 client (public TCP listeners) using the cert.
+    iran_resp = await client.send_to_node(
+        node_id=iran_node.id,
+        endpoint="/api/agent/tunnels/apply",
+        data={"tunnel_id": db_tunnel.id, "core": "obfs4", "type": ttype, "spec": iran_spec},
+    )
+    if iran_resp.get("status") == "error":
+        db_tunnel.status = "error"
+        db_tunnel.error_message = f"Iran node error: {iran_resp.get('message', 'unknown')}"
+        try:
+            await client.send_to_node(
+                node_id=foreign_node.id, endpoint="/api/agent/tunnels/remove",
+                data={"tunnel_id": db_tunnel.id},
+            )
+        except Exception:
+            pass
+        await db.commit(); await db.refresh(db_tunnel)
+        return db_tunnel
+
+    db_tunnel.spec["cert"] = cert
+    for k in ("control_port", "target_host", "iat_mode", "ports"):
+        db_tunnel.spec[k] = resolved[k]
+    flag_modified(db_tunnel, "spec")
+    db_tunnel.status = "active"
+    db_tunnel.error_message = None
+    await db.commit(); await db.refresh(db_tunnel)
+    logger.info(f"obfs4 tunnel {db_tunnel.id} applied (foreign server + iran client)")
+    return db_tunnel
+
+
 @router.post("", response_model=TunnelResponse)
 async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession = Depends(get_db)):
     """Create a new tunnel and auto-apply it"""
@@ -568,7 +1001,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
         if ports:
             tunnel.spec["ports"] = ports
     
-    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
+    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4"}
     foreign_node = None
     iran_node = None
     
@@ -671,7 +1104,12 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
         
         if is_reverse_tunnel and foreign_node and iran_node:
             client = NodeClient()
-            
+
+            # obfs4 needs a two-phase (server-first, fetch cert, then client)
+            # apply, so it has its own helper instead of the symmetric sender.
+            if db_tunnel.core == "obfs4":
+                return await apply_obfs4_tunnel(db_tunnel, foreign_node, iran_node, db, client)
+
             server_spec = db_tunnel.spec.copy() if db_tunnel.spec else {}
             server_spec["mode"] = "server"
             
@@ -1076,6 +1514,81 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 client_spec["server_addr"] = format_address_port(iran_node_ip, control_port)
                 client_spec["target_host"] = target_host
                 client_spec["ports"] = ports
+
+            elif db_tunnel.core == "hysteria2":
+                # Hysteria2 QUIC carrier. FOREIGN node = hysteria SERVER (dials the
+                # local target service, e.g. its WireGuard UDP port); IRAN node =
+                # hysteria CLIENT (public TCP/UDP forward listeners users connect to).
+                # server_spec -> iran, client_spec -> foreign.
+                ttype = (db_tunnel.type or server_spec.get("type") or "udp").lower()
+                ports = parse_ports_from_spec(db_tunnel.spec)
+                if not ports:
+                    single = server_spec.get("listen_port") or server_spec.get("public_port")
+                    if single and str(single).isdigit():
+                        ports = [int(single)]
+                if not ports:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "Hysteria2 requires ports (public ports on the iran node)"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+
+                foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                if not foreign_node_ip:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "Foreign node has no IP address"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+                iran_node_ip = iran_node.node_metadata.get("ip_address")
+
+                db_tunnel.spec["ports"] = ports
+                h2_iran, h2_foreign, resolved = build_hysteria2_specs(
+                    db_tunnel.spec, db_tunnel.id, ttype, iran_node_ip or "", foreign_node_ip
+                )
+                for k in ("auth", "obfs_password", "sni", "control_port", "target_host", "type"):
+                    db_tunnel.spec[k] = resolved[k]
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(db_tunnel, "spec")
+                server_spec = h2_iran
+                client_spec = h2_foreign
+
+            elif db_tunnel.core == "tuic":
+                # TUIC QUIC carrier (sibling of Hysteria2). FOREIGN = tuic-server,
+                # IRAN = tuic-client (public TCP/UDP forward listeners).
+                # server_spec -> iran, client_spec -> foreign.
+                ttype = (db_tunnel.type or server_spec.get("type") or "udp").lower()
+                ports = parse_ports_from_spec(db_tunnel.spec)
+                if not ports:
+                    single = server_spec.get("listen_port") or server_spec.get("public_port")
+                    if single and str(single).isdigit():
+                        ports = [int(single)]
+                if not ports:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "TUIC requires ports (public ports on the iran node)"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+
+                foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                if not foreign_node_ip:
+                    db_tunnel.status = "error"
+                    db_tunnel.error_message = "Foreign node has no IP address"
+                    await db.commit()
+                    await db.refresh(db_tunnel)
+                    return db_tunnel
+                iran_node_ip = iran_node.node_metadata.get("ip_address")
+
+                db_tunnel.spec["ports"] = ports
+                tuic_iran, tuic_foreign, resolved = build_tuic_specs(
+                    db_tunnel.spec, db_tunnel.id, ttype, iran_node_ip or "", foreign_node_ip
+                )
+                for k in ("uuid", "password", "sni", "control_port", "target_host", "type", "udp_relay_mode", "congestion_control"):
+                    db_tunnel.spec[k] = resolved[k]
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(db_tunnel, "spec")
+                server_spec = tuic_iran
+                client_spec = tuic_foreign
 
             if not iran_node.node_metadata.get("api_address"):
                 iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
@@ -1717,9 +2230,10 @@ async def update_tunnel(
                 await db.refresh(tunnel)
                 return tunnel
 
-            if tunnel.core in ("udp2raw", "trusttunnel"):
-                # udp2raw and trusttunnel run on both the iran and foreign nodes;
-                # delegate to apply_tunnel which rebuilds and pushes the split specs.
+            if tunnel.core in ("udp2raw", "trusttunnel", "obfs4"):
+                # udp2raw/trusttunnel/obfs4 run on both the iran and foreign nodes;
+                # delegate to apply_tunnel which rebuilds and pushes the split specs
+                # (obfs4 via its two-phase server-first + cert helper).
                 try:
                     await apply_tunnel(tunnel.id, request, db)
                 except HTTPException as e:
@@ -2067,6 +2581,212 @@ async def snispoof_autotune(tunnel_id: str, db: AsyncSession = Depends(get_db)):
     return resp
 
 
+@router.post("/{tunnel_id}/warp/test")
+async def warp_test(tunnel_id: str, db: AsyncSession = Depends(get_db)):
+    """Verify the WARP egress: fetch Cloudflare's trace through the SOCKS proxy
+    and report whether WARP is active plus the masked egress IP."""
+    result = await db.execute(select(Tunnel).where(Tunnel.id == tunnel_id))
+    tunnel = result.scalar_one_or_none()
+    if not tunnel:
+        raise HTTPException(status_code=404, detail="Tunnel not found")
+    if tunnel.core != "warp":
+        raise HTTPException(status_code=400, detail="This action is only available for WARP tunnels")
+    node = await resolve_single_node(tunnel, db)
+    if not node:
+        raise HTTPException(status_code=400, detail="WARP tunnel has no node assigned")
+    if not node.node_metadata.get("api_address"):
+        node.node_metadata["api_address"] = (
+            f"http://{node.node_metadata.get('ip_address', node.fingerprint)}:{node.node_metadata.get('api_port', 8888)}"
+        )
+        await db.commit()
+    spec = normalize_warp_spec(tunnel.spec)
+    client = NodeClient()
+    resp = await client.send_to_node(
+        node.id, "/api/agent/warp/test",
+        {"tunnel_id": tunnel_id, "spec": spec}, timeout=40.0,
+    )
+    if resp.get("status") != "success":
+        raise HTTPException(status_code=502, detail=resp.get("message") or "Node WARP test failed")
+    return resp
+
+
+async def _resolve_hysteria2_nodes(tunnel_id: str, db: AsyncSession):
+    """Load a hysteria2 tunnel + its iran (client) and foreign (server) nodes."""
+    result = await db.execute(select(Tunnel).where(Tunnel.id == tunnel_id))
+    tunnel = result.scalar_one_or_none()
+    if not tunnel:
+        raise HTTPException(status_code=404, detail="Tunnel not found")
+    if tunnel.core != "hysteria2":
+        raise HTTPException(status_code=400, detail="This action is only available for hysteria2 tunnels")
+    iran_node = None
+    if tunnel.node_id:
+        r = await db.execute(select(Node).where(Node.id == tunnel.node_id))
+        iran_node = r.scalar_one_or_none()
+    r = await db.execute(select(Node))
+    all_nodes = r.scalars().all()
+    if not iran_node:
+        iran_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "iran"]
+        iran_node = iran_nodes[0] if iran_nodes else None
+    foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
+    foreign_node = foreign_nodes[0] if foreign_nodes else None
+    if not iran_node or not foreign_node:
+        raise HTTPException(status_code=400, detail="hysteria2 auto-tune needs both an iran and a foreign node")
+    for n in (iran_node, foreign_node):
+        if not n.node_metadata.get("api_address"):
+            n.node_metadata["api_address"] = (
+                f"http://{n.node_metadata.get('ip_address', n.fingerprint)}:{n.node_metadata.get('api_port', 8888)}"
+            )
+    await db.commit()
+    return tunnel, iran_node, foreign_node
+
+
+@router.post("/{tunnel_id}/hysteria2/autotune")
+async def hysteria2_autotune(tunnel_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """Probe the hysteria2 carrier with obfs ON vs OFF on throwaway test tunnels,
+    rank by measured quality, persist the best profile, and re-apply the tunnel.
+
+    Mirrors the snispoof auto-tune: the node side is exercised with the existing
+    benchmark sink/probe so we measure real throughput/latency/loss, never just
+    "does the process start". obfs (Salamander) is the main DPI-survival lever,
+    so that is what we vary; the winner is saved to the tunnel spec.
+    """
+    import asyncio
+    import hashlib
+    import uuid as uuid_mod
+    from sqlalchemy.orm.attributes import flag_modified
+    from app.utils import generate_token, format_address_port
+
+    tunnel, iran_node, foreign_node = await _resolve_hysteria2_nodes(tunnel_id, db)
+    iran_ip = iran_node.node_metadata.get("ip_address")
+    foreign_ip = foreign_node.node_metadata.get("ip_address")
+    ttype = (tunnel.type or (tunnel.spec or {}).get("type") or "udp").lower()
+    probe_proto = "tcp" if ttype in ("tcp", "both") else "udp"
+
+    auth = (tunnel.spec or {}).get("auth") or generate_token(24)
+    obfs_pw = (tunnel.spec or {}).get("obfs_password") or generate_token(16)
+    if str(obfs_pw).strip().lower() in ("", "off", "none"):
+        obfs_pw = generate_token(16)
+    sni = (tunnel.spec or {}).get("sni") or "www.bing.com"
+
+    port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
+    test_port = 19500 + (port_hash % 300)
+    control_port = 19850 + (port_hash % 120)
+
+    profiles = [
+        {"id": "obfs_salamander", "obfs_password": obfs_pw},
+        {"id": "obfs_off", "obfs_password": ""},
+    ]
+
+    client = NodeClient()
+    results = []
+
+    async def run_profile(profile):
+        run_id = f"h2tune-{uuid_mod.uuid4().hex[:8]}"
+        iran_spec = {
+            "mode": "client", "type": ttype,
+            "server_addr": format_address_port(foreign_ip, control_port),
+            "sni": sni, "auth": auth, "obfs_password": profile["obfs_password"],
+            "forwards": [{"listen": f"0.0.0.0:{test_port}", "remote": f"127.0.0.1:{test_port}", "protocol": ttype}],
+        }
+        foreign_spec = {
+            "mode": "server", "type": ttype, "listen_port": control_port, "control_port": control_port,
+            "sni": sni, "auth": auth, "obfs_password": profile["obfs_password"],
+        }
+        metrics = {"ok": False, "error": None, "latency_ms": None, "throughput_mbps": None, "loss_percent": None}
+        try:
+            sink = await client.send_to_node(
+                foreign_node.id, "/api/agent/benchmark/sink/start",
+                {"sink_id": run_id, "port": test_port, "protocol": probe_proto, "duration_sec": 90},
+            )
+            if sink.get("status") != "success":
+                metrics["error"] = f"sink: {sink.get('message')}"
+                return metrics
+            sr = await client.send_to_node(
+                foreign_node.id, "/api/agent/tunnels/apply",
+                {"tunnel_id": run_id, "core": "hysteria2", "type": ttype, "spec": foreign_spec}, timeout=40.0,
+            )
+            if sr.get("status") != "success":
+                metrics["error"] = f"server: {sr.get('message')}"
+                return metrics
+            cr = await client.send_to_node(
+                iran_node.id, "/api/agent/tunnels/apply",
+                {"tunnel_id": run_id, "core": "hysteria2", "type": ttype, "spec": iran_spec}, timeout=40.0,
+            )
+            if cr.get("status") != "success":
+                metrics["error"] = f"client: {cr.get('message')}"
+                return metrics
+            await asyncio.sleep(4.0)
+            probe = await client.send_to_node(
+                iran_node.id, "/api/agent/benchmark/probe",
+                {"host": "127.0.0.1", "port": test_port, "protocol": probe_proto,
+                 "ping_count": 10, "throughput_seconds": 3.0}, timeout=40.0,
+            )
+            if probe.get("status") == "success":
+                metrics = probe.get("metrics") or metrics
+            else:
+                metrics["error"] = f"probe: {probe.get('message')}"
+        finally:
+            for nid in (iran_node.id, foreign_node.id):
+                try:
+                    await client.send_to_node(nid, "/api/agent/tunnels/remove", {"tunnel_id": run_id})
+                except Exception:
+                    pass
+            try:
+                await client.send_to_node(foreign_node.id, "/api/agent/benchmark/sink/stop", {"sink_id": run_id})
+            except Exception:
+                pass
+        return metrics
+
+    for profile in profiles:
+        m = await run_profile(profile)
+        score = 0.0
+        if m.get("ok"):
+            thr = float(m.get("throughput_mbps") or 0.0)
+            lat = float(m.get("latency_ms") or 500.0)
+            loss = float(m.get("loss_percent") or 0.0)
+            score = round(min(thr / 100.0, 1.0) * 60 + max(0.0, 1 - min(lat, 500) / 500) * 30 + max(0.0, 1 - loss / 100) * 10, 1)
+        results.append({
+            "profile": profile["id"],
+            "obfs": "salamander" if profile["obfs_password"] else "off",
+            "ok": bool(m.get("ok")),
+            "latency_ms": m.get("latency_ms"),
+            "throughput_mbps": m.get("throughput_mbps"),
+            "loss_percent": m.get("loss_percent"),
+            "score": score,
+            "error": m.get("error"),
+        })
+
+    ranked = sorted(results, key=lambda r: (not r["ok"], -(r["score"] or 0.0)))
+    best = next((r for r in ranked if r["ok"]), None)
+
+    applied = False
+    if best:
+        new_spec = dict(tunnel.spec or {})
+        new_spec["auth"] = auth
+        new_spec["obfs_password"] = obfs_pw if best["obfs"] == "salamander" else ""
+        new_spec["sni"] = sni
+        tunnel.spec = new_spec
+        flag_modified(tunnel, "spec")
+        tunnel.revision += 1
+        tunnel.updated_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(tunnel)
+        try:
+            await apply_tunnel(tunnel_id, request, db)
+            applied = True
+        except Exception as e:
+            logger.warning(f"hysteria2 autotune: re-apply failed for {tunnel_id}: {e}")
+
+    return {
+        "status": "success",
+        "ok": best is not None,
+        "best": ({"obfs": best["obfs"], "throughput_mbps": best["throughput_mbps"],
+                  "latency_ms": best["latency_ms"], "applied": applied} if best else None),
+        "results": ranked,
+        "probe_protocol": probe_proto,
+    }
+
+
 # NOTE: bulk routes must be registered before POST /{tunnel_id}/apply so the
 # literal "/bulk/..." paths are not captured by the {tunnel_id} parameter.
 @router.post("/bulk/apply")
@@ -2192,7 +2912,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
             return {"status": "applied", "message": "Tunnel reapplied successfully"}
         raise HTTPException(status_code=500, detail=tunnel.error_message or f"Failed to apply {tunnel.core} tunnel")
 
-    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
+    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4"}
     foreign_node = None
     iran_node = None
     
@@ -2218,7 +2938,16 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
         if foreign_node and iran_node:
             try:
                 spec = tunnel.spec.copy() if tunnel.spec else {}
-                
+
+                # obfs4 uses a two-phase (server-first, fetch cert, then client)
+                # apply, so it bypasses the symmetric sender below.
+                if tunnel.core == "obfs4":
+                    updated = await apply_obfs4_tunnel(tunnel, foreign_node, iran_node, db, client)
+                    if updated.status == "active":
+                        return {"status": "applied", "message": "Tunnel reapplied successfully to both nodes"}
+                    tunnel.status = "error"
+                    raise HTTPException(status_code=500, detail=updated.error_message or "obfs4 apply failed")
+
                 if tunnel.core == "backhaul":
                     transport = spec.get("transport", "tcp")
                     control_port = spec.get("control_port") or spec.get("public_port") or spec.get("listen_port") or 3080
@@ -2554,7 +3283,73 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                     client_spec["server_addr"] = format_address_port(iran_node_ip, int(control_port))
                     client_spec["target_host"] = target_host
                     client_spec["ports"] = ports
-                
+
+                elif tunnel.core == "hysteria2":
+                    # Hysteria2 QUIC carrier: FOREIGN = server, IRAN = client.
+                    # server_spec -> iran, client_spec -> foreign.
+                    ttype = (tunnel.type or spec.get("type") or "udp").lower()
+                    ports = parse_ports_from_spec(spec)
+                    if not ports:
+                        single = spec.get("listen_port") or spec.get("public_port")
+                        if single and str(single).isdigit():
+                            ports = [int(single)]
+                    if not ports:
+                        tunnel.status = "error"
+                        tunnel.error_message = "Hysteria2 requires ports"
+                        await db.commit()
+                        raise HTTPException(status_code=400, detail="Hysteria2 requires ports")
+                    foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                    if not foreign_node_ip:
+                        tunnel.status = "error"
+                        tunnel.error_message = "Foreign node has no IP address"
+                        await db.commit()
+                        raise HTTPException(status_code=400, detail="Foreign node has no IP address")
+                    iran_node_ip = iran_node.node_metadata.get("ip_address")
+                    spec["ports"] = ports
+                    server_spec, client_spec, resolved = build_hysteria2_specs(
+                        spec, tunnel.id, ttype, iran_node_ip or "", foreign_node_ip
+                    )
+                    for k in ("auth", "obfs_password", "sni", "control_port", "target_host", "type"):
+                        tunnel.spec[k] = resolved[k]
+                    tunnel.spec["ports"] = ports
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(tunnel, "spec")
+                    await db.commit()
+                    await db.refresh(tunnel)
+
+                elif tunnel.core == "tuic":
+                    # TUIC QUIC carrier: FOREIGN = tuic-server, IRAN = tuic-client.
+                    # server_spec -> iran, client_spec -> foreign.
+                    ttype = (tunnel.type or spec.get("type") or "udp").lower()
+                    ports = parse_ports_from_spec(spec)
+                    if not ports:
+                        single = spec.get("listen_port") or spec.get("public_port")
+                        if single and str(single).isdigit():
+                            ports = [int(single)]
+                    if not ports:
+                        tunnel.status = "error"
+                        tunnel.error_message = "TUIC requires ports"
+                        await db.commit()
+                        raise HTTPException(status_code=400, detail="TUIC requires ports")
+                    foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                    if not foreign_node_ip:
+                        tunnel.status = "error"
+                        tunnel.error_message = "Foreign node has no IP address"
+                        await db.commit()
+                        raise HTTPException(status_code=400, detail="Foreign node has no IP address")
+                    iran_node_ip = iran_node.node_metadata.get("ip_address")
+                    spec["ports"] = ports
+                    server_spec, client_spec, resolved = build_tuic_specs(
+                        spec, tunnel.id, ttype, iran_node_ip or "", foreign_node_ip
+                    )
+                    for k in ("uuid", "password", "sni", "control_port", "target_host", "type", "udp_relay_mode", "congestion_control"):
+                        tunnel.spec[k] = resolved[k]
+                    tunnel.spec["ports"] = ports
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(tunnel, "spec")
+                    await db.commit()
+                    await db.refresh(tunnel)
+
                 if not iran_node.node_metadata.get("api_address"):
                     iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
                     await db.commit()
@@ -2567,7 +3362,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         "tunnel_id": tunnel.id,
                         "core": tunnel.core,
                         "type": tunnel.type,
-                        "spec": server_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel"] else spec
+                        "spec": server_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel", "hysteria2", "tuic"] else spec
                     }
                 )
                 
@@ -2590,7 +3385,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         "tunnel_id": tunnel.id,
                         "core": tunnel.core,
                         "type": tunnel.type,
-                        "spec": client_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel"] else spec
+                        "spec": client_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel", "hysteria2", "tuic"] else spec
                     }
                 )
                 
@@ -2772,11 +3567,11 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
                 import logging
                 logging.error(f"Failed to stop FRP server: {e}")
     
-    if tunnel.core in ("udp2raw", "zapret", "trusttunnel", "snispoof"):
-        # udp2raw and trusttunnel run on both the iran and foreign nodes; zapret
-        # and snispoof run on one node but may have been registered under
-        # node_id/iran/foreign. Remove from each so every process (and any
-        # iptables rules) is torn down.
+    if tunnel.core in ("udp2raw", "zapret", "trusttunnel", "snispoof", "hysteria2", "tuic", "obfs4", "warp"):
+        # udp2raw/trusttunnel/hysteria2/tuic/obfs4 run on both the iran and
+        # foreign nodes; zapret/snispoof/warp run on one node but may have been
+        # registered under node_id/iran/foreign. Remove from each so every
+        # process (and any iptables rules) is torn down.
         client = NodeClient()
         node_ids = {tunnel.node_id, tunnel.iran_node_id, tunnel.foreign_node_id}
         for node_id in node_ids:

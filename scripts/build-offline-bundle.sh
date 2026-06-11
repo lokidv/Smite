@@ -10,7 +10,7 @@
 #   - panel/ and node/ source
 #   - prebuilt frontend (frontend-dist/)
 #   - pip wheels (wheels/panel, wheels/node)
-#   - tunnel binaries (bin/): gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws (zapret), rstund/rstunc (trusttunnel), xray (snispoof)
+#   - tunnel binaries (bin/): gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws (zapret), rstund/rstunc (trusttunnel), xray (snispoof), hysteria (hysteria2), tuic-server/tuic-client (tuic), usque (warp)
 #   - systemd units, CLIs, and the native installers
 #
 # Transfer the tarball to the offline server, extract it, then run:
@@ -47,6 +47,12 @@ ZAPRET_VERSION="v72.12"
 RSTUN_VERSION="0.7.4"
 # Xray-core: front proxy for the snispoof core (SNI-spoof + zapret).
 XRAY_VERSION="26.3.27"
+# Hysteria2: QUIC/HTTP3 carrier core (WireGuard UDP + V2Ray TCP tunneling).
+HYSTERIA_VERSION="2.9.2"
+# TUIC: second QUIC carrier (Itsusinn/tuic, native TCP/UDP port forwarding).
+TUIC_VERSION="1.8.6"
+# usque: Cloudflare WARP-MASQUE client (Diniboy1123/usque) for SOCKS5 egress.
+USQUE_VERSION="3.0.0"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -61,8 +67,8 @@ if [ -z "$ARCH" ]; then
 fi
 case "$ARCH" in
     # rathole publishes no gnu build for aarch64 -> use the static musl build there
-    amd64) RATHOLE_TARGET="x86_64-unknown-linux-gnu"; UDP2RAW_ASSET="udp2raw_amd64"; ZAPRET_ARCH="linux-x86_64"; RSTUN_ASSET="rstun-linux-x86_64.tar.gz"; XRAY_ASSET="Xray-linux-64.zip" ;;
-    arm64) RATHOLE_TARGET="aarch64-unknown-linux-musl"; UDP2RAW_ASSET="udp2raw_arm"; ZAPRET_ARCH="linux-arm64"; RSTUN_ASSET="rstun-linux-aarch64.tar.gz"; XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;;
+    amd64) RATHOLE_TARGET="x86_64-unknown-linux-gnu"; UDP2RAW_ASSET="udp2raw_amd64"; ZAPRET_ARCH="linux-x86_64"; RSTUN_ASSET="rstun-linux-x86_64.tar.gz"; XRAY_ASSET="Xray-linux-64.zip"; HYSTERIA_ASSET="hysteria-linux-amd64"; TUIC_SERVER_ASSET="tuic-server-x86_64-linux"; TUIC_CLIENT_ASSET="tuic-client-x86_64-linux"; USQUE_ASSET="usque_${USQUE_VERSION}_linux_amd64.zip" ;;
+    arm64) RATHOLE_TARGET="aarch64-unknown-linux-musl"; UDP2RAW_ASSET="udp2raw_arm"; ZAPRET_ARCH="linux-arm64"; RSTUN_ASSET="rstun-linux-aarch64.tar.gz"; XRAY_ASSET="Xray-linux-arm64-v8a.zip"; HYSTERIA_ASSET="hysteria-linux-arm64"; TUIC_SERVER_ASSET="tuic-server-aarch64-linux"; TUIC_CLIENT_ASSET="tuic-client-aarch64-linux"; USQUE_ASSET="usque_${USQUE_VERSION}_linux_arm64.zip" ;;
     *) fail "Unsupported TARGET_ARCH: $ARCH (use amd64 or arm64)" ;;
 esac
 progress "Target architecture: $ARCH"
@@ -233,6 +239,27 @@ XRAY_BIN="$(find "$DL/xray" -type f -name xray | head -n1)"
 [ -n "$XRAY_BIN" ] || fail "xray binary not found in Xray-core release archive"
 install -m 0755 "$XRAY_BIN" "$STAGE/bin/xray"
 progress "xray-core ${XRAY_VERSION}"
+
+# hysteria2 / QUIC carrier core (apernet/hysteria, single static binary)
+dl "https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/${HYSTERIA_ASSET}" "$DL/hysteria"
+install -m 0755 "$DL/hysteria" "$STAGE/bin/hysteria"
+progress "hysteria ${HYSTERIA_VERSION}"
+
+# tuic / second QUIC carrier core (Itsusinn/tuic, separate server + client binaries)
+dl "https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/${TUIC_SERVER_ASSET}" "$DL/tuic-server"
+dl "https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/${TUIC_CLIENT_ASSET}" "$DL/tuic-client"
+install -m 0755 "$DL/tuic-server" "$STAGE/bin/tuic-server"
+install -m 0755 "$DL/tuic-client" "$STAGE/bin/tuic-client"
+progress "tuic ${TUIC_VERSION}"
+
+# usque / Cloudflare WARP-MASQUE client (Diniboy1123/usque, zip with a single binary)
+dl "https://github.com/Diniboy1123/usque/releases/download/v${USQUE_VERSION}/${USQUE_ASSET}" "$DL/usque.zip"
+mkdir -p "$DL/usque"
+unzip -qo "$DL/usque.zip" -d "$DL/usque"
+USQUE_BIN="$(find "$DL/usque" -type f -name usque | head -n1)"
+[ -n "$USQUE_BIN" ] || fail "usque binary not found in release archive"
+install -m 0755 "$USQUE_BIN" "$STAGE/bin/usque"
+progress "usque ${USQUE_VERSION}"
 
 # --- 5. Make scripts executable ---
 chmod +x "$STAGE/scripts/"*.sh

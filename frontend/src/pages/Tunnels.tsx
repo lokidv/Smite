@@ -280,8 +280,197 @@ const parseTrustTunnelSpec = (spec: Record<string, any> | undefined, currentType
   return state
 }
 
+// ---- Hysteria2 (QUIC/HTTP3 carrier: WireGuard UDP + V2Ray TCP) ----
+type Hysteria2Type = 'udp' | 'tcp' | 'both'
+
+const HYSTERIA2_TYPES: Hysteria2Type[] = ['udp', 'tcp', 'both']
+const OBFS_DISABLED_VALUES = ['', 'off', 'none', 'false', '0']
+
+interface Hysteria2FormState {
+  type: Hysteria2Type
+  ports: string
+  target_host: string
+  target_port: string
+  control_port: string
+  sni: string
+  obfs: boolean
+  obfs_password: string
+}
+
+const createDefaultHysteria2State = (): Hysteria2FormState => ({
+  type: 'udp',
+  ports: '8581',
+  target_host: '127.0.0.1',
+  target_port: '',
+  control_port: '443',
+  sni: 'www.bing.com',
+  obfs: true,
+  obfs_password: '',
+})
+
+const buildHysteria2Spec = (state: Hysteria2FormState, typeOverride?: string): Record<string, any> => {
+  const typeCandidate = (typeOverride || state.type || 'udp') as Hysteria2Type
+  const type = HYSTERIA2_TYPES.includes(typeCandidate) ? typeCandidate : 'udp'
+
+  const ports = state.ports
+    .split(',')
+    .map((p) => parseInt(p.trim(), 10))
+    .filter((p) => !Number.isNaN(p) && p > 0 && p <= 65535)
+
+  const spec: Record<string, any> = {
+    type,
+    target_host: state.target_host.trim() || '127.0.0.1',
+    ports,
+    sni: state.sni.trim() || 'www.bing.com',
+  }
+
+  if (ports.length > 0) {
+    spec.listen_port = ports[0]
+  }
+
+  const targetPort = parseInt(state.target_port, 10)
+  if (!Number.isNaN(targetPort) && targetPort > 0) {
+    spec.target_port = targetPort
+  }
+
+  const controlPort = parseInt(state.control_port, 10)
+  if (!Number.isNaN(controlPort) && controlPort > 0) {
+    spec.control_port = controlPort
+  }
+
+  // Salamander obfuscation: "off" disables it; otherwise carry a stable password
+  // so re-applies don't rotate it (toggling ON regenerates if none exists).
+  if (state.obfs) {
+    let pw = (state.obfs_password || '').trim()
+    if (!pw || OBFS_DISABLED_VALUES.includes(pw.toLowerCase())) {
+      pw = generateUuidV4().replace(/-/g, '')
+    }
+    spec.obfs_password = pw
+  } else {
+    spec.obfs_password = 'off'
+  }
+
+  return spec
+}
+
+const parseHysteria2Spec = (spec: Record<string, any> | undefined, currentType?: string): Hysteria2FormState => {
+  const state = createDefaultHysteria2State()
+  const typeCandidate = ((spec?.type || currentType || 'udp') as string).toLowerCase() as Hysteria2Type
+  if (HYSTERIA2_TYPES.includes(typeCandidate)) {
+    state.type = typeCandidate
+  }
+  if (!spec) {
+    return state
+  }
+  if (Array.isArray(spec.ports) && spec.ports.length > 0) {
+    state.ports = spec.ports.map((p: any) => (typeof p === 'object' && p?.local ? p.local : p)).join(',')
+  } else if (spec.listen_port) {
+    state.ports = String(spec.listen_port)
+  }
+  if (spec.target_host) state.target_host = String(spec.target_host)
+  if (spec.target_port) state.target_port = String(spec.target_port)
+  if (spec.control_port) state.control_port = String(spec.control_port)
+  if (spec.sni) state.sni = String(spec.sni)
+  const obfsVal = spec.obfs_password
+  if (obfsVal === undefined || obfsVal === null) {
+    state.obfs = true
+    state.obfs_password = ''
+  } else if (OBFS_DISABLED_VALUES.includes(String(obfsVal).trim().toLowerCase())) {
+    state.obfs = false
+    state.obfs_password = ''
+  } else {
+    state.obfs = true
+    state.obfs_password = String(obfsVal)
+  }
+  return state
+}
+
+// ---- TUIC (QUIC/HTTP3 carrier, sibling of Hysteria2) ----
+type TuicType = 'udp' | 'tcp' | 'both'
+
+const TUIC_TYPES: TuicType[] = ['udp', 'tcp', 'both']
+const TUIC_UDP_RELAY_MODES = ['native', 'quic']
+
+interface TuicFormState {
+  type: TuicType
+  ports: string
+  target_host: string
+  target_port: string
+  control_port: string
+  sni: string
+  udp_relay_mode: string
+}
+
+const createDefaultTuicState = (): TuicFormState => ({
+  type: 'udp',
+  ports: '8581',
+  target_host: '127.0.0.1',
+  target_port: '',
+  control_port: '443',
+  sni: 'www.bing.com',
+  udp_relay_mode: 'native',
+})
+
+const buildTuicSpec = (state: TuicFormState, typeOverride?: string): Record<string, any> => {
+  const typeCandidate = (typeOverride || state.type || 'udp') as TuicType
+  const type = TUIC_TYPES.includes(typeCandidate) ? typeCandidate : 'udp'
+
+  const ports = state.ports
+    .split(',')
+    .map((p) => parseInt(p.trim(), 10))
+    .filter((p) => !Number.isNaN(p) && p > 0 && p <= 65535)
+
+  const spec: Record<string, any> = {
+    type,
+    target_host: state.target_host.trim() || '127.0.0.1',
+    ports,
+    sni: state.sni.trim() || 'www.bing.com',
+    udp_relay_mode: TUIC_UDP_RELAY_MODES.includes(state.udp_relay_mode) ? state.udp_relay_mode : 'native',
+  }
+
+  if (ports.length > 0) {
+    spec.listen_port = ports[0]
+  }
+
+  const targetPort = parseInt(state.target_port, 10)
+  if (!Number.isNaN(targetPort) && targetPort > 0) {
+    spec.target_port = targetPort
+  }
+
+  const controlPort = parseInt(state.control_port, 10)
+  if (!Number.isNaN(controlPort) && controlPort > 0) {
+    spec.control_port = controlPort
+  }
+
+  return spec
+}
+
+const parseTuicSpec = (spec: Record<string, any> | undefined, currentType?: string): TuicFormState => {
+  const state = createDefaultTuicState()
+  const typeCandidate = ((spec?.type || currentType || 'udp') as string).toLowerCase() as TuicType
+  if (TUIC_TYPES.includes(typeCandidate)) {
+    state.type = typeCandidate
+  }
+  if (!spec) {
+    return state
+  }
+  if (Array.isArray(spec.ports) && spec.ports.length > 0) {
+    state.ports = spec.ports.map((p: any) => (typeof p === 'object' && p?.local ? p.local : p)).join(',')
+  } else if (spec.listen_port) {
+    state.ports = String(spec.listen_port)
+  }
+  if (spec.target_host) state.target_host = String(spec.target_host)
+  if (spec.target_port) state.target_port = String(spec.target_port)
+  if (spec.control_port) state.control_port = String(spec.control_port)
+  if (spec.sni) state.sni = String(spec.sni)
+  if (spec.udp_relay_mode && TUIC_UDP_RELAY_MODES.includes(String(spec.udp_relay_mode))) {
+    state.udp_relay_mode = String(spec.udp_relay_mode)
+  }
+  return state
+}
+
 // ---- In-place core/type change (reverse cores only) ----
-const CHANGEABLE_CORES = ['rathole', 'backhaul', 'chisel', 'frp', 'udp2raw', 'trusttunnel']
+const CHANGEABLE_CORES = ['rathole', 'backhaul', 'chisel', 'frp', 'udp2raw', 'trusttunnel', 'hysteria2', 'tuic']
 
 const CORE_LABELS: Record<string, string> = {
   rathole: 'Rathole',
@@ -290,6 +479,10 @@ const CORE_LABELS: Record<string, string> = {
   frp: 'FRP',
   udp2raw: 'udp2raw',
   trusttunnel: 'TrustTunnel (QUIC)',
+  hysteria2: 'Hysteria2 (QUIC)',
+  tuic: 'TUIC (QUIC)',
+  warp: 'WARP-MASQUE (egress)',
+  obfs4: 'obfs4 (TCP fallback)',
 }
 
 const CORE_TYPE_OPTIONS: Record<string, { value: string; label: string }[]> = {
@@ -317,6 +510,16 @@ const CORE_TYPE_OPTIONS: Record<string, { value: string; label: string }[]> = {
   trusttunnel: [
     { value: 'tcp', label: 'TCP' },
     { value: 'udp', label: 'UDP' },
+    { value: 'both', label: 'TCP + UDP' },
+  ],
+  hysteria2: [
+    { value: 'udp', label: 'UDP (WireGuard)' },
+    { value: 'tcp', label: 'TCP (V2Ray/Xray)' },
+    { value: 'both', label: 'TCP + UDP' },
+  ],
+  tuic: [
+    { value: 'udp', label: 'UDP (WireGuard)' },
+    { value: 'tcp', label: 'TCP (V2Ray/Xray)' },
     { value: 'both', label: 'TCP + UDP' },
   ],
 }
@@ -406,6 +609,109 @@ const parseZapretSpec = (spec: Record<string, any> | undefined, currentType?: st
   if (spec.queue_num) state.queue_num = String(spec.queue_num)
   if (spec.extra_args) state.extra_args = String(spec.extra_args)
   if (spec.target_ip) state.target_ip = String(spec.target_ip)
+  return state
+}
+
+// ---- WARP-MASQUE egress (usque SOCKS5, single-node) ----
+interface WarpFormState {
+  listen_addr: string
+  listen_port: string
+  sni: string
+  username: string
+  password: string
+}
+
+const createDefaultWarpState = (): WarpFormState => ({
+  listen_addr: '127.0.0.1',
+  listen_port: '1080',
+  sni: '',
+  username: '',
+  password: '',
+})
+
+const buildWarpSpec = (state: WarpFormState): Record<string, any> => {
+  const spec: Record<string, any> = {
+    listen_addr: state.listen_addr.trim() || '127.0.0.1',
+    listen_port: parseInt(state.listen_port, 10) || 1080,
+    sni: state.sni.trim(),
+  }
+  if (state.username.trim() && state.password.trim()) {
+    spec.username = state.username.trim()
+    spec.password = state.password.trim()
+  }
+  return spec
+}
+
+const parseWarpSpec = (spec: Record<string, any> | undefined): WarpFormState => {
+  const state = createDefaultWarpState()
+  if (!spec) return state
+  if (spec.listen_addr) state.listen_addr = String(spec.listen_addr)
+  if (spec.listen_port) state.listen_port = String(spec.listen_port)
+  if (spec.sni) state.sni = String(spec.sni)
+  if (spec.username) state.username = String(spec.username)
+  if (spec.password) state.password = String(spec.password)
+  return state
+}
+
+// ---- obfs4 (TCP obfuscation carrier, severe-crisis fallback, via gost) ----
+const OBFS4_IAT_MODES = ['0', '1', '2']
+
+interface Obfs4FormState {
+  ports: string
+  target_host: string
+  target_port: string
+  control_port: string
+  iat_mode: string
+}
+
+const createDefaultObfs4State = (): Obfs4FormState => ({
+  ports: '443',
+  target_host: '127.0.0.1',
+  target_port: '',
+  control_port: '8443',
+  iat_mode: '0',
+})
+
+const buildObfs4Spec = (state: Obfs4FormState): Record<string, any> => {
+  const ports = state.ports
+    .split(',')
+    .map((p) => parseInt(p.trim(), 10))
+    .filter((p) => !Number.isNaN(p) && p > 0 && p <= 65535)
+
+  const spec: Record<string, any> = {
+    type: 'tcp',
+    target_host: state.target_host.trim() || '127.0.0.1',
+    ports,
+    iat_mode: OBFS4_IAT_MODES.includes(state.iat_mode) ? state.iat_mode : '0',
+  }
+  if (ports.length > 0) {
+    spec.listen_port = ports[0]
+  }
+  const targetPort = parseInt(state.target_port, 10)
+  if (!Number.isNaN(targetPort) && targetPort > 0) {
+    spec.target_port = targetPort
+  }
+  const controlPort = parseInt(state.control_port, 10)
+  if (!Number.isNaN(controlPort) && controlPort > 0) {
+    spec.control_port = controlPort
+  }
+  return spec
+}
+
+const parseObfs4Spec = (spec: Record<string, any> | undefined): Obfs4FormState => {
+  const state = createDefaultObfs4State()
+  if (!spec) return state
+  if (Array.isArray(spec.ports) && spec.ports.length > 0) {
+    state.ports = spec.ports.map((p: any) => (typeof p === 'object' && p?.local ? p.local : p)).join(',')
+  } else if (spec.listen_port) {
+    state.ports = String(spec.listen_port)
+  }
+  if (spec.target_host) state.target_host = String(spec.target_host)
+  if (spec.target_port) state.target_port = String(spec.target_port)
+  if (spec.control_port) state.control_port = String(spec.control_port)
+  if (spec.iat_mode !== undefined && OBFS4_IAT_MODES.includes(String(spec.iat_mode))) {
+    state.iat_mode = String(spec.iat_mode)
+  }
   return state
 }
 
@@ -846,6 +1152,9 @@ const Tunnels = () => {
             if (tunnel.core === 'snispoof') {
               return (tunnel.spec?.local_port || 'N/A').toString()
             }
+            if (tunnel.core === 'warp') {
+              return (tunnel.spec?.listen_port || '1080').toString()
+            }
             if (tunnel.spec?.ports) {
               if (Array.isArray(tunnel.spec.ports)) {
                 // For Backhaul, ports are in format "8080=127.0.0.1:8080", extract just the port numbers
@@ -879,6 +1188,8 @@ const Tunnels = () => {
               trusttunnel: { bg: 'bg-sky-100 dark:bg-sky-900/30', text: 'text-sky-800 dark:text-sky-200', border: 'border-sky-300 dark:border-sky-700' },
               zapret: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-200', border: 'border-emerald-300 dark:border-emerald-700' },
               snispoof: { bg: 'bg-fuchsia-100 dark:bg-fuchsia-900/30', text: 'text-fuchsia-800 dark:text-fuchsia-200', border: 'border-fuchsia-300 dark:border-fuchsia-700' },
+              warp: { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-800 dark:text-amber-200', border: 'border-amber-300 dark:border-amber-700' },
+              obfs4: { bg: 'bg-teal-100 dark:bg-teal-900/30', text: 'text-teal-800 dark:text-teal-200', border: 'border-teal-300 dark:border-teal-700' },
             }
             return coreColors[tunnel.core] || { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-800 dark:text-gray-200', border: 'border-gray-300 dark:border-gray-600' }
           }
@@ -886,7 +1197,7 @@ const Tunnels = () => {
           const coreBadge = getCoreBadge()
           const ports = getPorts()
           const iranNode = nodes.find(n => n.id === tunnel.iran_node_id || n.id === tunnel.node_id)
-            || (tunnel.core === 'zapret' || tunnel.core === 'snispoof' ? servers.find(s => s.id === tunnel.node_id) : undefined)
+            || (tunnel.core === 'zapret' || tunnel.core === 'snispoof' || tunnel.core === 'warp' ? servers.find(s => s.id === tunnel.node_id) : undefined)
           const foreignServer = servers.find(s => s.id === tunnel.foreign_node_id)
 
           return (
@@ -1559,8 +1870,12 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
   const [showBackhaulAdvanced, setShowBackhaulAdvanced] = useState(false)
   const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(() => parseUdp2rawSpec(tunnel.spec, tunnel.type))
   const [trustTunnelState, setTrustTunnelState] = useState<TrustTunnelFormState>(() => parseTrustTunnelSpec(tunnel.spec, tunnel.type))
+  const [hysteria2State, setHysteria2State] = useState<Hysteria2FormState>(() => parseHysteria2Spec(tunnel.spec, tunnel.type))
+  const [tuicState, setTuicState] = useState<TuicFormState>(() => parseTuicSpec(tunnel.spec, tunnel.type))
   const [zapretState, setZapretState] = useState<ZapretFormState>(() => parseZapretSpec(tunnel.spec, tunnel.type))
   const [sniSpoofState, setSniSpoofState] = useState<SniSpoofFormState>(() => parseSniSpoofSpec(tunnel.spec, tunnel.type))
+  const [warpState, setWarpState] = useState<WarpFormState>(() => parseWarpSpec(tunnel.spec))
+  const [obfs4State, setObfs4State] = useState<Obfs4FormState>(() => parseObfs4Spec(tunnel.spec))
 
   // In-place core/type change (reverse cores only)
   const coreChangeable = CHANGEABLE_CORES.includes(tunnel.core)
@@ -1585,6 +1900,12 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
     }
     if (editCore === 'trusttunnel') {
       setTrustTunnelState((prev) => ({ ...prev, transport: newType as TrustTunnelTransport }))
+    }
+    if (editCore === 'hysteria2') {
+      setHysteria2State((prev) => ({ ...prev, type: newType as Hysteria2Type }))
+    }
+    if (editCore === 'tuic') {
+      setTuicState((prev) => ({ ...prev, type: newType as TuicType }))
     }
   }
 
@@ -1683,10 +2004,18 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
         updatedSpec = { ...tunnel.spec, ...buildUdp2rawSpec(udp2rawState, editType) }
       } else if (tunnel.core === 'trusttunnel') {
         updatedSpec = { ...tunnel.spec, ...buildTrustTunnelSpec(trustTunnelState, editType) }
+      } else if (tunnel.core === 'hysteria2') {
+        updatedSpec = { ...tunnel.spec, ...buildHysteria2Spec(hysteria2State, editType) }
+      } else if (tunnel.core === 'tuic') {
+        updatedSpec = { ...tunnel.spec, ...buildTuicSpec(tuicState, editType) }
       } else if (tunnel.core === 'zapret') {
         updatedSpec = { ...tunnel.spec, ...buildZapretSpec(zapretState, tunnel.type) }
       } else if (tunnel.core === 'snispoof') {
         updatedSpec = { ...tunnel.spec, ...buildSniSpoofSpec(sniSpoofState, tunnel.type) }
+      } else if (tunnel.core === 'warp') {
+        updatedSpec = { ...tunnel.spec, ...buildWarpSpec(warpState) }
+      } else if (tunnel.core === 'obfs4') {
+        updatedSpec = { ...tunnel.spec, ...buildObfs4Spec(obfs4State) }
       }
 
       await api.put(`/tunnels/${tunnel.id}`, {
@@ -1828,6 +2157,25 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
             />
           )}
 
+          {!coreChanged && tunnel.core === 'hysteria2' && (
+            <Hysteria2Form
+              state={hysteria2State}
+              tunnelId={tunnel.id}
+              onChange={(partial) => {
+                setHysteria2State((prev) => ({ ...prev, ...partial }))
+              }}
+            />
+          )}
+
+          {!coreChanged && tunnel.core === 'tuic' && (
+            <TuicForm
+              state={tuicState}
+              onChange={(partial) => {
+                setTuicState((prev) => ({ ...prev, ...partial }))
+              }}
+            />
+          )}
+
           {tunnel.core === 'zapret' && (
             <ZapretForm
               state={zapretState}
@@ -1843,6 +2191,25 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
               tunnelId={tunnel.id}
               onChange={(partial) => {
                 setSniSpoofState((prev) => ({ ...prev, ...partial }))
+              }}
+            />
+          )}
+
+          {tunnel.core === 'warp' && (
+            <WarpForm
+              state={warpState}
+              tunnelId={tunnel.id}
+              onChange={(partial) => {
+                setWarpState((prev) => ({ ...prev, ...partial }))
+              }}
+            />
+          )}
+
+          {tunnel.core === 'obfs4' && (
+            <Obfs4Form
+              state={obfs4State}
+              onChange={(partial) => {
+                setObfs4State((prev) => ({ ...prev, ...partial }))
               }}
             />
           )}
@@ -2135,8 +2502,24 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     }
     return state
   })
+  const [hysteria2State, setHysteria2State] = useState<Hysteria2FormState>(() => {
+    const state = createDefaultHysteria2State()
+    if (initial?.core === 'hysteria2' && initial.type && HYSTERIA2_TYPES.includes(initial.type as Hysteria2Type)) {
+      state.type = initial.type as Hysteria2Type
+    }
+    return state
+  })
+  const [tuicState, setTuicState] = useState<TuicFormState>(() => {
+    const state = createDefaultTuicState()
+    if (initial?.core === 'tuic' && initial.type && TUIC_TYPES.includes(initial.type as TuicType)) {
+      state.type = initial.type as TuicType
+    }
+    return state
+  })
   const [zapretState, setZapretState] = useState<ZapretFormState>(createDefaultZapretState())
   const [sniSpoofState, setSniSpoofState] = useState<SniSpoofFormState>(createDefaultSniSpoofState())
+  const [warpState, setWarpState] = useState<WarpFormState>(createDefaultWarpState())
+  const [obfs4State, setObfs4State] = useState<Obfs4FormState>(createDefaultObfs4State())
 
   // Auto-populate remote_ip with foreign server IP when GOST is selected
   useEffect(() => {
@@ -2314,6 +2697,34 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         tunnelType = trustTunnelState.transport
       }
 
+      if (formData.core === 'hysteria2') {
+        if ((!formData.node_id && !formData.iran_node_id) || !formData.foreign_node_id) {
+          alert('Hysteria2 needs both an iran node (public side) and a foreign server (runs the QUIC server)')
+          return
+        }
+        spec = buildHysteria2Spec(hysteria2State)
+        if (!Array.isArray(spec.ports) || spec.ports.length === 0) {
+          alert('Please enter at least one valid public port for Hysteria2 (e.g. 8581 for WireGuard)')
+          return
+        }
+        spec.use_ipv6 = formData.use_ipv6 || false
+        tunnelType = hysteria2State.type
+      }
+
+      if (formData.core === 'tuic') {
+        if ((!formData.node_id && !formData.iran_node_id) || !formData.foreign_node_id) {
+          alert('TUIC needs both an iran node (public side) and a foreign server (runs the QUIC server)')
+          return
+        }
+        spec = buildTuicSpec(tuicState)
+        if (!Array.isArray(spec.ports) || spec.ports.length === 0) {
+          alert('Please enter at least one valid public port for TUIC (e.g. 8581 for WireGuard)')
+          return
+        }
+        spec.use_ipv6 = formData.use_ipv6 || false
+        tunnelType = tuicState.type
+      }
+
       if (formData.core === 'zapret') {
         if (!formData.node_id && !formData.iran_node_id) {
           alert('zapret requires a node (the server running the proxy / outbound TLS)')
@@ -2339,6 +2750,33 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         }
         spec = buildSniSpoofSpec(sniSpoofState)
         tunnelType = sniSpoofState.desync_mode
+      }
+
+      if (formData.core === 'warp') {
+        if (!formData.node_id && !formData.iran_node_id && !formData.foreign_node_id) {
+          alert('WARP requires a node (normally the foreign server whose IP you want to mask)')
+          return
+        }
+        const lp = parseInt(warpState.listen_port, 10)
+        if (Number.isNaN(lp) || lp <= 0 || lp > 65535) {
+          alert('Please enter a valid SOCKS listen port for WARP')
+          return
+        }
+        spec = buildWarpSpec(warpState)
+        tunnelType = 'socks'
+      }
+
+      if (formData.core === 'obfs4') {
+        if (!formData.iran_node_id && !formData.node_id) {
+          alert('obfs4 requires an Iran node and a foreign server')
+          return
+        }
+        if (!formData.foreign_node_id) {
+          alert('obfs4 requires a foreign server (runs the obfs4 server)')
+          return
+        }
+        spec = buildObfs4Spec(obfs4State)
+        tunnelType = 'tcp'
       }
       
       const payload = {
@@ -2388,11 +2826,19 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
       newType = udp2rawState.raw_mode
     } else if (core === 'trusttunnel') {
       newType = trustTunnelState.transport
+    } else if (core === 'hysteria2') {
+      newType = hysteria2State.type
+    } else if (core === 'tuic') {
+      newType = tuicState.type
     } else if (core === 'zapret') {
       newType = zapretState.desync_mode
     } else if (core === 'snispoof') {
       newType = sniSpoofState.desync_mode
-    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'zapret' || formData.core === 'snispoof') {
+    } else if (core === 'warp') {
+      newType = 'socks'
+    } else if (core === 'obfs4') {
+      newType = 'tcp'
+    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'zapret' || formData.core === 'snispoof' || formData.core === 'warp' || formData.core === 'obfs4') {
       newType = 'tcp'
     }
     setFormData({ ...formData, core, type: newType })
@@ -2423,7 +2869,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               required
             />
           </div>
-          {formData.core !== 'zapret' && formData.core !== 'snispoof' && (
+          {formData.core !== 'zapret' && formData.core !== 'snispoof' && formData.core !== 'warp' && (
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -2433,7 +2879,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 value={formData.iran_node_id || formData.node_id}
                 onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'trusttunnel'}
+                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
               >
                 <option value="">{t.tunnels.selectIranNode}</option>
                 {nodes.map((node) => (
@@ -2451,7 +2897,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 value={formData.foreign_node_id}
                 onChange={(e) => setFormData({ ...formData, foreign_node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'trusttunnel'}
+                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
               >
                 <option value="">{t.tunnels.selectForeignServer}</option>
                 {servers.map((server) => (
@@ -2488,6 +2934,30 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
             </div>
           )}
 
+          {formData.core === 'warp' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                {t.tunnels.warpNode}
+              </label>
+              <select
+                value={formData.node_id || formData.foreign_node_id || formData.iran_node_id}
+                onChange={(e) => setFormData({ ...formData, node_id: e.target.value, foreign_node_id: '', iran_node_id: '' })}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                required
+              >
+                <option value="">{t.tunnels.warpSelectNode}</option>
+                {[...servers, ...nodes].map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.name} ({node.metadata?.role || node.node_metadata?.role || 'node'})
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                {t.tunnels.warpNodeHint}
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -2505,8 +2975,12 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 <option value="frp">FRP</option>
                 <option value="udp2raw">udp2raw</option>
                 <option value="trusttunnel">TrustTunnel (QUIC)</option>
+                <option value="hysteria2">Hysteria2 (QUIC carrier)</option>
+                <option value="tuic">TUIC (QUIC carrier)</option>
                 <option value="zapret">Zapret (DPI bypass)</option>
                 <option value="snispoof">SNI Spoof (Xray + Zapret)</option>
+                <option value="warp">WARP-MASQUE (egress)</option>
+                <option value="obfs4">obfs4 (TCP fallback)</option>
               </select>
             </div>
             <div>
@@ -2527,6 +3001,12 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                   if (formData.core === 'trusttunnel') {
                     setTrustTunnelState((prev) => ({ ...prev, transport: e.target.value as TrustTunnelTransport }))
                   }
+                  if (formData.core === 'hysteria2') {
+                    setHysteria2State((prev) => ({ ...prev, type: e.target.value as Hysteria2Type }))
+                  }
+                  if (formData.core === 'tuic') {
+                    setTuicState((prev) => ({ ...prev, type: e.target.value as TuicType }))
+                  }
                   if (formData.core === 'zapret') {
                     setZapretState((prev) => ({ ...prev, desync_mode: e.target.value }))
                   }
@@ -2535,10 +3015,14 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                   }
                 }}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                disabled={formData.core === 'chisel'}
+                disabled={formData.core === 'chisel' || formData.core === 'warp' || formData.core === 'obfs4'}
               >
                 {formData.core === 'chisel' ? (
                   <option value={formData.core}>{formData.core.charAt(0).toUpperCase() + formData.core.slice(1)}</option>
+                ) : formData.core === 'warp' ? (
+                  <option value="socks">SOCKS5 (WARP egress)</option>
+                ) : formData.core === 'obfs4' ? (
+                  <option value="tcp">TCP (V2Ray / any TCP)</option>
                 ) : formData.core === 'rathole' ? (
                   <>
                     <option value="tcp">TCP</option>
@@ -2567,6 +3051,12 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                   <>
                     <option value="tcp">TCP</option>
                     <option value="udp">UDP</option>
+                    <option value="both">TCP + UDP</option>
+                  </>
+                ) : formData.core === 'hysteria2' || formData.core === 'tuic' ? (
+                  <>
+                    <option value="udp">UDP (WireGuard)</option>
+                    <option value="tcp">TCP (V2Ray/Xray)</option>
                     <option value="both">TCP + UDP</option>
                   </>
                 ) : formData.core === 'zapret' || formData.core === 'snispoof' ? (
@@ -2667,6 +3157,30 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
             />
           )}
 
+          {formData.core === 'hysteria2' && (
+            <Hysteria2Form
+              state={hysteria2State}
+              onChange={(partial) => {
+                setHysteria2State((prev) => ({ ...prev, ...partial }))
+                if (partial.type) {
+                  setFormData((prev) => ({ ...prev, type: partial.type as string }))
+                }
+              }}
+            />
+          )}
+
+          {formData.core === 'tuic' && (
+            <TuicForm
+              state={tuicState}
+              onChange={(partial) => {
+                setTuicState((prev) => ({ ...prev, ...partial }))
+                if (partial.type) {
+                  setFormData((prev) => ({ ...prev, type: partial.type as string }))
+                }
+              }}
+            />
+          )}
+
           {formData.core === 'zapret' && (
             <ZapretForm
               state={zapretState}
@@ -2687,6 +3201,24 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 if (partial.desync_mode) {
                   setFormData((prev) => ({ ...prev, type: partial.desync_mode as string }))
                 }
+              }}
+            />
+          )}
+
+          {formData.core === 'warp' && (
+            <WarpForm
+              state={warpState}
+              onChange={(partial) => {
+                setWarpState((prev) => ({ ...prev, ...partial }))
+              }}
+            />
+          )}
+
+          {formData.core === 'obfs4' && (
+            <Obfs4Form
+              state={obfs4State}
+              onChange={(partial) => {
+                setObfs4State((prev) => ({ ...prev, ...partial }))
               }}
             />
           )}
@@ -3214,6 +3746,351 @@ function TrustTunnelForm({
   )
 }
 
+function Hysteria2Form({
+  state,
+  onChange,
+  tunnelId,
+}: {
+  state: Hysteria2FormState
+  onChange: (partial: Partial<Hysteria2FormState>) => void
+  tunnelId?: string
+}) {
+  const { t } = useLanguage()
+  const [tuneBusy, setTuneBusy] = useState(false)
+  const [tuneResult, setTuneResult] = useState<any | null>(null)
+  const [tuneError, setTuneError] = useState('')
+
+  const runAutotune = async () => {
+    if (!tunnelId) return
+    setTuneBusy(true); setTuneError(''); setTuneResult(null)
+    try {
+      const res = await api.post(`/tunnels/${tunnelId}/hysteria2/autotune`)
+      setTuneResult(res.data)
+      if (res.data?.best) {
+        onChange({ obfs: res.data.best.obfs === 'salamander' })
+      }
+    } catch (e: any) {
+      setTuneError(e?.response?.data?.detail || String(e))
+    } finally {
+      setTuneBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        {t.tunnels.hysteria2Hint}
+      </p>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2Ports}
+          </label>
+          <input
+            type="text"
+            value={state.ports}
+            onChange={(e) => onChange({ ports: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="8581"
+            dir="ltr"
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2PortsHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2ControlPort}
+          </label>
+          <input
+            type="number"
+            value={state.control_port}
+            onChange={(e) => onChange({ control_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="443"
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2ControlPortHint}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2TargetHost}
+          </label>
+          <input
+            type="text"
+            value={state.target_host}
+            onChange={(e) => onChange({ target_host: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="127.0.0.1"
+            dir="ltr"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2TargetHostHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2TargetPort}
+          </label>
+          <input
+            type="number"
+            value={state.target_port}
+            onChange={(e) => onChange({ target_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder={t.tunnels.hysteria2TargetPortPlaceholder}
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2TargetPortHint}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2Sni}
+          </label>
+          <input
+            type="text"
+            value={state.sni}
+            onChange={(e) => onChange({ sni: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="www.bing.com"
+            dir="ltr"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2SniHint}
+          </p>
+        </div>
+        <div className="flex flex-col justify-center">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={state.obfs}
+              onChange={(e) => onChange({ obfs: e.target.checked })}
+              className="w-4 h-4 rounded border-gray-300 dark:border-gray-600"
+            />
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {t.tunnels.hysteria2Obfs}
+            </span>
+          </label>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2ObfsHint}
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 space-y-1">
+        <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+          {t.tunnels.hysteria2ManualTitle}
+        </p>
+        <p className="text-xs text-amber-700 dark:text-amber-300 whitespace-pre-line">
+          {t.tunnels.hysteria2ManualBody
+            .replace('{control_port}', state.control_port || '443')
+            .replace('{target}', `${state.target_host || '127.0.0.1'}:${state.target_port || state.ports.split(',')[0] || '8581'}`)
+            .replace('{ports}', state.ports || '8581')}
+        </p>
+      </div>
+
+      {tunnelId && (
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={runAutotune}
+              disabled={tuneBusy}
+              className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {tuneBusy ? t.tunnels.hysteria2Tuning : t.tunnels.hysteria2Autotune}
+            </button>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {t.tunnels.hysteria2AutotuneHint}
+            </p>
+          </div>
+
+          {tuneError && (
+            <p className="text-xs text-red-600 dark:text-red-400" dir="ltr">{tuneError}</p>
+          )}
+
+          {tuneResult && (
+            <div className="text-xs space-y-1">
+              {tuneResult.best ? (
+                <p className="text-green-700 dark:text-green-400">
+                  {t.tunnels.hysteria2BestObfs}: <strong>{tuneResult.best.obfs}</strong>
+                  {' · '}{Number(tuneResult.best.throughput_mbps || 0).toFixed(1)} Mbps
+                  {' · '}{Number(tuneResult.best.latency_ms || 0).toFixed(0)} ms
+                  {tuneResult.best.applied ? ` · ${t.tunnels.hysteria2Applied}` : ''}
+                </p>
+              ) : (
+                <p className="text-red-600 dark:text-red-400">{t.tunnels.hysteria2NoWorking}</p>
+              )}
+              {Array.isArray(tuneResult.results) && (
+                <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                  {tuneResult.results.map((r: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between px-2 py-1 odd:bg-gray-50 dark:odd:bg-gray-700/40">
+                      <span className="font-mono">{r.obfs}</span>
+                      <span className={r.ok ? 'text-green-600 dark:text-green-400' : 'text-red-500'}>
+                        {r.ok ? `${Number(r.throughput_mbps || 0).toFixed(1)}Mbps / ${Number(r.latency_ms || 0).toFixed(0)}ms` : (r.error || 'fail')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TuicForm({
+  state,
+  onChange,
+}: {
+  state: TuicFormState
+  onChange: (partial: Partial<TuicFormState>) => void
+}) {
+  const { t } = useLanguage()
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        {t.tunnels.tuicHint}
+      </p>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2Ports}
+          </label>
+          <input
+            type="text"
+            value={state.ports}
+            onChange={(e) => onChange({ ports: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="8581"
+            dir="ltr"
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2PortsHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2ControlPort}
+          </label>
+          <input
+            type="number"
+            value={state.control_port}
+            onChange={(e) => onChange({ control_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="443"
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2ControlPortHint}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2TargetHost}
+          </label>
+          <input
+            type="text"
+            value={state.target_host}
+            onChange={(e) => onChange({ target_host: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="127.0.0.1"
+            dir="ltr"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2TargetHostHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2TargetPort}
+          </label>
+          <input
+            type="number"
+            value={state.target_port}
+            onChange={(e) => onChange({ target_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder={t.tunnels.hysteria2TargetPortPlaceholder}
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2TargetPortHint}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.hysteria2Sni}
+          </label>
+          <input
+            type="text"
+            value={state.sni}
+            onChange={(e) => onChange({ sni: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="www.bing.com"
+            dir="ltr"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.hysteria2SniHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.tuicUdpRelayMode}
+          </label>
+          <select
+            value={state.udp_relay_mode}
+            onChange={(e) => onChange({ udp_relay_mode: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          >
+            <option value="native">native</option>
+            <option value="quic">quic</option>
+          </select>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.tuicUdpRelayModeHint}
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 space-y-1">
+        <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+          {t.tunnels.hysteria2ManualTitle}
+        </p>
+        <p className="text-xs text-amber-700 dark:text-amber-300 whitespace-pre-line">
+          {t.tunnels.hysteria2ManualBody
+            .replace('{control_port}', state.control_port || '443')
+            .replace('{target}', `${state.target_host || '127.0.0.1'}:${state.target_port || state.ports.split(',')[0] || '8581'}`)
+            .replace('{ports}', state.ports || '8581')}
+        </p>
+      </div>
+    </div>
+  )
+}
+
 function ZapretForm({
   state,
   onChange,
@@ -3383,6 +4260,319 @@ function ZapretForm({
           Optional raw flags appended to nfqws. Leave empty unless you know what you need.
         </p>
       </div>
+    </div>
+  )
+}
+
+function Obfs4Form({
+  state,
+  onChange,
+}: {
+  state: Obfs4FormState
+  onChange: (partial: Partial<Obfs4FormState>) => void
+}) {
+  const { t } = useLanguage()
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        {t.tunnels.obfs4Hint}
+      </p>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.obfs4Ports}
+          </label>
+          <input
+            type="text"
+            value={state.ports}
+            onChange={(e) => onChange({ ports: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="443"
+            dir="ltr"
+            required
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.obfs4PortsHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.obfs4ControlPort}
+          </label>
+          <input
+            type="number"
+            value={state.control_port}
+            onChange={(e) => onChange({ control_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="8443"
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.obfs4ControlPortHint}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.obfs4TargetHost}
+          </label>
+          <input
+            type="text"
+            value={state.target_host}
+            onChange={(e) => onChange({ target_host: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="127.0.0.1"
+            dir="ltr"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.obfs4TargetHostHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.obfs4TargetPort}
+          </label>
+          <input
+            type="number"
+            value={state.target_port}
+            onChange={(e) => onChange({ target_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder={t.tunnels.obfs4TargetPortPlaceholder}
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.obfs4TargetPortHint}
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          {t.tunnels.obfs4IatMode}
+        </label>
+        <select
+          value={state.iat_mode}
+          onChange={(e) => onChange({ iat_mode: e.target.value })}
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+        >
+          <option value="0">0 — {t.tunnels.obfs4IatOff}</option>
+          <option value="1">1 — {t.tunnels.obfs4IatEnabled}</option>
+          <option value="2">2 — {t.tunnels.obfs4IatParanoid}</option>
+        </select>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          {t.tunnels.obfs4IatModeHint}
+        </p>
+      </div>
+
+      <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 space-y-1">
+        <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+          {t.tunnels.hysteria2ManualTitle}
+        </p>
+        <p className="text-xs text-amber-700 dark:text-amber-300 whitespace-pre-line">
+          {t.tunnels.obfs4ManualBody
+            .replace('{control_port}', state.control_port || '8443')
+            .replace('{target}', `${state.target_host || '127.0.0.1'}:${state.target_port || state.ports.split(',')[0] || '443'}`)
+            .replace('{ports}', state.ports || '443')}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function WarpForm({
+  state,
+  onChange,
+  tunnelId,
+}: {
+  state: WarpFormState
+  onChange: (partial: Partial<WarpFormState>) => void
+  tunnelId?: string
+}) {
+  const { t } = useLanguage()
+  const [testBusy, setTestBusy] = useState(false)
+  const [testResult, setTestResult] = useState<any | null>(null)
+  const [testError, setTestError] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  const auth = state.username.trim() && state.password.trim()
+    ? `${state.username.trim()}:${state.password.trim()}@`
+    : ''
+  const proxyLink = `socks5://${auth}${state.listen_addr || '127.0.0.1'}:${state.listen_port || '1080'}`
+
+  const copyProxy = () => {
+    navigator.clipboard?.writeText(proxyLink).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }).catch(() => {})
+  }
+
+  const runTest = async () => {
+    if (!tunnelId) return
+    setTestBusy(true); setTestError(''); setTestResult(null)
+    try {
+      const res = await api.post(`/tunnels/${tunnelId}/warp/test`)
+      setTestResult(res.data)
+    } catch (e: any) {
+      setTestError(e?.response?.data?.detail || String(e))
+    } finally {
+      setTestBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        {t.tunnels.warpHint}
+      </p>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.warpListenAddr}
+          </label>
+          <input
+            type="text"
+            value={state.listen_addr}
+            onChange={(e) => onChange({ listen_addr: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="127.0.0.1"
+            dir="ltr"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.warpListenAddrHint}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.warpListenPort}
+          </label>
+          <input
+            type="number"
+            value={state.listen_port}
+            onChange={(e) => onChange({ listen_port: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="1080"
+            min={1}
+            max={65535}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.warpListenPortHint}
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          {t.tunnels.warpSni}
+        </label>
+        <input
+          type="text"
+          value={state.sni}
+          onChange={(e) => onChange({ sni: e.target.value })}
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+          placeholder="consumer-masque.cloudflareclient.com"
+          dir="ltr"
+        />
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          {t.tunnels.warpSniHint}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.warpUsername}
+          </label>
+          <input
+            type="text"
+            value={state.username}
+            onChange={(e) => onChange({ username: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder={t.tunnels.warpOptional}
+            dir="ltr"
+            autoComplete="off"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            {t.tunnels.warpPassword}
+          </label>
+          <input
+            type="text"
+            value={state.password}
+            onChange={(e) => onChange({ password: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder={t.tunnels.warpOptional}
+            dir="ltr"
+            autoComplete="off"
+          />
+        </div>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2">
+        {t.tunnels.warpAuthHint}
+      </p>
+
+      <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3 space-y-2">
+        <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+          {t.tunnels.warpProxyTitle}
+        </p>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 text-xs bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded px-2 py-1 overflow-x-auto" dir="ltr">
+            {proxyLink}
+          </code>
+          <button
+            type="button"
+            onClick={copyProxy}
+            className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-600 rounded hover:bg-gray-300 dark:hover:bg-gray-500"
+          >
+            {copied ? t.tunnels.warpCopied : t.tunnels.warpCopy}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 space-y-1">
+        <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+          {t.tunnels.warpManualTitle}
+        </p>
+        <p className="text-xs text-amber-700 dark:text-amber-300 whitespace-pre-line">
+          {t.tunnels.warpManualBody.replace('{proxy}', proxyLink)}
+        </p>
+      </div>
+
+      {tunnelId && (
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={runTest}
+              disabled={testBusy}
+              className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {testBusy ? t.tunnels.warpTesting : t.tunnels.warpTestNow}
+            </button>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {t.tunnels.warpTestHint}
+            </p>
+          </div>
+
+          {testError && (
+            <p className="text-xs text-red-600 dark:text-red-400" dir="ltr">{testError}</p>
+          )}
+
+          {testResult && (
+            <p className={`text-xs ${testResult.ok ? 'text-green-700 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`} dir="ltr">
+              {testResult.ok
+                ? `WARP ${testResult.warp} · egress ${testResult.egress_ip || '?'}${testResult.colo ? ' · ' + testResult.colo : ''}`
+                : (t.tunnels.warpTestFail.replace('{err}', testResult.error || 'failed'))}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

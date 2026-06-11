@@ -124,6 +124,70 @@ interface Translations {
     snispoofPasteVless: string
     snispoofApplyVless: string
     snispoofDesyncSection: string
+    hysteria2Hint: string
+    hysteria2Ports: string
+    hysteria2PortsHint: string
+    hysteria2ControlPort: string
+    hysteria2ControlPortHint: string
+    hysteria2TargetHost: string
+    hysteria2TargetHostHint: string
+    hysteria2TargetPort: string
+    hysteria2TargetPortHint: string
+    hysteria2TargetPortPlaceholder: string
+    hysteria2Sni: string
+    hysteria2SniHint: string
+    hysteria2Obfs: string
+    hysteria2ObfsHint: string
+    hysteria2ManualTitle: string
+    hysteria2ManualBody: string
+    hysteria2Autotune: string
+    hysteria2Tuning: string
+    hysteria2AutotuneHint: string
+    hysteria2BestObfs: string
+    hysteria2Applied: string
+    hysteria2NoWorking: string
+    tuicHint: string
+    tuicUdpRelayMode: string
+    tuicUdpRelayModeHint: string
+    warpHint: string
+    warpNode: string
+    warpNodeHint: string
+    warpSelectNode: string
+    warpListenAddr: string
+    warpListenAddrHint: string
+    warpListenPort: string
+    warpListenPortHint: string
+    warpSni: string
+    warpSniHint: string
+    warpUsername: string
+    warpPassword: string
+    warpOptional: string
+    warpAuthHint: string
+    warpProxyTitle: string
+    warpCopy: string
+    warpCopied: string
+    warpManualTitle: string
+    warpManualBody: string
+    warpTestNow: string
+    warpTesting: string
+    warpTestHint: string
+    warpTestFail: string
+    obfs4Hint: string
+    obfs4Ports: string
+    obfs4PortsHint: string
+    obfs4ControlPort: string
+    obfs4ControlPortHint: string
+    obfs4TargetHost: string
+    obfs4TargetHostHint: string
+    obfs4TargetPort: string
+    obfs4TargetPortHint: string
+    obfs4TargetPortPlaceholder: string
+    obfs4IatMode: string
+    obfs4IatModeHint: string
+    obfs4IatOff: string
+    obfs4IatEnabled: string
+    obfs4IatParanoid: string
+    obfs4ManualBody: string
     coreChangeHint: string
     bulkSelectedCount: string
     bulkApply: string
@@ -369,6 +433,70 @@ const translations: Record<Language, Translations> = {
       snispoofPasteVless: 'Prefill from vless:// link',
       snispoofApplyVless: 'Fill',
       snispoofDesyncSection: 'DPI desync (zapret) on the front port',
+      hysteria2Hint: 'Hysteria2 is a QUIC/HTTP3 carrier. The foreign server runs the QUIC server and reaches its local service (e.g. WireGuard on 8581); the Iran node runs the client and exposes the same public ports to users, while DPI only sees an encrypted QUIC/TLS handshake. Ideal for tunneling WireGuard UDP — and V2Ray TCP — without being fingerprinted.',
+      hysteria2Ports: 'Public Ports',
+      hysteria2PortsHint: 'Ports exposed on the Iran node (comma-separated). For WireGuard use the same UDP port as the foreign WG, e.g. 8581.',
+      hysteria2ControlPort: 'QUIC Port (foreign)',
+      hysteria2ControlPortHint: 'UDP/QUIC port the foreign server listens on (looks like HTTP/3). 443 blends in best.',
+      hysteria2TargetHost: 'Target Host (foreign)',
+      hysteria2TargetHostHint: 'Where the foreign server forwards traffic. 127.0.0.1 if WireGuard/V2Ray runs on the same foreign server.',
+      hysteria2TargetPort: 'Target Port (optional)',
+      hysteria2TargetPortHint: 'Service port on the foreign side. Leave empty to reuse the public port (recommended for WireGuard).',
+      hysteria2TargetPortPlaceholder: 'Same as public port',
+      hysteria2Sni: 'SNI (camouflage)',
+      hysteria2SniHint: 'Domain shown in the TLS handshake. A common, unblocked domain blends in best.',
+      hysteria2Obfs: 'Salamander obfuscation',
+      hysteria2ObfsHint: 'Hides the QUIC handshake so DPI cannot fingerprint it. Keep ON for Iran; auto-tune can verify.',
+      hysteria2ManualTitle: 'On the foreign server, make sure:',
+      hysteria2ManualBody: '• Open UDP port {control_port} in the firewall (QUIC).\n• The target service is reachable at {target} (e.g. WireGuard listening on 8581).\n• Open the public port(s) {ports} on the Iran node so users can connect.',
+      hysteria2Autotune: 'Auto-tune',
+      hysteria2Tuning: 'Tuning…',
+      hysteria2AutotuneHint: 'Measures real throughput/latency with obfuscation ON vs OFF and keeps the best.',
+      hysteria2BestObfs: 'Best',
+      hysteria2Applied: 'applied',
+      hysteria2NoWorking: 'No working profile found — check the foreign QUIC port and firewall.',
+      tuicHint: 'TUIC is a second QUIC carrier alongside Hysteria2, with a different QUIC/TLS fingerprint. Use it for protocol diversity: if Hysteria2 ever gets flagged, switch the same WireGuard/V2Ray ports onto TUIC without re-provisioning. The foreign server runs the TUIC server (self-signed TLS, auto uuid+password); the Iran node runs the client and exposes the public ports.',
+      tuicUdpRelayMode: 'UDP relay mode',
+      tuicUdpRelayModeHint: 'native = QUIC datagrams (fastest, best for WireGuard). quic = lossless over QUIC streams (use if datagrams are dropped).',
+      warpHint: 'WARP-MASQUE egress (usque). Runs a local SOCKS5 proxy on one node (normally the foreign server) whose traffic exits through Cloudflare WARP over MASQUE/HTTP3. Point a proxy outbound (V2Ray/Xray, or the SNI-Spoof outbound) at this SOCKS5 to hide the server\'s real IP behind a Cloudflare IP. The panel auto-registers a WARP account on first apply.',
+      warpNode: 'Node (runs the proxy)',
+      warpNodeHint: 'Pick the server whose egress IP you want to mask — normally the foreign server. usque registers + runs there.',
+      warpSelectNode: 'Select a node…',
+      warpListenAddr: 'SOCKS listen address',
+      warpListenAddrHint: '127.0.0.1 keeps the proxy local-only (recommended). Use 0.0.0.0 + username/password to share it.',
+      warpListenPort: 'SOCKS port',
+      warpListenPortHint: 'Local SOCKS5 port other services connect to. Default 1080.',
+      warpSni: 'MASQUE SNI (optional)',
+      warpSniHint: 'Leave empty for the Cloudflare default. A custom domain can help if the default SNI is blocked.',
+      warpUsername: 'Username',
+      warpPassword: 'Password',
+      warpOptional: 'optional',
+      warpAuthHint: 'Set username + password only if you expose the proxy on 0.0.0.0; for 127.0.0.1 leave both empty.',
+      warpProxyTitle: 'Proxy URL (use as an outbound in your panel):',
+      warpCopy: 'Copy',
+      warpCopied: 'Copied',
+      warpManualTitle: 'To actually route traffic through WARP:',
+      warpManualBody: '• In your V2Ray/Xray (e.g. Sanaei) panel, add a SOCKS outbound: {proxy}\n• Route the inbounds/users you want hidden to that outbound.\n• No firewall change needed if the address is 127.0.0.1 (the proxy is local to this node).\n• First apply may take a few seconds while a WARP account is registered.',
+      warpTestNow: 'Test WARP',
+      warpTesting: 'Testing…',
+      warpTestHint: 'Fetches Cloudflare\'s trace through the proxy and shows the masked egress IP.',
+      warpTestFail: 'Test failed: {err}',
+      obfs4Hint: 'obfs4 is the severe-crisis TCP fallback: it defeats active probing and randomises the byte stream so DPI sees no signature. Use it only when QUIC/UDP (Hysteria2/TUIC) is fully blocked and just TCP survives. The foreign server runs the obfs4 server (auto-generates its key/cert); the Iran node runs the client and exposes the public TCP port. obfs4 carries any TCP-based V2Ray transport (raw/WS/gRPC/XHTTP). The panel exchanges the cert automatically.',
+      obfs4Ports: 'Public Ports (TCP)',
+      obfs4PortsHint: 'TCP ports exposed on the Iran node that users connect to (comma-separated). 443 blends in best.',
+      obfs4ControlPort: 'obfs4 Port (foreign)',
+      obfs4ControlPortHint: 'TCP port the foreign obfs4 server listens on. Pick something free, e.g. 8443.',
+      obfs4TargetHost: 'Target Host (foreign)',
+      obfs4TargetHostHint: 'Where the foreign server forwards traffic. 127.0.0.1 if V2Ray runs on the same foreign server.',
+      obfs4TargetPort: 'Target Port (optional)',
+      obfs4TargetPortHint: 'Service port on the foreign side (e.g. the V2Ray inbound). Leave empty to reuse the public port.',
+      obfs4TargetPortPlaceholder: 'Same as public port',
+      obfs4IatMode: 'IAT mode',
+      obfs4IatModeHint: '0 = fastest (no inter-arrival timing obfuscation). 1/2 add timing obfuscation for stronger evasion at the cost of speed. Keep 0 unless probing is severe.',
+      obfs4IatOff: 'off (fastest)',
+      obfs4IatEnabled: 'enabled',
+      obfs4IatParanoid: 'paranoid',
+      obfs4ManualBody: '• Open TCP port {control_port} in the foreign firewall (the obfs4 listener).\n• The target service must be reachable at {target} (e.g. your V2Ray inbound).\n• Open the public TCP port(s) {ports} on the Iran node so users can connect.\n• Point your V2Ray/WireGuard clients at the Iran node IP on the public port.',
     },
     coreHealth: {
       title: 'Core Health',
@@ -588,6 +716,70 @@ const translations: Record<Language, Translations> = {
       snispoofPasteVless: 'پر کردن از لینک vless://',
       snispoofApplyVless: 'پر کن',
       snispoofDesyncSection: 'دی‌سینک DPI (zapret) روی پورت فرانت',
+      hysteria2Hint: 'Hysteria2 یک حامل QUIC/HTTP3 است. سرور خارج، سرور QUIC را اجرا می‌کند و به سرویس محلی خود (مثلاً وایرگارد روی 8581) می‌رسد؛ نود ایران نقش کلاینت را دارد و همان پورت‌های عمومی را برای کاربران باز می‌کند، در حالی‌که DPI فقط یک هندشیک رمزشدهٔ QUIC/TLS می‌بیند. برای تونل‌کردن وایرگارد (UDP) و همچنین V2Ray (TCP) بدون شناسایی، ایده‌آل است.',
+      hysteria2Ports: 'پورت‌های عمومی',
+      hysteria2PortsHint: 'پورت‌هایی که روی نود ایران باز می‌شوند (با کاما جدا کنید). برای وایرگارد همان پورت UDP سرور خارج را بزنید، مثلاً 8581.',
+      hysteria2ControlPort: 'پورت QUIC (خارج)',
+      hysteria2ControlPortHint: 'پورت UDP/QUIC که سرور خارج روی آن گوش می‌دهد (شبیه HTTP/3). مقدار 443 بهترین استتار را دارد.',
+      hysteria2TargetHost: 'هاست مقصد (خارج)',
+      hysteria2TargetHostHint: 'جایی که سرور خارج ترافیک را به آن می‌فرستد. اگر وایرگارد/V2Ray روی همان سرور خارج است، 127.0.0.1 بگذارید.',
+      hysteria2TargetPort: 'پورت مقصد (اختیاری)',
+      hysteria2TargetPortHint: 'پورت سرویس در سمت خارج. خالی بگذارید تا همان پورت عمومی استفاده شود (برای وایرگارد پیشنهاد می‌شود).',
+      hysteria2TargetPortPlaceholder: 'مثل پورت عمومی',
+      hysteria2Sni: 'SNI (استتار)',
+      hysteria2SniHint: 'دامنه‌ای که در هندشیک TLS نشان داده می‌شود. یک دامنهٔ پرکاربرد و بازنشده بهترین استتار را دارد.',
+      hysteria2Obfs: 'مبهم‌سازی Salamander',
+      hysteria2ObfsHint: 'هندشیک QUIC را پنهان می‌کند تا DPI نتواند آن را شناسایی کند. برای ایران روشن نگه دارید؛ اتوتیون می‌تواند بررسی کند.',
+      hysteria2ManualTitle: 'روی سرور خارج مطمئن شوید که:',
+      hysteria2ManualBody: '• پورت UDP شمارهٔ {control_port} در فایروال باز است (QUIC).\n• سرویس مقصد روی {target} در دسترس است (مثلاً وایرگارد روی 8581).\n• پورت(های) عمومی {ports} روی نود ایران باز است تا کاربران وصل شوند.',
+      hysteria2Autotune: 'اتوتیون',
+      hysteria2Tuning: 'در حال تنظیم…',
+      hysteria2AutotuneHint: 'سرعت و تأخیر واقعی را با مبهم‌سازی روشن و خاموش می‌سنجد و بهترین را نگه می‌دارد.',
+      hysteria2BestObfs: 'بهترین',
+      hysteria2Applied: 'اعمال شد',
+      hysteria2NoWorking: 'پروفایل کارآمدی پیدا نشد — پورت QUIC خارج و فایروال را بررسی کنید.',
+      tuicHint: 'TUIC حامل QUIC دومی در کنار Hysteria2 است با اثرانگشت QUIC/TLS متفاوت. برای تنوع پروتکل استفاده کنید: اگر روزی Hysteria2 شناسایی شد، همان پورت‌های وایرگارد/V2Ray را بدون تنظیم مجدد روی TUIC منتقل کنید. سرور خارج، سرور TUIC را اجرا می‌کند (TLS خودامضا، uuid+رمز خودکار)؛ نود ایران کلاینت را اجرا کرده و پورت‌های عمومی را باز می‌کند.',
+      tuicUdpRelayMode: 'حالت رله UDP',
+      tuicUdpRelayModeHint: 'native = دیتاگرام QUIC (سریع‌ترین، مناسب وایرگارد). quic = بدون اتلاف روی استریم QUIC (اگر دیتاگرام‌ها افت کردند).',
+      warpHint: 'خروجی WARP-MASQUE (usque). روی یک نود (معمولاً سرور خارج) یک پروکسی SOCKS5 محلی اجرا می‌کند که ترافیکش از طریق Cloudflare WARP روی MASQUE/HTTP3 خارج می‌شود. خروجی یک پروکسی (V2Ray/Xray یا خروجی SNI-Spoof) را به این SOCKS5 وصل کنید تا IP واقعی سرور پشت یک IP کلودفلر پنهان شود. پنل در اولین اعمال، خودش یک حساب WARP ثبت می‌کند.',
+      warpNode: 'نود (اجراکنندهٔ پروکسی)',
+      warpNodeHint: 'سروری را که می‌خواهید IP خروجی‌اش پنهان شود انتخاب کنید — معمولاً سرور خارج. usque همان‌جا ثبت و اجرا می‌شود.',
+      warpSelectNode: 'یک نود انتخاب کنید…',
+      warpListenAddr: 'آدرس شنود SOCKS',
+      warpListenAddrHint: '۱۲۷.۰.۰.۱ پروکسی را فقط محلی نگه می‌دارد (توصیه‌شده). برای اشتراک‌گذاری از 0.0.0.0 + نام‌کاربری/رمز استفاده کنید.',
+      warpListenPort: 'پورت SOCKS',
+      warpListenPortHint: 'پورت SOCKS5 محلی که سرویس‌های دیگر به آن وصل می‌شوند. پیش‌فرض ۱۰۸۰.',
+      warpSni: 'SNI برای MASQUE (اختیاری)',
+      warpSniHint: 'برای حالت پیش‌فرض کلودفلر خالی بگذارید. اگر SNI پیش‌فرض بلاک شد، یک دامنهٔ سفارشی کمک می‌کند.',
+      warpUsername: 'نام کاربری',
+      warpPassword: 'رمز عبور',
+      warpOptional: 'اختیاری',
+      warpAuthHint: 'نام‌کاربری و رمز را فقط وقتی بگذارید که پروکسی را روی 0.0.0.0 باز می‌کنید؛ برای ۱۲۷.۰.۰.۱ هر دو را خالی بگذارید.',
+      warpProxyTitle: 'آدرس پروکسی (به‌عنوان outbound در پنل خود استفاده کنید):',
+      warpCopy: 'کپی',
+      warpCopied: 'کپی شد',
+      warpManualTitle: 'برای این‌که ترافیک واقعاً از WARP عبور کند:',
+      warpManualBody: '• در پنل V2Ray/Xray (مثلاً سنایی)، یک outbound از نوع SOCKS اضافه کنید: {proxy}\n• inboundها/کاربرانی را که می‌خواهید پنهان شوند به همان outbound مسیر دهید.\n• اگر آدرس ۱۲۷.۰.۰.۱ است نیازی به تغییر فایروال نیست (پروکسی محلیِ همین نود است).\n• اولین اعمال ممکن است چند ثانیه طول بکشد چون یک حساب WARP ثبت می‌شود.',
+      warpTestNow: 'تست WARP',
+      warpTesting: 'در حال تست…',
+      warpTestHint: 'تریس کلودفلر را از مسیر پروکسی می‌گیرد و IP خروجیِ پنهان‌شده را نشان می‌دهد.',
+      warpTestFail: 'تست ناموفق: {err}',
+      obfs4Hint: 'obfs4 فال‌بکِ TCP برای بحران شدید است: در برابر پروب فعال مقاوم است و جریان بایت‌ها را تصادفی می‌کند تا DPI هیچ امضایی نبیند. فقط وقتی استفاده کنید که QUIC/UDP (هیستریا۲/TUIC) کاملاً بلاک شده و فقط TCP کار می‌کند. سرور خارج، سرور obfs4 را اجرا می‌کند (کلید/گواهی را خودکار می‌سازد)؛ نود ایران کلاینت را اجرا و پورت عمومی TCP را باز می‌کند. obfs4 هر انتقال TCPـیِ V2Ray (خام/WS/gRPC/XHTTP) را حمل می‌کند. پنل گواهی را خودکار رد و بدل می‌کند.',
+      obfs4Ports: 'پورت‌های عمومی (TCP)',
+      obfs4PortsHint: 'پورت‌های TCP باز روی نود ایران که کاربران به آن وصل می‌شوند (با کاما جدا کنید). ۴۴۳ بهترین استتار است.',
+      obfs4ControlPort: 'پورت obfs4 (خارج)',
+      obfs4ControlPortHint: 'پورت TCP که سرور obfs4 خارج روی آن گوش می‌دهد. یک پورت آزاد مثل ۸۴۴۳ بگذارید.',
+      obfs4TargetHost: 'هاست مقصد (خارج)',
+      obfs4TargetHostHint: 'جایی که سرور خارج ترافیک را به آن می‌رساند. اگر V2Ray روی همان سرور خارج است، ۱۲۷.۰.۰.۱.',
+      obfs4TargetPort: 'پورت مقصد (اختیاری)',
+      obfs4TargetPortHint: 'پورت سرویس سمت خارج (مثلاً inbound وی‌تورِی). خالی بگذارید تا برابر پورت عمومی شود.',
+      obfs4TargetPortPlaceholder: 'برابر پورت عمومی',
+      obfs4IatMode: 'حالت IAT',
+      obfs4IatModeHint: '۰ = سریع‌ترین (بدون مخفی‌سازی زمان‌بندی بسته‌ها). ۱/۲ مخفی‌سازی زمان‌بندی را اضافه می‌کنند (مقاوم‌تر ولی کندتر). جز در پروب شدید روی ۰ بماند.',
+      obfs4IatOff: 'خاموش (سریع‌ترین)',
+      obfs4IatEnabled: 'فعال',
+      obfs4IatParanoid: 'حداکثری',
+      obfs4ManualBody: '• پورت TCP {control_port} را در فایروال خارج باز کنید (شنوندهٔ obfs4).\n• سرویس مقصد باید روی {target} در دسترس باشد (مثلاً inbound وی‌تورِی).\n• پورت(های) عمومی TCP یعنی {ports} را روی نود ایران باز کنید تا کاربران وصل شوند.\n• کلاینت‌های V2Ray/وایرگارد را روی IP نود ایران و همان پورت عمومی تنظیم کنید.',
     },
     coreHealth: {
       title: 'سلامت هسته',

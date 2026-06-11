@@ -16,7 +16,7 @@ from app.node_client import NodeClient
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-CORES = ["backhaul", "rathole", "chisel", "frp", "udp2raw", "trusttunnel", "zapret", "snispoof"]
+CORES = ["backhaul", "rathole", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "zapret", "snispoof", "warp", "obfs4"]
 
 
 class CoreHealthResponse(BaseModel):
@@ -288,8 +288,8 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
     
     for tunnel in active_tunnels:
         try:
-            if core in ("zapret", "snispoof"):
-                # zapret/snispoof are single-node: just re-push the spec to the node.
+            if core in ("zapret", "snispoof", "warp"):
+                # zapret/snispoof/warp are single-node: just re-push the spec to the node.
                 target = None
                 if tunnel.node_id:
                     result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
@@ -342,7 +342,17 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
             if not foreign_node or not iran_node:
                 logger.warning(f"Tunnel {tunnel.id}: Missing foreign or iran node, skipping reset")
                 continue
-            
+
+            if core == "obfs4":
+                # obfs4 needs the two-phase server-first + cert + client apply.
+                from app.routers.tunnels import apply_obfs4_tunnel
+                try:
+                    await apply_obfs4_tunnel(tunnel, foreign_node, iran_node, db, client)
+                except Exception as e:
+                    logger.error(f"Failed to reset obfs4 tunnel {tunnel.id}: {e}")
+                await asyncio.sleep(0.5)
+                continue
+
             server_spec = tunnel.spec.copy() if tunnel.spec else {}
             server_spec["mode"] = "server"
             
@@ -578,7 +588,51 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
                 client_spec["server_addr"] = format_address_port(iran_node_ip, int(control_port))
                 client_spec["target_host"] = target_host
                 client_spec["ports"] = ports
-            
+
+            elif core == "hysteria2":
+                # Hysteria2 QUIC carrier: FOREIGN = server, IRAN = client.
+                from app.routers.tunnels import build_hysteria2_specs
+                ttype = (tunnel.type or server_spec.get("type") or "udp").lower()
+                ports = server_spec.get("ports") or []
+                if isinstance(ports, str):
+                    ports = [int(p) for p in ports.split(",") if p.strip().isdigit()]
+                if not ports:
+                    single = server_spec.get("listen_port") or server_spec.get("public_port")
+                    if single and str(single).isdigit():
+                        ports = [int(single)]
+                foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                iran_node_ip = iran_node.node_metadata.get("ip_address")
+                if not ports or not foreign_node_ip:
+                    logger.warning(f"Tunnel {tunnel.id}: Missing ports or foreign IP, skipping")
+                    continue
+                src = dict(tunnel.spec or {})
+                src["ports"] = ports
+                server_spec, client_spec, _resolved = build_hysteria2_specs(
+                    src, tunnel.id, ttype, iran_node_ip or "", foreign_node_ip
+                )
+
+            elif core == "tuic":
+                # TUIC QUIC carrier: FOREIGN = tuic-server, IRAN = tuic-client.
+                from app.routers.tunnels import build_tuic_specs
+                ttype = (tunnel.type or server_spec.get("type") or "udp").lower()
+                ports = server_spec.get("ports") or []
+                if isinstance(ports, str):
+                    ports = [int(p) for p in ports.split(",") if p.strip().isdigit()]
+                if not ports:
+                    single = server_spec.get("listen_port") or server_spec.get("public_port")
+                    if single and str(single).isdigit():
+                        ports = [int(single)]
+                foreign_node_ip = foreign_node.node_metadata.get("ip_address")
+                iran_node_ip = iran_node.node_metadata.get("ip_address")
+                if not ports or not foreign_node_ip:
+                    logger.warning(f"Tunnel {tunnel.id}: Missing ports or foreign IP, skipping")
+                    continue
+                src = dict(tunnel.spec or {})
+                src["ports"] = ports
+                server_spec, client_spec, _resolved = build_tuic_specs(
+                    src, tunnel.id, ttype, iran_node_ip or "", foreign_node_ip
+                )
+
             if not iran_node.node_metadata.get("api_address"):
                 iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
                 await db.commit()

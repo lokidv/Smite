@@ -2224,6 +2224,960 @@ class SniSpoofAdapter:
         }
 
 
+class Hysteria2Adapter:
+    """Hysteria2 QUIC carrier (apernet/hysteria v2).
+
+    A dual-node UDP+TCP port-forwarding carrier that wraps traffic in an
+    obfuscated QUIC/HTTP3 session, ideal for carrying a foreign service
+    (e.g. a WireGuard UDP port, or a V2Ray TCP/WS/XHTTP port) back to a public
+    port on the iran node while looking like benign QUIC web traffic. The
+    Salamander obfuscator hides the QUIC handshake so DPI cannot fingerprint it.
+
+    Topology (same inversion as udp2raw):
+      - FOREIGN node runs the hysteria SERVER (mode="server"). It listens for the
+        QUIC session and, for each forwarded stream/datagram, dials the local
+        target the client asked for (e.g. 127.0.0.1:<wg_port>).
+      - IRAN node runs the hysteria CLIENT (mode="client"). It dials the foreign
+        server over QUIC/:443 (with Salamander obfs) and exposes the public
+        TCP/UDP forward listeners that users connect to.
+
+    Config is emitted as JSON (Hysteria uses Viper, which reads .json), so the
+    node needs no YAML dependency. The server's self-signed cert is generated
+    once per tunnel and reused; the client trusts it via tls.insecure.
+    """
+    name = "hysteria2"
+
+    def __init__(self):
+        self.config_dir = Path(os.environ.get("SMITE_HYSTERIA_DIR", "/etc/smite-node/hysteria2"))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.log_handles: Dict[str, Any] = {}
+
+    def _resolve_binary_path(self) -> Path:
+        """Resolve hysteria binary path"""
+        env_path = os.environ.get("HYSTERIA_BINARY")
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        for path in (Path("/usr/local/bin/hysteria"), Path("/usr/bin/hysteria")):
+            if path.exists() and path.is_file():
+                return path
+        resolved = shutil.which("hysteria")
+        if resolved:
+            return Path(resolved)
+        raise FileNotFoundError(
+            "hysteria binary not found. Expected at HYSTERIA_BINARY, '/usr/local/bin/hysteria', or in PATH."
+        )
+
+    def _ensure_cert(self, tunnel_id: str, sni: str):
+        """Generate (once) and return a self-signed cert/key pair for the server."""
+        cert = self.config_dir / f"{tunnel_id}.cert.pem"
+        key = self.config_dir / f"{tunnel_id}.key.pem"
+        if cert.exists() and key.exists():
+            return cert, key
+        cn = sni or "www.bing.com"
+        try:
+            subprocess.run(
+                ["openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048",
+                 "-keyout", str(key), "-out", str(cert), "-days", "3650",
+                 "-subj", f"/CN={cn}"],
+                check=True, capture_output=True, timeout=30,
+            )
+        except Exception as e:
+            raise RuntimeError(f"failed to generate self-signed cert for hysteria2: {e}")
+        return cert, key
+
+    def _close_log(self, tunnel_id: str):
+        handle = self.log_handles.pop(tunnel_id, None)
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    def _build_forwards(self, spec: Dict[str, Any]):
+        """Return (tcp_forwards, udp_forwards) for the client config.
+
+        Prefers an explicit ``forwards`` list ([{listen, remote, protocol}]);
+        otherwise derives from ``ports`` + ``target_host``/``target_port`` and
+        the ``type`` (tcp | udp | both)."""
+        tcp: List[Dict[str, Any]] = []
+        udp: List[Dict[str, Any]] = []
+        forwards = spec.get("forwards")
+        if isinstance(forwards, list) and forwards:
+            for f in forwards:
+                if not isinstance(f, dict):
+                    continue
+                listen = f.get("listen")
+                remote = f.get("remote")
+                proto = (f.get("protocol") or "tcp").lower()
+                if not listen or not remote:
+                    continue
+                if proto in ("udp", "both"):
+                    udp.append({"listen": str(listen), "remote": str(remote), "timeout": "60s"})
+                if proto in ("tcp", "both"):
+                    tcp.append({"listen": str(listen), "remote": str(remote)})
+            return tcp, udp
+
+        proto = (spec.get("type") or spec.get("transport") or "tcp").lower()
+        target_host = spec.get("target_host", "127.0.0.1")
+        ports = spec.get("ports") or []
+        if isinstance(ports, str):
+            ports = [p.strip() for p in ports.split(",") if p.strip()]
+        if not ports:
+            single = spec.get("listen_port") or spec.get("public_port")
+            if single:
+                ports = [single]
+        for p in ports:
+            if isinstance(p, dict):
+                pub = p.get("local") or p.get("remote") or p.get("public_port")
+                tgt = p.get("target_port") or p.get("remote") or pub
+            else:
+                pub = p
+                tgt = spec.get("target_port") or p
+            try:
+                pub = int(pub)
+                tgt = int(tgt)
+            except (TypeError, ValueError):
+                continue
+            listen = f"0.0.0.0:{pub}"
+            remote = f"{target_host}:{tgt}"
+            if proto in ("udp", "both"):
+                udp.append({"listen": listen, "remote": remote, "timeout": "60s"})
+            if proto in ("tcp", "both"):
+                tcp.append({"listen": listen, "remote": remote})
+        return tcp, udp
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Apply a Hysteria2 server (foreign) or client (iran) for the tunnel."""
+        if tunnel_id in self.processes:
+            logger.info(f"hysteria2 tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+
+        import json
+        mode = spec.get("mode", "client")
+        auth = spec.get("auth") or spec.get("password") or spec.get("token")
+        if not auth:
+            raise ValueError("hysteria2 requires 'auth' (shared password) in spec")
+        obfs_password = (spec.get("obfs_password") or "").strip()
+        binary_path = self._resolve_binary_path()
+
+        if mode == "server":
+            listen_port = spec.get("listen_port") or spec.get("control_port") or 443
+            sni = spec.get("sni") or "www.bing.com"
+            cert, key = self._ensure_cert(tunnel_id, sni)
+            config: Dict[str, Any] = {
+                "listen": f":{listen_port}",
+                "tls": {"cert": str(cert), "key": str(key)},
+                "auth": {"type": "password", "password": str(auth)},
+            }
+            if obfs_password:
+                config["obfs"] = {"type": "salamander", "salamander": {"password": obfs_password}}
+            masq = (spec.get("masquerade_url") or "").strip()
+            if masq:
+                config["masquerade"] = {"type": "proxy", "proxy": {"url": masq, "rewriteHost": True}}
+            subcmd = "server"
+        else:
+            server_addr = spec.get("server_addr")
+            if not server_addr:
+                host = spec.get("server_host") or spec.get("remote_host")
+                port = spec.get("server_port") or 443
+                if host:
+                    server_addr = f"{host}:{port}"
+            if not server_addr:
+                raise ValueError("hysteria2 client requires 'server_addr' in spec")
+            sni = spec.get("sni") or "www.bing.com"
+            tcp_fwd, udp_fwd = self._build_forwards(spec)
+            if not tcp_fwd and not udp_fwd:
+                raise ValueError("hysteria2 client requires at least one forward (ports/type or forwards[])")
+            config = {
+                "server": str(server_addr),
+                "auth": str(auth),
+                "tls": {"sni": sni, "insecure": True},
+            }
+            if obfs_password:
+                config["obfs"] = {"type": "salamander", "salamander": {"password": obfs_password}}
+            if tcp_fwd:
+                config["tcpForwarding"] = tcp_fwd
+            if udp_fwd:
+                config["udpForwarding"] = udp_fwd
+            up = (spec.get("bandwidth_up") or "").strip()
+            down = (spec.get("bandwidth_down") or "").strip()
+            if up or down:
+                bw: Dict[str, Any] = {}
+                if up:
+                    bw["up"] = up
+                if down:
+                    bw["down"] = down
+                config["bandwidth"] = bw
+            subcmd = "client"
+
+        config_file = self.config_dir / f"{tunnel_id}.json"
+        with open(config_file, "w") as f:
+            json.dump(config, f, indent=2)
+
+        cmd = [str(binary_path), subcmd, "-c", str(config_file)]
+        env = os.environ.copy()
+        env["HYSTERIA_DISABLE_UPDATE_CHECK"] = "1"
+        env["HYSTERIA_LOG_LEVEL"] = str(spec.get("log_level") or "warn")
+
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, "w", buffering=1)
+        try:
+            log_f.write(f"Starting hysteria2 {mode} for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir),
+                start_new_session=True,
+                env=env,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("hysteria binary not found. Please install hysteria.")
+        except Exception:
+            log_f.close()
+            raise
+
+        self.log_handles[tunnel_id] = log_f
+        self.processes[tunnel_id] = proc
+        time.sleep(1.2)
+        if proc.poll() is not None:
+            err = ""
+            if log_file.exists():
+                with open(log_file, "r") as f:
+                    err = f.read()
+            self._close_log(tunnel_id)
+            self.processes.pop(tunnel_id, None)
+            raise RuntimeError(f"hysteria failed to start: {err[-600:] if len(err) > 600 else err}")
+
+        logger.info(
+            f"hysteria2 {mode} started for tunnel {tunnel_id}: "
+            f"{'listen=' + str(spec.get('listen_port') or spec.get('control_port') or 443) if mode == 'server' else 'server=' + str(spec.get('server_addr'))}, "
+            f"obfs={'on' if obfs_password else 'off'}"
+        )
+
+    def remove(self, tunnel_id: str):
+        """Remove a Hysteria2 tunnel: stop the process; keep cert/key for reuse."""
+        proc = self.processes.pop(tunnel_id, None)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+        self._close_log(tunnel_id)
+        config_file = self.config_dir / f"{tunnel_id}.json"
+        try:
+            if config_file.exists():
+                config_file.unlink()
+        except Exception:
+            pass
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status"""
+        is_running = False
+        proc = self.processes.get(tunnel_id)
+        if proc:
+            is_running = proc.poll() is None
+        return {
+            "active": is_running,
+            "type": "hysteria2",
+            "process_running": is_running,
+        }
+
+
+class TuicAdapter:
+    """TUIC v5 QUIC carrier (Itsusinn/tuic, separate tuic-server + tuic-client).
+
+    A second QUIC port-forwarding carrier alongside Hysteria2. TUIC presents a
+    different QUIC/TLS fingerprint, so if DPI ever learns to flag Hysteria2's
+    handshake the operator can switch the same WireGuard/V2Ray ports onto TUIC
+    without touching the foreign WireGuard install. The Itsusinn fork ships
+    native ``tcp_forward`` / ``udp_forward`` so this maps 1:1 to our carrier model.
+
+    Topology (same inversion as udp2raw/hysteria2):
+      - FOREIGN node runs ``tuic-server`` (mode="server"): listens on QUIC/:443,
+        authenticates by uuid+password, relays each forwarded stream/datagram to
+        the local target (e.g. 127.0.0.1:<wg_port>).
+      - IRAN node runs ``tuic-client`` (mode="client"): dials the foreign server
+        over QUIC, trusts its self-signed cert (skip_cert_verify), and exposes the
+        public TCP/UDP forward listeners users connect to.
+
+    Config is JSON (the fork parses json/json5/toml/yaml). The server uses an
+    openssl self-signed cert generated once per tunnel; the client skips
+    verification, so no CA distribution is needed.
+    """
+    name = "tuic"
+
+    def __init__(self):
+        self.config_dir = Path(os.environ.get("SMITE_TUIC_DIR", "/etc/smite-node/tuic"))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.log_handles: Dict[str, Any] = {}
+
+    def _resolve_binary_path(self, which: str) -> Path:
+        """Resolve a tuic binary path. ``which`` is 'tuic-server' or 'tuic-client'."""
+        env_key = "TUIC_SERVER_BINARY" if which == "tuic-server" else "TUIC_CLIENT_BINARY"
+        env_path = os.environ.get(env_key)
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        for path in (Path(f"/usr/local/bin/{which}"), Path(f"/usr/bin/{which}")):
+            if path.exists() and path.is_file():
+                return path
+        resolved = shutil.which(which)
+        if resolved:
+            return Path(resolved)
+        raise FileNotFoundError(
+            f"{which} binary not found. Expected at {env_key}, '/usr/local/bin/{which}', or in PATH."
+        )
+
+    def _ensure_cert(self, tunnel_id: str, sni: str):
+        """Generate (once) and return a self-signed cert/key pair for the server."""
+        cert = self.config_dir / f"{tunnel_id}.cert.pem"
+        key = self.config_dir / f"{tunnel_id}.key.pem"
+        if cert.exists() and key.exists():
+            return cert, key
+        cn = sni or "www.bing.com"
+        try:
+            subprocess.run(
+                ["openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048",
+                 "-keyout", str(key), "-out", str(cert), "-days", "3650",
+                 "-subj", f"/CN={cn}"],
+                check=True, capture_output=True, timeout=30,
+            )
+        except Exception as e:
+            raise RuntimeError(f"failed to generate self-signed cert for tuic: {e}")
+        return cert, key
+
+    def _close_log(self, tunnel_id: str):
+        handle = self.log_handles.pop(tunnel_id, None)
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    def _build_forwards(self, spec: Dict[str, Any]):
+        """Return (tcp_forward, udp_forward) lists for the tuic-client config."""
+        tcp: List[Dict[str, Any]] = []
+        udp: List[Dict[str, Any]] = []
+        forwards = spec.get("forwards")
+        if isinstance(forwards, list) and forwards:
+            for f in forwards:
+                if not isinstance(f, dict):
+                    continue
+                listen = f.get("listen")
+                remote = f.get("remote")
+                proto = (f.get("protocol") or "tcp").lower()
+                if not listen or not remote:
+                    continue
+                if proto in ("udp", "both"):
+                    udp.append({"listen": str(listen), "remote": str(remote), "timeout": "60s"})
+                if proto in ("tcp", "both"):
+                    tcp.append({"listen": str(listen), "remote": str(remote)})
+            return tcp, udp
+
+        proto = (spec.get("type") or spec.get("transport") or "tcp").lower()
+        target_host = spec.get("target_host", "127.0.0.1")
+        ports = spec.get("ports") or []
+        if isinstance(ports, str):
+            ports = [p.strip() for p in ports.split(",") if p.strip()]
+        if not ports:
+            single = spec.get("listen_port") or spec.get("public_port")
+            if single:
+                ports = [single]
+        for p in ports:
+            if isinstance(p, dict):
+                pub = p.get("local") or p.get("remote") or p.get("public_port")
+                tgt = p.get("target_port") or p.get("remote") or pub
+            else:
+                pub = p
+                tgt = spec.get("target_port") or p
+            try:
+                pub = int(pub)
+                tgt = int(tgt)
+            except (TypeError, ValueError):
+                continue
+            listen = f"0.0.0.0:{pub}"
+            remote = f"{target_host}:{tgt}"
+            if proto in ("udp", "both"):
+                udp.append({"listen": listen, "remote": remote, "timeout": "60s"})
+            if proto in ("tcp", "both"):
+                tcp.append({"listen": listen, "remote": remote})
+        return tcp, udp
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Apply a TUIC server (foreign) or client (iran) for the tunnel."""
+        if tunnel_id in self.processes:
+            logger.info(f"tuic tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+
+        import json
+        mode = spec.get("mode", "client")
+        uuid_val = spec.get("uuid")
+        password = spec.get("password") or spec.get("auth") or spec.get("token")
+        if not uuid_val or not password:
+            raise ValueError("tuic requires 'uuid' and 'password' in spec")
+        sni = spec.get("sni") or "www.bing.com"
+        log_level = str(spec.get("log_level") or "warn")
+
+        if mode == "server":
+            listen_port = spec.get("listen_port") or spec.get("control_port") or 443
+            cert, key = self._ensure_cert(tunnel_id, sni)
+            config: Dict[str, Any] = {
+                "log_level": log_level,
+                "server": f"0.0.0.0:{listen_port}",
+                "users": {str(uuid_val): str(password)},
+                "tls": {"self_sign": False, "certificate": str(cert), "private_key": str(key)},
+            }
+            binary_path = self._resolve_binary_path("tuic-server")
+        else:
+            server_addr = spec.get("server_addr")
+            if not server_addr:
+                host = spec.get("server_host") or spec.get("remote_host")
+                port = spec.get("server_port") or 443
+                if host:
+                    server_addr = f"{host}:{port}"
+            if not server_addr:
+                raise ValueError("tuic client requires 'server_addr' in spec")
+            tcp_fwd, udp_fwd = self._build_forwards(spec)
+            if not tcp_fwd and not udp_fwd:
+                raise ValueError("tuic client requires at least one forward (ports/type or forwards[])")
+            udp_relay_mode = (spec.get("udp_relay_mode") or "native").lower()
+            if udp_relay_mode not in ("native", "quic"):
+                udp_relay_mode = "native"
+            relay: Dict[str, Any] = {
+                "server": str(server_addr),
+                "uuid": str(uuid_val),
+                "password": str(password),
+                "udp_relay_mode": udp_relay_mode,
+                "congestion_control": (spec.get("congestion_control") or "bbr").lower(),
+                "sni": sni,
+                "skip_cert_verify": True,
+            }
+            local: Dict[str, Any] = {}
+            if tcp_fwd:
+                local["tcp_forward"] = tcp_fwd
+            if udp_fwd:
+                local["udp_forward"] = udp_fwd
+            config = {"log_level": log_level, "relay": relay, "local": local}
+            binary_path = self._resolve_binary_path("tuic-client")
+
+        config_file = self.config_dir / f"{tunnel_id}.json"
+        with open(config_file, "w") as f:
+            json.dump(config, f, indent=2)
+
+        cmd = [str(binary_path), "-c", str(config_file)]
+        env = os.environ.copy()
+
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, "w", buffering=1)
+        try:
+            log_f.write(f"Starting tuic {mode} for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir),
+                start_new_session=True,
+                env=env,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("tuic binary not found. Please install tuic-server/tuic-client.")
+        except Exception:
+            log_f.close()
+            raise
+
+        self.log_handles[tunnel_id] = log_f
+        self.processes[tunnel_id] = proc
+        time.sleep(1.2)
+        if proc.poll() is not None:
+            err = ""
+            if log_file.exists():
+                with open(log_file, "r") as f:
+                    err = f.read()
+            self._close_log(tunnel_id)
+            self.processes.pop(tunnel_id, None)
+            raise RuntimeError(f"tuic failed to start: {err[-600:] if len(err) > 600 else err}")
+
+        logger.info(
+            f"tuic {mode} started for tunnel {tunnel_id}: "
+            f"{'listen=' + str(spec.get('listen_port') or spec.get('control_port') or 443) if mode == 'server' else 'server=' + str(spec.get('server_addr'))}"
+        )
+
+    def remove(self, tunnel_id: str):
+        """Remove a TUIC tunnel: stop the process; keep cert/key for reuse."""
+        proc = self.processes.pop(tunnel_id, None)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+        self._close_log(tunnel_id)
+        config_file = self.config_dir / f"{tunnel_id}.json"
+        try:
+            if config_file.exists():
+                config_file.unlink()
+        except Exception:
+            pass
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status"""
+        is_running = False
+        proc = self.processes.get(tunnel_id)
+        if proc:
+            is_running = proc.poll() is None
+        return {
+            "active": is_running,
+            "type": "tuic",
+            "process_running": is_running,
+        }
+
+
+class WarpAdapter:
+    """Cloudflare WARP egress over MASQUE (Diniboy1123/usque), single-node.
+
+    Unlike the carriers, this does NOT forward iran<->foreign traffic. It runs on
+    ONE node (normally the foreign server) and exposes a local SOCKS5 proxy whose
+    egress goes out through Cloudflare's WARP network over MASQUE (HTTP/3). Point a
+    proxy's outbound (e.g. a V2Ray/Xray outbound, or the snispoof outbound) at this
+    SOCKS5 and the destination sees a Cloudflare IP instead of the server's real IP.
+
+    Flow:
+      1. ``usque register`` once per tunnel -> writes a WARP account config.json.
+      2. ``usque socks`` runs the SOCKS5 proxy bound to listen_addr:listen_port.
+
+    The proxy carries TCP and UDP (via SOCKS5). It is bound to 127.0.0.1 by default
+    so only co-located services can use it; set listen_addr=0.0.0.0 + auth to share.
+    """
+    name = "warp"
+
+    def __init__(self):
+        self.config_dir = Path(os.environ.get("SMITE_WARP_DIR", "/etc/smite-node/warp"))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.log_handles: Dict[str, Any] = {}
+
+    def _resolve_binary_path(self) -> Path:
+        env_path = os.environ.get("USQUE_BINARY")
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        for path in (Path("/usr/local/bin/usque"), Path("/usr/bin/usque")):
+            if path.exists() and path.is_file():
+                return path
+        resolved = shutil.which("usque")
+        if resolved:
+            return Path(resolved)
+        raise FileNotFoundError(
+            "usque binary not found. Expected at USQUE_BINARY, '/usr/local/bin/usque', or in PATH."
+        )
+
+    def _close_log(self, tunnel_id: str):
+        handle = self.log_handles.pop(tunnel_id, None)
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    def _ensure_registered(self, binary_path: Path, config_file: Path):
+        """Run `usque register` once to create the WARP account config.
+
+        ``register`` only enrolls a device key (SNI is a connection-time flag for
+        the socks/tunnel modes, not for register), so we never pass ``-s`` here.
+        """
+        if config_file.exists() and config_file.stat().st_size > 0:
+            return
+        cmd = [str(binary_path), "register", "-c", str(config_file)]
+        env = os.environ.copy()
+        env["HOME"] = str(self.config_dir)
+        try:
+            res = subprocess.run(
+                cmd, cwd=str(self.config_dir), capture_output=True,
+                timeout=90, env=env, input=b"\n",
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("usque register timed out (no internet to Cloudflare, or rate-limited)")
+        if not config_file.exists() or config_file.stat().st_size == 0:
+            err = (res.stderr or res.stdout or b"").decode("utf-8", "replace")
+            raise RuntimeError(f"usque register failed: {err[-400:]}")
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Register (once) and start the usque SOCKS5 WARP-egress proxy."""
+        if tunnel_id in self.processes:
+            logger.info(f"warp tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+
+        listen_addr = spec.get("listen_addr") or "127.0.0.1"
+        listen_port = int(spec.get("listen_port") or 1080)
+        username = (spec.get("username") or "").strip()
+        password = (spec.get("password") or "").strip()
+        sni = (spec.get("sni") or "").strip()
+        binary_path = self._resolve_binary_path()
+        config_file = self.config_dir / f"{tunnel_id}.json"
+
+        self._ensure_registered(binary_path, config_file)
+
+        cmd = [str(binary_path), "socks", "-c", str(config_file),
+               "-b", listen_addr, "-p", str(listen_port)]
+        if username and password:
+            cmd += ["-u", username, "-w", password]
+        if sni:
+            cmd += ["-s", sni]
+        for d in (spec.get("dns") or []):
+            if isinstance(d, str) and d.strip():
+                cmd += ["-d", d.strip()]
+
+        env = os.environ.copy()
+        env["HOME"] = str(self.config_dir)
+
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, "w", buffering=1)
+        try:
+            log_f.write(f"Starting usque warp socks for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd, stdout=log_f, stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir), start_new_session=True, env=env,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("usque binary not found. Please install usque.")
+        except Exception:
+            log_f.close()
+            raise
+
+        self.log_handles[tunnel_id] = log_f
+        self.processes[tunnel_id] = proc
+        time.sleep(1.5)
+        if proc.poll() is not None:
+            err = ""
+            if log_file.exists():
+                with open(log_file, "r") as f:
+                    err = f.read()
+            self._close_log(tunnel_id)
+            self.processes.pop(tunnel_id, None)
+            raise RuntimeError(f"usque socks failed to start: {err[-600:] if len(err) > 600 else err}")
+
+        logger.info(f"warp (usque socks) started for tunnel {tunnel_id}: {listen_addr}:{listen_port}")
+
+    def test(self, tunnel_id: str, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Verify egress by fetching the Cloudflare trace through the SOCKS proxy."""
+        listen_addr = spec.get("listen_addr") or "127.0.0.1"
+        if listen_addr in ("0.0.0.0", "::"):
+            listen_addr = "127.0.0.1"
+        listen_port = int(spec.get("listen_port") or 1080)
+        username = (spec.get("username") or "").strip()
+        password = (spec.get("password") or "").strip()
+        auth = f"{username}:{password}@" if username and password else ""
+        proxy = f"socks5h://{auth}{listen_addr}:{listen_port}"
+        try:
+            res = subprocess.run(
+                ["curl", "-sS", "--max-time", "15", "-x", proxy,
+                 "https://cloudflare.com/cdn-cgi/trace"],
+                capture_output=True, timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "timeout reaching Cloudflare through WARP proxy"}
+        out = (res.stdout or b"").decode("utf-8", "replace")
+        if res.returncode != 0 or "warp=" not in out:
+            err = (res.stderr or b"").decode("utf-8", "replace")
+            return {"ok": False, "error": err[-300:] or "no trace returned"}
+        trace = {}
+        for line in out.splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                trace[k.strip()] = v.strip()
+        return {
+            "ok": trace.get("warp") in ("on", "plus"),
+            "warp": trace.get("warp"),
+            "egress_ip": trace.get("ip"),
+            "colo": trace.get("colo"),
+            "loc": trace.get("loc"),
+        }
+
+    def remove(self, tunnel_id: str):
+        """Stop the usque process; keep the WARP account config for reuse."""
+        proc = self.processes.pop(tunnel_id, None)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+        self._close_log(tunnel_id)
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status"""
+        is_running = False
+        proc = self.processes.get(tunnel_id)
+        if proc:
+            is_running = proc.poll() is None
+        return {
+            "active": is_running,
+            "type": "warp",
+            "process_running": is_running,
+        }
+
+
+class Obfs4Adapter:
+    """obfs4 TCP obfuscation carrier (severe-crisis fallback) via gost v2.
+
+    obfs4 is the strongest of the simple TCP obfuscators: it defeats active
+    probing (the server won't answer without the right cert) and randomises the
+    byte stream so DPI sees no usable signature. We use the obfs4 transport that
+    ships inside the already-bundled ``gost`` binary, so no extra binary is
+    needed — this is the last-resort carrier for when QUIC/UDP (Hysteria2/TUIC)
+    is fully blocked and only TCP/443 survives.
+
+    Topology (same inversion as the QUIC carriers):
+      - FOREIGN node = obfs4 SERVER: ``gost -L obfs4://:<ctrl>?state-dir=...``.
+        gost generates an obfs4 key the first time and persists it in state-dir,
+        then acts as a proxy reachable only by a client that holds the matching
+        ``cert``. The cert is read back from ``obfs4_bridgeline.txt``.
+      - IRAN node = obfs4 CLIENT: ``gost -L tcp://0.0.0.0:<pub>/<target> -F
+        obfs4://<foreign>:<ctrl>?cert=<cert>&iat-mode=<n>``. The public TCP port
+        users connect to is forwarded, through the obfs4 tunnel, to <target>
+        which the foreign proxy dials locally (e.g. a V2Ray inbound on 127.0.0.1).
+
+    obfs4 is TCP-only, so it carries any TCP-based V2Ray transport (raw TCP, WS,
+    gRPC, XHTTP) — they all ride on a single TCP port that we forward.
+    """
+    name = "obfs4"
+
+    def __init__(self):
+        self.config_dir = Path(os.environ.get("SMITE_OBFS4_DIR", "/etc/smite-node/obfs4"))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.processes: Dict[str, subprocess.Popen] = {}
+        self.log_handles: Dict[str, Any] = {}
+
+    def _resolve_binary_path(self) -> Path:
+        env_path = os.environ.get("GOST_BINARY")
+        if env_path:
+            resolved = Path(env_path)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        for path in (Path("/usr/local/bin/gost"), Path("/usr/bin/gost")):
+            if path.exists() and path.is_file():
+                return path
+        resolved = shutil.which("gost")
+        if resolved:
+            return Path(resolved)
+        raise FileNotFoundError(
+            "gost binary not found (obfs4 carrier uses gost). Expected at GOST_BINARY, '/usr/local/bin/gost', or in PATH."
+        )
+
+    def _state_dir(self, tunnel_id: str) -> Path:
+        d = self.config_dir / f"{tunnel_id}-state"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _close_log(self, tunnel_id: str):
+        handle = self.log_handles.pop(tunnel_id, None)
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    def _read_cert(self, tunnel_id: str) -> Optional[str]:
+        """Read the obfs4 cert for a started server from its state-dir/log."""
+        import re
+        state_dir = self._state_dir(tunnel_id)
+        bridgeline = state_dir / "obfs4_bridgeline.txt"
+        if bridgeline.exists():
+            try:
+                txt = bridgeline.read_text(errors="replace")
+                m = re.search(r"cert=([A-Za-z0-9+/=_-]+)", txt)
+                if m:
+                    return m.group(1)
+            except Exception:
+                pass
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        if log_file.exists():
+            try:
+                txt = log_file.read_text(errors="replace")
+                m = re.search(r"cert=([A-Za-z0-9+/=%_-]+)", txt)
+                if m:
+                    from urllib.parse import unquote
+                    return unquote(m.group(1))
+            except Exception:
+                pass
+        return None
+
+    def get_cert(self, tunnel_id: str) -> Dict[str, Any]:
+        """Public: return the obfs4 cert for the (already-applied) server."""
+        cert = self._read_cert(tunnel_id)
+        if not cert:
+            return {"ok": False, "error": "obfs4 cert not found yet (is the server running?)"}
+        return {"ok": True, "cert": cert}
+
+    def _build_forwards(self, spec: Dict[str, Any]):
+        """Return a list of (listen, remote) TCP pairs for the client."""
+        pairs = []
+        forwards = spec.get("forwards")
+        if isinstance(forwards, list) and forwards:
+            for f in forwards:
+                if isinstance(f, dict) and f.get("listen") and f.get("remote"):
+                    pairs.append((str(f["listen"]), str(f["remote"])))
+            return pairs
+        target_host = spec.get("target_host", "127.0.0.1")
+        ports = spec.get("ports") or []
+        if isinstance(ports, str):
+            ports = [p.strip() for p in ports.split(",") if p.strip()]
+        if not ports:
+            single = spec.get("listen_port") or spec.get("public_port")
+            if single:
+                ports = [single]
+        for p in ports:
+            try:
+                pub = int(p)
+            except (TypeError, ValueError):
+                continue
+            tgt = spec.get("target_port") or pub
+            try:
+                tgt = int(tgt)
+            except (TypeError, ValueError):
+                tgt = pub
+            pairs.append((f"0.0.0.0:{pub}", f"{target_host}:{tgt}"))
+        return pairs
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        """Apply an obfs4 server (foreign) or client (iran) for the tunnel."""
+        if tunnel_id in self.processes:
+            logger.info(f"obfs4 tunnel {tunnel_id} already exists, removing it first")
+            self.remove(tunnel_id)
+
+        mode = spec.get("mode", "client")
+        iat_mode = str(spec.get("iat_mode", "0"))
+        if iat_mode not in ("0", "1", "2"):
+            iat_mode = "0"
+        binary_path = self._resolve_binary_path()
+        state_dir = self._state_dir(tunnel_id)
+
+        if mode == "server":
+            listen_port = int(spec.get("listen_port") or spec.get("control_port") or 443)
+            node = f"obfs4://:{listen_port}?state-dir={state_dir}&iat-mode={iat_mode}"
+            cmd = [str(binary_path), "-L", node]
+        else:
+            server_addr = spec.get("server_addr")
+            if not server_addr:
+                host = spec.get("server_host") or spec.get("remote_host")
+                port = spec.get("server_port") or spec.get("control_port") or 443
+                if host:
+                    server_addr = f"{host}:{port}"
+            if not server_addr:
+                raise ValueError("obfs4 client requires 'server_addr' in spec")
+            cert = spec.get("cert")
+            if not cert:
+                raise ValueError("obfs4 client requires 'cert' (from the server) in spec")
+            pairs = self._build_forwards(spec)
+            if not pairs:
+                raise ValueError("obfs4 client requires at least one forward (ports/target or forwards[])")
+            cmd = [str(binary_path)]
+            for listen, remote in pairs:
+                cmd += ["-L", f"tcp://{listen}/{remote}"]
+            # The obfs4 cert is base64 and may contain '+' '/' '='; gost parses the
+            # chain query with url.Values (which would turn '+' into a space), so we
+            # must percent-encode it. state-dir keeps '/' (safe in a query value).
+            from urllib.parse import quote
+            cert_enc = quote(str(cert), safe="")
+            chain = f"obfs4://{server_addr}?cert={cert_enc}&iat-mode={iat_mode}&state-dir={state_dir}"
+            cmd += ["-F", chain]
+
+        log_file = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_file, "w", buffering=1)
+        try:
+            log_f.write(f"Starting obfs4 (gost) {mode} for tunnel {tunnel_id}\n")
+            log_f.write(f"Command: {' '.join(cmd)}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd, stdout=log_f, stderr=subprocess.STDOUT,
+                cwd=str(self.config_dir), start_new_session=True,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError("gost binary not found (needed for obfs4).")
+        except Exception:
+            log_f.close()
+            raise
+
+        self.log_handles[tunnel_id] = log_f
+        self.processes[tunnel_id] = proc
+        time.sleep(1.5)
+        if proc.poll() is not None:
+            err = ""
+            if log_file.exists():
+                with open(log_file, "r") as f:
+                    err = f.read()
+            self._close_log(tunnel_id)
+            self.processes.pop(tunnel_id, None)
+            raise RuntimeError(f"obfs4 (gost) failed to start: {err[-600:] if len(err) > 600 else err}")
+
+        if mode == "server":
+            # Give gost a moment to write the bridgeline, then confirm the cert.
+            for _ in range(10):
+                if self._read_cert(tunnel_id):
+                    break
+                time.sleep(0.3)
+            if not self._read_cert(tunnel_id):
+                logger.warning(f"obfs4 server {tunnel_id}: cert not found yet after start")
+
+        logger.info(
+            f"obfs4 {mode} started for tunnel {tunnel_id}: "
+            f"{'listen=' + str(spec.get('listen_port') or spec.get('control_port') or 443) if mode == 'server' else 'server=' + str(spec.get('server_addr'))}"
+        )
+
+    def remove(self, tunnel_id: str):
+        """Stop the gost process; keep the state-dir so the cert stays stable."""
+        proc = self.processes.pop(tunnel_id, None)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+        self._close_log(tunnel_id)
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        """Get status"""
+        is_running = False
+        proc = self.processes.get(tunnel_id)
+        if proc:
+            is_running = proc.poll() is None
+        return {
+            "active": is_running,
+            "type": "obfs4",
+            "process_running": is_running,
+        }
+
+
 class AdapterManager:
     """Manager for core adapters"""
     
@@ -2236,6 +3190,10 @@ class AdapterManager:
             "gost": GostAdapter(),
             "udp2raw": Udp2rawAdapter(),
             "trusttunnel": TrustTunnelAdapter(),
+            "hysteria2": Hysteria2Adapter(),
+            "tuic": TuicAdapter(),
+            "warp": WarpAdapter(),
+            "obfs4": Obfs4Adapter(),
             "zapret": ZapretAdapter(),
             "snispoof": SniSpoofAdapter(),
         }
@@ -2358,7 +3316,7 @@ class AdapterManager:
                 mode = spec.get('mode', 'N/A')
                 logger.info(f"Restoring tunnel {tunnel_id}: core={tunnel_core}, mode={mode}, spec_keys={list(spec.keys())}")
                 
-                if tunnel_core in ["rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"] and mode == 'N/A':
+                if tunnel_core in ["rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4"] and mode == 'N/A':
                     logger.warning(f"Tunnel {tunnel_id}: Reverse tunnel missing mode field, defaulting to client")
                     spec['mode'] = 'client'
                 

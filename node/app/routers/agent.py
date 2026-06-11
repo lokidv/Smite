@@ -192,6 +192,56 @@ async def benchmark_probe(data: BenchmarkProbe):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ---- SNI-spoof self-test + auto-tune ----
+
+class SniSpoofTest(BaseModel):
+    tunnel_id: str
+    spec: Dict[str, Any]
+    url: str = ""
+
+
+class SniSpoofAutotune(BaseModel):
+    tunnel_id: str
+    spec: Dict[str, Any]
+    url: str = ""
+    combos: Any = None
+    probes: int = 2
+
+
+@router.post("/snispoof/test")
+async def snispoof_test(data: SniSpoofTest, request: Request):
+    """Probe a snispoof tunnel as-is and return pass/fail + the client outbound."""
+    import asyncio
+    from app import snispoof_test as st
+    adapter_manager = request.app.state.adapter_manager
+    try:
+        result = await asyncio.to_thread(
+            st.test_current, adapter_manager, data.tunnel_id, data.spec,
+            data.url or st.DEFAULT_URL,
+        )
+        return {"status": "success", **result}
+    except Exception as e:
+        logger.error(f"snispoof test failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/snispoof/autotune")
+async def snispoof_autotune(data: SniSpoofAutotune, request: Request):
+    """Try every desync combo on the live tunnel, rank them, leave it on the best."""
+    import asyncio
+    from app import snispoof_test as st
+    adapter_manager = request.app.state.adapter_manager
+    try:
+        result = await asyncio.to_thread(
+            st.autotune, adapter_manager, data.tunnel_id, data.spec,
+            data.combos, data.url or st.DEFAULT_URL, data.probes,
+        )
+        return {"status": "success", **result}
+    except Exception as e:
+        logger.error(f"snispoof autotune failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ---- Self-update (panel-orchestrated) ----
 
 class UpdateDownload(BaseModel):

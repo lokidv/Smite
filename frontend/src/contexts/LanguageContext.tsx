@@ -86,6 +86,26 @@ interface Translations {
     zapretTargetIpHint: string
     snispoofHint: string
     snispoofClientHint: string
+    snispoofClientOutboundTitle: string
+    snispoofClientOutboundHint: string
+    snispoofCopyLink: string
+    snispoofCopied: string
+    snispoofTestSection: string
+    snispoofTestHint: string
+    snispoofTestNow: string
+    snispoofTesting: string
+    snispoofAutotune: string
+    snispoofTuning: string
+    snispoofTuningWait: string
+    snispoofTestOk: string
+    snispoofTestFail: string
+    snispoofBestApplied: string
+    snispoofNoneWorked: string
+    snispoofDesyncOptional: string
+    snispoofColMode: string
+    snispoofColFooling: string
+    snispoofColResult: string
+    snispoofColLatency: string
     snispoofLocalPort: string
     snispoofLocalPortHint: string
     snispoofInboundUuid: string
@@ -311,6 +331,26 @@ const translations: Record<Language, Translations> = {
       zapretTargetIpHint: 'Scope the desync to one destination IP only (e.g. the CDN / front IP). Leave empty to desync all traffic on the filter ports.',
       snispoofHint: 'SNI Spoof runs an Xray front proxy on this node: a local VLESS inbound (127.0.0.1:port) whose outbound goes to a front IP/domain over WS+TLS, while zapret/nfqws replaces the SNI seen by DPI with a decoy domain. Point your panel (e.g. Sanaei) outbound at the local port.',
       snispoofClientHint: 'In your proxy panel, create a VLESS TCP outbound to 127.0.0.1:{port} with UUID {uuid} (security: none).',
+      snispoofClientOutboundTitle: 'Client outbound (paste into Sanaei/your panel)',
+      snispoofClientOutboundHint: 'Plain VLESS over TCP, no TLS, no WebSocket, no SNI/Host. Use the inbound UUID below — NOT the backend UUID.',
+      snispoofCopyLink: 'Copy link',
+      snispoofCopied: 'Copied!',
+      snispoofTestSection: 'Connection test & auto-tune',
+      snispoofTestHint: 'Test the chain as a client would, or auto-tune to find the best desync settings.',
+      snispoofTestNow: 'Test now',
+      snispoofTesting: 'Testing…',
+      snispoofAutotune: 'Auto-tune',
+      snispoofTuning: 'Tuning…',
+      snispoofTuningWait: 'Trying every desync method through the live tunnel — this can take 1–3 minutes.',
+      snispoofTestOk: 'Connected — the chain works ({ms} ms).',
+      snispoofTestFail: 'Not connected: {err}',
+      snispoofBestApplied: 'Best applied: {mode} / {fooling} ({ms} ms). Saved to this tunnel.',
+      snispoofNoneWorked: 'No desync method passed. Check the front IP / backend, then try again.',
+      snispoofDesyncOptional: 'It connects even without desync — your front IP is not SNI-filtered, so zapret is optional here. Desync was kept as-is.',
+      snispoofColMode: 'Mode',
+      snispoofColFooling: 'Fooling',
+      snispoofColResult: 'Result',
+      snispoofColLatency: 'Latency',
       snispoofLocalPort: 'Local Port',
       snispoofLocalPortHint: 'The local VLESS inbound port your proxy panel connects to (127.0.0.1).',
       snispoofInboundUuid: 'Inbound UUID',
@@ -510,6 +550,26 @@ const translations: Record<Language, Translations> = {
       zapretTargetIpHint: 'دی‌سینک فقط روی همین آی‌پی مقصد اعمال می‌شود (مثلاً آی‌پی CDN/فرانت). خالی بگذارید تا همه ترافیک پورت‌های فیلتر دی‌سینک شود.',
       snispoofHint: 'SNI Spoof یک فرانت‌پروکسی Xray روی این نود اجرا می‌کند: یک اینباند VLESS محلی (127.0.0.1:پورت) که اوتباند آن با WS+TLS به یک آی‌پی/دامنه فرانت می‌رود و همزمان zapret/nfqws دامنه SNI را برای DPI با یک دامنه بدلی جایگزین می‌کند. اوتباند پنل خود (مثلاً سنایی) را به همین پورت محلی وصل کنید.',
       snispoofClientHint: 'در پنل پروکسی خود یک اوتباند VLESS TCP به 127.0.0.1:{port} با UUID {uuid} بسازید (security: none).',
+      snispoofClientOutboundTitle: 'اوتباند کلاینت (در سنایی/پنل خود وارد کنید)',
+      snispoofClientOutboundHint: 'VLESS ساده روی TCP، بدون TLS، بدون WebSocket، بدون SNI/Host. از Inbound UUID زیر استفاده کنید — نه UUID بک‌اند.',
+      snispoofCopyLink: 'کپی لینک',
+      snispoofCopied: 'کپی شد!',
+      snispoofTestSection: 'تست اتصال و تنظیم خودکار',
+      snispoofTestHint: 'زنجیره را مثل یک کلاینت تست کنید، یا تنظیم خودکار را بزنید تا بهترین تنظیمات دی‌سینک پیدا شود.',
+      snispoofTestNow: 'تست کن',
+      snispoofTesting: 'در حال تست…',
+      snispoofAutotune: 'تنظیم خودکار',
+      snispoofTuning: 'در حال تنظیم…',
+      snispoofTuningWait: 'همهٔ روش‌های دی‌سینک از مسیر تونل زنده تست می‌شوند — ممکن است ۱ تا ۳ دقیقه طول بکشد.',
+      snispoofTestOk: 'وصل شد — زنجیره کار می‌کند ({ms} میلی‌ثانیه).',
+      snispoofTestFail: 'وصل نشد: {err}',
+      snispoofBestApplied: 'بهترین حالت اعمال شد: {mode} / {fooling} ({ms} میلی‌ثانیه). روی این تونل ذخیره شد.',
+      snispoofNoneWorked: 'هیچ روش دی‌سینکی جواب نداد. ایپی فرانت / بک‌اند را بررسی کنید و دوباره امتحان کنید.',
+      snispoofDesyncOptional: 'حتی بدون دی‌سینک هم وصل می‌شود — ایپی فرانت شما SNI-فیلتر نیست، پس zapret اینجا اختیاری است. دی‌سینک بدون تغییر ماند.',
+      snispoofColMode: 'حالت',
+      snispoofColFooling: 'Fooling',
+      snispoofColResult: 'نتیجه',
+      snispoofColLatency: 'تأخیر',
       snispoofLocalPort: 'پورت محلی',
       snispoofLocalPortHint: 'پورت اینباند VLESS محلی که پنل پروکسی شما به آن وصل می‌شود (127.0.0.1).',
       snispoofInboundUuid: 'UUID اینباند',

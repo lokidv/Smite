@@ -60,10 +60,15 @@ class NodeClient:
         logger.info(f"[HTTP] Using direct HTTP to communicate with node {node.id} at {node_address}")
         return (node_address, False)
     
-    async def send_to_node(self, node_id: str, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_to_node(self, node_id: str, endpoint: str, data: Dict[str, Any],
+                           timeout: Optional[float] = None) -> Dict[str, Any]:
         """
         Send request to node via HTTPS or FRP
+
+        `timeout` (seconds) overrides the default 30s for long-running calls
+        such as the snispoof auto-tune (which probes many desync combos).
         """
+        req_timeout = httpx.Timeout(timeout) if timeout else self.timeout
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(Node).where(Node.id == node_id))
             node = result.scalar_one_or_none()
@@ -90,7 +95,7 @@ class NodeClient:
                             logger.info(f"[FRP] Retry {attempt + 1}/{max_retries} for node {node_id} via FRP tunnel")
                         
                         async with httpx.AsyncClient(
-                            timeout=self.timeout, 
+                            timeout=req_timeout, 
                             verify=False,
                             limits=httpx.Limits(max_keepalive_connections=0 if using_frp else 5)  # Disable keep-alive for FRP
                         ) as client:

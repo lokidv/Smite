@@ -1840,6 +1840,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
           {tunnel.core === 'snispoof' && (
             <SniSpoofForm
               state={sniSpoofState}
+              tunnelId={tunnel.id}
               onChange={(partial) => {
                 setSniSpoofState((prev) => ({ ...prev, ...partial }))
               }}
@@ -3389,13 +3390,20 @@ function ZapretForm({
 function SniSpoofForm({
   state,
   onChange,
+  tunnelId,
 }: {
   state: SniSpoofFormState
   onChange: (partial: Partial<SniSpoofFormState>) => void
+  tunnelId?: string
 }) {
   const { t } = useLanguage()
   const [vlessLink, setVlessLink] = useState('')
   const [vlessError, setVlessError] = useState(false)
+  const [copied, setCopied] = useState('')
+  const [testBusy, setTestBusy] = useState<'' | 'test' | 'tune'>('')
+  const [testResult, setTestResult] = useState<any | null>(null)
+  const [tuneResult, setTuneResult] = useState<any | null>(null)
+  const [testError, setTestError] = useState('')
 
   const applyVlessLink = () => {
     const parsed = parseVlessLink(vlessLink)
@@ -3404,6 +3412,48 @@ function SniSpoofForm({
       onChange(parsed)
     } else {
       setVlessError(true)
+    }
+  }
+
+  const copy = (text: string, key: string) => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(key)
+      setTimeout(() => setCopied(''), 1500)
+    }).catch(() => {})
+  }
+
+  const outboundLink = `vless://${state.inbound_uuid || ''}@127.0.0.1:${state.local_port || ''}?encryption=none&security=none&type=tcp#snispoof-local`
+
+  const runTest = async () => {
+    if (!tunnelId) return
+    setTestBusy('test'); setTestError(''); setTestResult(null)
+    try {
+      const res = await api.post(`/tunnels/${tunnelId}/snispoof/test`)
+      setTestResult(res.data)
+    } catch (e: any) {
+      setTestError(e?.response?.data?.detail || String(e))
+    } finally {
+      setTestBusy('')
+    }
+  }
+
+  const runAutotune = async () => {
+    if (!tunnelId) return
+    setTestBusy('tune'); setTestError(''); setTuneResult(null)
+    try {
+      const res = await api.post(`/tunnels/${tunnelId}/snispoof/autotune`)
+      setTuneResult(res.data)
+      if (res.data?.best) {
+        onChange({
+          desync_mode: res.data.best.desync_mode,
+          desync_fooling: res.data.best.desync_fooling,
+          ...(res.data.best.fake_tls_sni ? { fake_tls_sni: res.data.best.fake_tls_sni } : {}),
+        })
+      }
+    } catch (e: any) {
+      setTestError(e?.response?.data?.detail || String(e))
+    } finally {
+      setTestBusy('')
     }
   }
 
@@ -3481,11 +3531,35 @@ function SniSpoofForm({
         </div>
       </div>
 
-      <p className="text-xs text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg p-3" dir="ltr">
-        {t.tunnels.snispoofClientHint
-          .replace('{port}', state.local_port || '...')
-          .replace('{uuid}', state.inbound_uuid || '...')}
-      </p>
+      <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg p-3 space-y-2">
+        <p className="text-xs font-semibold text-blue-800 dark:text-blue-200">
+          {t.tunnels.snispoofClientOutboundTitle}
+        </p>
+        <p className="text-xs text-blue-700 dark:text-blue-300">
+          {t.tunnels.snispoofClientOutboundHint}
+        </p>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs font-mono text-gray-700 dark:text-gray-200" dir="ltr">
+          <div>Address: <b>127.0.0.1</b></div>
+          <div>Port: <b>{state.local_port || '...'}</b></div>
+          <div className="col-span-2 break-all">ID: <b>{state.inbound_uuid || '...'}</b></div>
+          <div>Security: <b>none</b></div>
+          <div>Network: <b>tcp</b></div>
+          <div>Encryption: <b>none</b></div>
+          <div>TLS / WS / Host: <b>—</b></div>
+        </div>
+        <div className="flex items-center gap-2 pt-1" dir="ltr">
+          <code className="flex-1 text-[10px] bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-800 rounded px-2 py-1 break-all text-gray-700 dark:text-gray-200">
+            {outboundLink}
+          </code>
+          <button
+            type="button"
+            onClick={() => copy(outboundLink, 'link')}
+            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 shrink-0"
+          >
+            {copied === 'link' ? t.tunnels.snispoofCopied : t.tunnels.snispoofCopyLink}
+          </button>
+        </div>
+      </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -3647,6 +3721,100 @@ function SniSpoofForm({
           </div>
         </div>
       </div>
+
+      {tunnelId && (
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-3 space-y-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {t.tunnels.snispoofTestSection}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                {t.tunnels.snispoofTestHint}
+              </p>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={runTest}
+                disabled={testBusy !== ''}
+                className="px-3 py-2 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50"
+              >
+                {testBusy === 'test' ? t.tunnels.snispoofTesting : t.tunnels.snispoofTestNow}
+              </button>
+              <button
+                type="button"
+                onClick={runAutotune}
+                disabled={testBusy !== ''}
+                className="px-3 py-2 text-sm bg-fuchsia-600 text-white rounded-lg hover:bg-fuchsia-700 disabled:opacity-50"
+              >
+                {testBusy === 'tune' ? t.tunnels.snispoofTuning : t.tunnels.snispoofAutotune}
+              </button>
+            </div>
+          </div>
+
+          {testBusy === 'tune' && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">{t.tunnels.snispoofTuningWait}</p>
+          )}
+
+          {testError && (
+            <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 rounded-lg p-2 break-all">{testError}</p>
+          )}
+
+          {testResult && (
+            <div className={`text-sm rounded-lg p-3 ${testResult.ok ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300' : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'}`}>
+              {testResult.ok
+                ? t.tunnels.snispoofTestOk.replace('{ms}', String(testResult.latency_ms ?? '?'))
+                : t.tunnels.snispoofTestFail.replace('{err}', testResult.error || 'failed')}
+            </div>
+          )}
+
+          {tuneResult && (
+            <div className="space-y-2">
+              {tuneResult.best ? (
+                <div className="text-sm bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg p-3">
+                  {t.tunnels.snispoofBestApplied
+                    .replace('{mode}', tuneResult.best.desync_mode)
+                    .replace('{fooling}', tuneResult.best.desync_fooling)
+                    .replace('{ms}', String(tuneResult.best.latency_ms ?? '?'))}
+                </div>
+              ) : tuneResult.off_ok ? (
+                <div className="text-sm bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded-lg p-3">
+                  {t.tunnels.snispoofDesyncOptional}
+                </div>
+              ) : (
+                <div className="text-sm bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg p-3">
+                  {t.tunnels.snispoofNoneWorked}
+                </div>
+              )}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="text-gray-500 dark:text-gray-400 text-left">
+                      <th className="py-1 pr-3">{t.tunnels.snispoofColMode}</th>
+                      <th className="py-1 pr-3">{t.tunnels.snispoofColFooling}</th>
+                      <th className="py-1 pr-3">{t.tunnels.snispoofColResult}</th>
+                      <th className="py-1 pr-3">{t.tunnels.snispoofColLatency}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(tuneResult.results || []).map((r: any, i: number) => (
+                      <tr key={i} className="border-t border-gray-100 dark:border-gray-700/50" dir="ltr">
+                        <td className="py-1 pr-3 font-mono">{r.desync_mode}</td>
+                        <td className="py-1 pr-3 font-mono">{r.desync_fooling || '—'}</td>
+                        <td className={`py-1 pr-3 ${r.ok ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`}>
+                          {r.ok ? `${r.success}/${r.attempts} OK` : (r.error ? '✗' : '✗')}
+                        </td>
+                        <td className="py-1 pr-3 font-mono">{r.latency_ms != null ? `${r.latency_ms} ms` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

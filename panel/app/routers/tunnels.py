@@ -2000,6 +2000,73 @@ async def benchmark_status():
     return benchmark_manager.get_state()
 
 
+async def _resolve_snispoof_node(tunnel_id: str, db: AsyncSession):
+    """Load a snispoof tunnel + its node, with normalized spec, for test/auto-tune."""
+    result = await db.execute(select(Tunnel).where(Tunnel.id == tunnel_id))
+    tunnel = result.scalar_one_or_none()
+    if not tunnel:
+        raise HTTPException(status_code=404, detail="Tunnel not found")
+    if tunnel.core != "snispoof":
+        raise HTTPException(status_code=400, detail="This action is only available for snispoof tunnels")
+    node = await resolve_single_node(tunnel, db)
+    if not node:
+        raise HTTPException(status_code=400, detail="snispoof tunnel has no node assigned")
+    if not node.node_metadata.get("api_address"):
+        node.node_metadata["api_address"] = (
+            f"http://{node.node_metadata.get('ip_address', node.fingerprint)}:{node.node_metadata.get('api_port', 8888)}"
+        )
+        await db.commit()
+    spec = normalize_snispoof_spec(tunnel.spec)
+    return tunnel, node, spec
+
+
+@router.post("/{tunnel_id}/snispoof/test")
+async def snispoof_test(tunnel_id: str, db: AsyncSession = Depends(get_db)):
+    """Quick check: does the snispoof chain pass traffic right now? Returns the
+    exact client outbound to paste into the proxy panel (e.g. Sanaei)."""
+    tunnel, node, spec = await _resolve_snispoof_node(tunnel_id, db)
+    client = NodeClient()
+    resp = await client.send_to_node(
+        node.id, "/api/agent/snispoof/test",
+        {"tunnel_id": tunnel_id, "spec": spec}, timeout=60.0,
+    )
+    if resp.get("status") != "success":
+        raise HTTPException(status_code=502, detail=resp.get("message") or "Node test failed")
+    return resp
+
+
+@router.post("/{tunnel_id}/snispoof/autotune")
+async def snispoof_autotune(tunnel_id: str, db: AsyncSession = Depends(get_db)):
+    """Try every desync combo on the node, leave the tunnel on the best working
+    one, persist it, and return the ranked results + the client outbound."""
+    from sqlalchemy.orm.attributes import flag_modified
+    tunnel, node, spec = await _resolve_snispoof_node(tunnel_id, db)
+    client = NodeClient()
+    resp = await client.send_to_node(
+        node.id, "/api/agent/snispoof/autotune",
+        {"tunnel_id": tunnel_id, "spec": spec}, timeout=300.0,
+    )
+    if resp.get("status") != "success":
+        raise HTTPException(status_code=502, detail=resp.get("message") or "Node auto-tune failed")
+
+    best = resp.get("best")
+    if best:
+        new_spec = dict(tunnel.spec or {})
+        new_spec["desync_mode"] = best["desync_mode"]
+        new_spec["desync_fooling"] = best["desync_fooling"]
+        if best.get("fake_tls_sni"):
+            new_spec["fake_tls_sni"] = best["fake_tls_sni"]
+        tunnel.spec = new_spec
+        flag_modified(tunnel, "spec")
+        tunnel.revision += 1
+        tunnel.status = "active"
+        tunnel.error_message = None
+        tunnel.updated_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(tunnel)
+    return resp
+
+
 # NOTE: bulk routes must be registered before POST /{tunnel_id}/apply so the
 # literal "/bulk/..." paths are not captured by the {tunnel_id} parameter.
 @router.post("/bulk/apply")

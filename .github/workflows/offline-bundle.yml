@@ -1,0 +1,97 @@
+name: Build Offline Bundle
+
+# Builds the self-contained offline tarball (panel/node source + frontend +
+# pip wheels + all tunnel binaries) so restricted/Iran servers can install
+# Smite without Docker, GitHub, PyPI, or npm access.
+#
+# Wheels are Python-version specific, so each bundle is built INSIDE a
+# container that matches a common server OS:
+#   ubuntu:22.04 -> Python 3.10   |   debian:12 -> Python 3.11   |   ubuntu:24.04 -> Python 3.12
+#
+# On version tags (v*) the bundles are attached to the GitHub Release.
+# It can also be run manually from the Actions tab (workflow_dispatch);
+# the bundles are then downloadable as run artifacts.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} / ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest,    image: 'ubuntu:22.04', label: ubuntu22.04-py310 }
+          - { arch: amd64, runner: ubuntu-latest,    image: 'debian:12',    label: debian12-py311 }
+          - { arch: amd64, runner: ubuntu-latest,    image: 'ubuntu:24.04', label: ubuntu24.04-py312 }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: 'ubuntu:22.04', label: ubuntu22.04-py310 }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: 'debian:12',    label: debian12-py311 }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: 'ubuntu:24.04', label: ubuntu24.04-py312 }
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install build prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git curl ca-certificates gnupg tar unzip gzip xz-utils \
+            python3 python3-pip python3-venv
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y nodejs
+          echo "--- toolchain ---"
+          git --version; python3 -V; python3 -m pip --version; node -v; npm -v
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Build offline bundle
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          bash scripts/build-offline-bundle.sh
+          mv "smite-offline-${{ matrix.arch }}.tar.gz" \
+             "smite-offline-${{ matrix.arch }}-${{ matrix.label }}.tar.gz"
+          ls -lh smite-offline-*.tar.gz
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.arch }}-${{ matrix.label }}
+          path: smite-offline-${{ matrix.arch }}-${{ matrix.label }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish release assets
+    needs: build
+    # Publish whatever bundles succeeded, even if one matrix leg failed.
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+
+      - name: List downloaded bundles
+        run: ls -lh smite-offline-*.tar.gz || true
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: smite-offline-*.tar.gz
+          generate_release_notes: true

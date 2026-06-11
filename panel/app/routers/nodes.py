@@ -83,7 +83,10 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
         
         result = await db.execute(select(Settings).where(Settings.key == "frp"))
         frp_setting = result.scalar_one_or_none()
-        if frp_setting and frp_setting.value and frp_setting.value.get("enabled"):
+        # Only foreign nodes use the FRP reverse channel. Iran/domestic nodes are
+        # reachable directly, and (when co-located with the panel) starting FRP for
+        # them is unnecessary. Restricting to foreign avoids touching working nodes.
+        if frp_setting and frp_setting.value and frp_setting.value.get("enabled") and existing_role == "foreign":
             panel_host = node.metadata.get("panel_address", "").split(":")[0] if node.metadata else ""
             if not panel_host or panel_host == "panel.example.com":
                 import socket
@@ -126,7 +129,8 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
     
     result = await db.execute(select(Settings).where(Settings.key == "frp"))
     frp_setting = result.scalar_one_or_none()
-    if frp_setting and frp_setting.value and frp_setting.value.get("enabled"):
+    # Only foreign nodes use the FRP reverse channel (see note in the existing-node branch).
+    if frp_setting and frp_setting.value and frp_setting.value.get("enabled") and incoming_role == "foreign":
         panel_host = node.metadata.get("panel_address", "").split(":")[0] if node.metadata else ""
         if not panel_host or panel_host == "panel.example.com":
             import socket

@@ -13,9 +13,30 @@ logger = logging.getLogger(__name__)
 class FrpCommManager:
     """Manages FRP server for panel-node communication"""
     
+    @staticmethod
+    def _resolve_config_dir() -> Path:
+        """Resolve a writable config dir that works on both Docker and native installs.
+
+        Order: FRP_COMM_DIR env -> directory next to the SQLite DB (DB_PATH) ->
+        a 'data/frp_comm' folder under the current working directory.
+        """
+        env_dir = os.environ.get("FRP_COMM_DIR")
+        if env_dir:
+            return Path(env_dir)
+        db_path = os.environ.get("DB_PATH")
+        if db_path:
+            try:
+                return Path(db_path).expanduser().resolve().parent / "frp_comm"
+            except Exception:
+                pass
+        return Path.cwd() / "data" / "frp_comm"
+
     def __init__(self):
-        self.config_dir = Path("/app/data/frp_comm")
-        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_dir = self._resolve_config_dir()
+        try:
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Could not create FRP comm dir {self.config_dir}: {e}")
         self.process: Optional[subprocess.Popen] = None
         self.config_file = self.config_dir / "frps_comm.yaml"
         self.log_file = self.config_dir / "frps_comm.log"

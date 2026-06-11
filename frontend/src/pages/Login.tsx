@@ -4,8 +4,6 @@ import { LogIn, Loader2, Shield } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 import api from '../api/client'
-import SmiteLogoDark from '../assets/SmiteD.png'
-import SmiteLogoLight from '../assets/SmiteL.png'
 
 const Login = () => {
   const [username, setUsername] = useState('')
@@ -76,11 +74,9 @@ const Login = () => {
           <div className="flex justify-center mb-6">
             <div className="relative">
               <div className="absolute inset-0 bg-blue-500/20 dark:bg-blue-400/20 rounded-full blur-2xl"></div>
-              <img
-                src={darkMode ? SmiteLogoDark : SmiteLogoLight}
-                alt="Smite Logo"
-                className="relative h-32 w-32 sm:h-40 sm:w-40"
-              />
+              <div className="relative flex h-32 w-32 sm:h-40 sm:w-40 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-indigo-600 dark:from-blue-500 dark:to-indigo-500 shadow-lg">
+                <Shield className="h-16 w-16 sm:h-20 sm:w-20 text-white" />
+              </div>
             </div>
           </div>
           <h1 className="text-4xl sm:text-5xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent mb-2">

@@ -458,9 +458,8 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     client_spec["fingerprint"] = fingerprint
                 
             elif db_tunnel.core == "frp":
-                import hashlib
-                port_hash = int(hashlib.md5(db_tunnel.id.encode()).hexdigest()[:8], 16)
-                bind_port = server_spec.get("bind_port") or (7000 + (port_hash % 1000))
+                from app.utils import frp_safe_bind_port
+                bind_port = frp_safe_bind_port(db_tunnel.id, server_spec.get("bind_port"))
                 token = server_spec.get("token")
                 if not token:
                     from app.utils import generate_token
@@ -1638,11 +1637,8 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         client_spec["token"] = token
                 
                 if tunnel.core == "frp":
-                    bind_port = spec.get("bind_port")
-                    if not bind_port:
-                        import hashlib
-                        port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
-                        bind_port = 7000 + (port_hash % 1000)
+                    from app.utils import frp_safe_bind_port
+                    bind_port = frp_safe_bind_port(tunnel.id, spec.get("bind_port"))
                     
                     token = spec.get("token")
                     if not token:

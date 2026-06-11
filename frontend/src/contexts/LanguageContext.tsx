@@ -132,7 +132,7 @@ interface Translations {
 const translations: Record<Language, Translations> = {
   en: {
     login: {
-      title: 'Smite',
+      title: 'Panel',
       subtitle: 'Tunnel Management Platform',
       username: 'Username',
       password: 'Password',
@@ -262,7 +262,7 @@ const translations: Record<Language, Translations> = {
   },
   fa: {
     login: {
-      title: 'اسمیت',
+      title: 'پنل',
       subtitle: 'پلتفرم مدیریت تونل',
       username: 'نام کاربری',
       password: 'رمز عبور',

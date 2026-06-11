@@ -131,3 +131,30 @@ def generate_token(length: int = 16) -> str:
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
+
+# Port used by the FRP communication channel (the frps that runs on the panel
+# so foreign nodes can reach back through a node-initiated tunnel). FRP tunnel
+# cores must never reuse it: on a co-located panel+node host the tunnel's frps
+# would fail to bind ("address already in use") and the foreign frpc would end
+# up talking to the comm server instead, producing "token doesn't match".
+FRP_COMM_RESERVED_PORT = 7000
+
+
+def frp_safe_bind_port(tunnel_id: str, requested=None) -> int:
+    """Pick an FRP tunnel control (bind) port that won't collide with the
+    FRP communication channel.
+
+    - If ``requested`` is a valid port other than the reserved comm port, keep it.
+    - Otherwise derive a deterministic port in the 7100-7899 range from the
+      tunnel id so the server (frps) and client (frpc) always agree.
+    """
+    import hashlib
+    try:
+        port = int(requested) if requested else 0
+    except (ValueError, TypeError):
+        port = 0
+    if port and port != FRP_COMM_RESERVED_PORT:
+        return port
+    port_hash = int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16)
+    return 7100 + (port_hash % 800)
+

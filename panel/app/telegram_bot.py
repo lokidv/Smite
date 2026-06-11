@@ -83,7 +83,7 @@ class TelegramBot:
     def t(self, user_id: int, key: str, **kwargs) -> str:
         """Get text (simplified - no translations)"""
         translations = {
-            "welcome": "👋 Welcome to Smite Panel Bot!\n\nSelect an action:",
+            "welcome": "👋 Welcome to the Control Panel Bot!\n\nSelect an action:",
             "access_denied": "❌ Access denied. You are not an admin.",
             "node_stats": "📊 Node Stats",
             "tunnel_stats": "📊 Tunnel Stats",

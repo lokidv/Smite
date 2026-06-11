@@ -438,7 +438,8 @@ async def _restore_node_tunnels():
                         client_spec["local_addr"] = local_addr
                     
                     elif tunnel.core == "frp":
-                        bind_port = server_spec.get("bind_port", 7000)
+                        from app.utils import frp_safe_bind_port
+                        bind_port = frp_safe_bind_port(tunnel.id, server_spec.get("bind_port"))
                         token = server_spec.get("token")
                         server_spec["bind_port"] = bind_port
                         if token:
@@ -782,7 +783,7 @@ async def _auto_reset_scheduler(app: FastAPI):
 
 
 app = FastAPI(
-    title="Smite Panel",
+    title="Control Panel",
     description="Tunneling Control Panel",
     version="0.1.0",
     lifespan=lifespan,

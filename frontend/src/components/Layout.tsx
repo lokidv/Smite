@@ -1,10 +1,8 @@
 import { ReactNode, useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Network, FileText, Activity, Moon, Sun, Github, Menu, X, LogOut, Settings, Heart, Globe, Languages } from 'lucide-react'
+import { LayoutDashboard, Network, FileText, Activity, Moon, Sun, Github, Menu, X, LogOut, Settings, Heart, Globe, Languages, Shield } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
-import SmiteLogoDark from '../assets/SmiteD.png'
-import SmiteLogoLight from '../assets/SmiteL.png'
 
 interface LayoutProps {
   children: ReactNode
@@ -89,14 +87,12 @@ const Layout = ({ children }: LayoutProps) => {
             <div className="flex flex-col items-center gap-4">
               <div className="relative">
                 <div className="absolute inset-0 bg-blue-500/20 dark:bg-blue-400/20 rounded-full blur-xl"></div>
-                <img 
-                  src={darkMode ? SmiteLogoDark : SmiteLogoLight} 
-                  alt="Smite Logo" 
-                  className="relative h-24 w-24"
-                />
+                <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-indigo-600 dark:from-blue-500 dark:to-indigo-500 shadow-lg">
+                  <Shield className="h-12 w-12 text-white" />
+                </div>
               </div>
               <div className="text-center">
-                <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent">Smite</h1>
+                <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent">{t.login.title}</h1>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Control Panel</p>
                 {username && (
                   <p className="text-xs text-gray-400 dark:text-gray-500 mt-2 px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded">{username}</p>
@@ -177,7 +173,7 @@ const Layout = ({ children }: LayoutProps) => {
               <div className="flex items-center gap-2">
                 <span>{version}</span>
                 <a 
-                  href="https://github.com/zZedix/Smite" 
+                  href="https://github.com/lokidv/Smite" 
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
@@ -200,7 +196,7 @@ const Layout = ({ children }: LayoutProps) => {
             >
               <Menu size={24} />
             </button>
-            <h1 className="text-lg font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent">Smite</h1>
+            <h1 className="text-lg font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent">{t.login.title}</h1>
             <div className="w-10" />
           </div>
           

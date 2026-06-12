@@ -67,6 +67,11 @@ interface Translations {
     core: string
     ports: string
     portsDescription: string
+    ratholeTransport?: string
+    wgStealthLabel?: string
+    wgStealthHint?: string
+    fakeSni?: string
+    fakeSniHint?: string
     remoteIP: string
     remoteIPDescription: string
     selectForeignServer: string
@@ -352,6 +357,11 @@ const translations: Record<Language, Translations> = {
       core: 'Core',
       ports: 'Ports',
       portsDescription: 'Ports (comma-separated, same for panel and target server)',
+      ratholeTransport: 'Transport',
+      wgStealthLabel: 'WireGuard Stealth (TLS + fake SNI)',
+      wgStealthHint: 'Reverse TLS tunnel on the Iran node, disguised as HTTPS. Carries WireGuard UDP. Use port 8581.',
+      fakeSni: 'Fake SNI (camouflage domain)',
+      fakeSniHint: 'The TLS handshake presents this name, so the firewall sees normal traffic to that site.',
       remoteIP: 'Remote IP',
       remoteIPDescription: 'Target server IP address (IPv4 or IPv6)',
       selectForeignServer: 'Select a foreign server',
@@ -635,6 +645,11 @@ const translations: Record<Language, Translations> = {
       core: 'هسته',
       ports: 'پورت‌ها',
       portsDescription: 'پورت‌ها (جدا شده با کاما، یکسان برای پنل و سرور هدف)',
+      ratholeTransport: 'ترنسپورت',
+      wgStealthLabel: 'WireGuard Stealth (TLS + SNI جعلی)',
+      wgStealthHint: 'تونل TLS معکوس روی نود ایران، با پوشش HTTPS. ترافیک UDP وایرگارد را حمل می‌کند. پورت 8581 را وارد کنید.',
+      fakeSni: 'SNI جعلی (دامنهٔ استتار)',
+      fakeSniHint: 'دست‌دادن TLS این نام را نشان می‌دهد تا فایروال آن را ترافیک عادی به آن سایت ببیند.',
       remoteIP: 'ip مقصد',
       remoteIPDescription: 'آدرس IP سرور هدف (IPv4 یا IPv6)',
       selectForeignServer: 'یک سرور خارجی انتخاب کنید',

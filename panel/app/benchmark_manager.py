@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 BENCH_COMBOS: List[Tuple[str, str, str]] = [
     ("rathole", "tcp", "tcp"),
     ("rathole", "ws", "tcp"),
+    # WireGuard Stealth: rathole over TLS (fake SNI), forwarding UDP.
+    ("rathole", "tls", "udp"),
     ("backhaul", "tcp", "tcp"),
     ("backhaul", "udp", "udp"),
     ("backhaul", "ws", "tcp"),
@@ -68,6 +70,9 @@ def _build_specs(
     token = generate_token()
 
     if core == "rathole":
+        # mode "tls" == WireGuard Stealth: native TLS transport + udp service.
+        is_tls = mode == "tls"
+        service_type = "udp" if is_tls else "tcp"
         server = {
             "mode": "server",
             "bind_addr": f"0.0.0.0:{control_port}",
@@ -76,6 +81,7 @@ def _build_specs(
             "transport": mode,
             "type": mode,
             "token": token,
+            "service_type": service_type,
         }
         remote = f"ws://{iran_ip}:{control_port}" if mode in ("ws", "websocket") else f"{iran_ip}:{control_port}"
         client = {
@@ -85,7 +91,16 @@ def _build_specs(
             "type": mode,
             "token": token,
             "ports": [test_port],
+            "service_type": service_type,
         }
+        if is_tls:
+            from app.tls_utils import generate_wg_stealth_cert
+            material = generate_wg_stealth_cert("www.digikala.com")
+            for s in (server, client):
+                s["tls_pkcs12_b64"] = material["pkcs12_b64"]
+                s["tls_pkcs12_password"] = material["pkcs12_password"]
+                s["tls_ca_pem_b64"] = material["ca_pem_b64"]
+                s["sni"] = material["sni"]
         return server, client
 
     if core == "chisel":

@@ -497,7 +497,7 @@ CHANGEABLE_CORES = {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttun
 
 # Valid tunnel types per changeable core (first entry = default).
 CORE_TYPE_OPTIONS = {
-    "rathole": ["tcp", "ws"],
+    "rathole": ["tcp", "ws", "tls"],
     "backhaul": ["tcp", "udp", "ws", "wsmux", "tcpmux"],
     "chisel": ["chisel"],
     "frp": ["tcp", "udp"],
@@ -1129,6 +1129,19 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     db_tunnel.spec["token"] = token
                     from sqlalchemy.orm.attributes import flag_modified
                     flag_modified(db_tunnel, "spec")
+
+                # WireGuard Stealth: rathole over native TLS with a fake SNI.
+                # Generate the cert once and persist it so re-applies/benchmarks
+                # keep using the same identity on both nodes.
+                if (transport or "tcp").lower() == "tls":
+                    from app.tls_utils import ensure_wg_stealth_materials
+                    ensure_wg_stealth_materials(db_tunnel.spec, db_tunnel.spec.get("sni"))
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(db_tunnel, "spec")
+                    for _k in ("tls_pkcs12_b64", "tls_pkcs12_password", "tls_ca_pem_b64", "sni", "service_type"):
+                        if _k in db_tunnel.spec:
+                            server_spec[_k] = db_tunnel.spec[_k]
+                            client_spec[_k] = db_tunnel.spec[_k]
                 
                 ports = parse_ports_from_spec(db_tunnel.spec)
                 if not ports:
@@ -3092,6 +3105,17 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                     transport = spec.get("transport") or spec.get("type") or "tcp"
                     proxy_port = spec.get("remote_port") or spec.get("listen_port")
                     token = spec.get("token")
+
+                    # WireGuard Stealth (rathole-TLS): make sure cert material is
+                    # present (persist for older tunnels), then refresh our spec copy.
+                    if (transport or "tcp").lower() == "tls":
+                        from app.tls_utils import ensure_wg_stealth_materials
+                        if ensure_wg_stealth_materials(tunnel.spec, tunnel.spec.get("sni")):
+                            from sqlalchemy.orm.attributes import flag_modified
+                            flag_modified(tunnel, "spec")
+                            await db.commit()
+                            await db.refresh(tunnel)
+                        spec = tunnel.spec.copy()
                     
                     if not proxy_port or not token:
                         tunnel.status = "error"

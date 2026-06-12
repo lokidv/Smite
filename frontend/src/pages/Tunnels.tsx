@@ -489,6 +489,7 @@ const CORE_TYPE_OPTIONS: Record<string, { value: string; label: string }[]> = {
   rathole: [
     { value: 'tcp', label: 'TCP' },
     { value: 'ws', label: 'WebSocket (WS)' },
+    { value: 'tls', label: 'WireGuard Stealth (TLS+SNI)' },
   ],
   backhaul: [
     { value: 'tcp', label: 'TCP' },
@@ -2471,6 +2472,8 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     remote_ip: '127.0.0.1',
     rathole_remote_addr: '23333',
     rathole_token: '',
+    rathole_transport: 'tcp',
+    rathole_sni: 'www.digikala.com',
     chisel_control_port: '',  // Empty means auto (listen_port + 10000)
     frp_bind_port: '7000',
     frp_token: '',
@@ -2577,6 +2580,17 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         spec.ports = ports
         spec.remote_port = ports[0]
         spec.listen_port = ports[0]
+        // Transport selection (tcp / ws / tls=WireGuard Stealth)
+        const ratholeTransport = formData.rathole_transport || 'tcp'
+        spec.transport = ratholeTransport
+        spec.type = ratholeTransport
+        tunnelType = ratholeTransport
+        if (ratholeTransport === 'tls') {
+          // WireGuard Stealth: carry UDP and present a fake SNI. The panel
+          // auto-generates the TLS cert; nothing else is required from the user.
+          spec.service_type = 'udp'
+          spec.sni = (formData.rathole_sni || 'www.digikala.com').trim()
+        }
       }
       
       if (formData.core === 'chisel') {
@@ -3277,6 +3291,44 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Authentication token (will be auto-generated if not provided)</p>
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {t.tunnels.ratholeTransport || 'Transport'}
+                </label>
+                <select
+                  value={formData.rathole_transport}
+                  onChange={(e) => setFormData({ ...formData, rathole_transport: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                >
+                  <option value="tcp">TCP</option>
+                  <option value="ws">WebSocket (WS)</option>
+                  <option value="tls">{t.tunnels.wgStealthLabel || 'WireGuard Stealth (TLS + fake SNI)'}</option>
+                </select>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  {formData.rathole_transport === 'tls'
+                    ? (t.tunnels.wgStealthHint || 'Reverse TLS on the iran node, disguised as HTTPS. Carries WireGuard UDP. Use 8581 as the port.')
+                    : 'Transport between foreign (client) and iran (server).'}
+                </p>
+              </div>
+              {formData.rathole_transport === 'tls' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    {t.tunnels.fakeSni || 'Fake SNI (camouflage domain)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.rathole_sni}
+                    onChange={(e) => setFormData({ ...formData, rathole_sni: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                    placeholder="www.digikala.com"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {t.tunnels.fakeSniHint || 'The TLS handshake will present this name, so it looks like normal traffic to that site.'}
+                  </p>
+                </div>
+              )}
             </div>
             </>
           )}

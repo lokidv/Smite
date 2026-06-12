@@ -13,4 +13,5 @@ python-multipart==0.0.6
 httpx==0.25.2
 requests==2.31.0
 python-telegram-bot==20.7
+paramiko==3.4.0
 

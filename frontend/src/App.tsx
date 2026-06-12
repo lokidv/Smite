@@ -7,6 +7,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Nodes from './pages/Nodes'
 import Servers from './pages/Servers'
+import InstallNode from './pages/InstallNode'
 import Tunnels from './pages/Tunnels'
 import Logs from './pages/Logs'
 import CoreHealth from './pages/CoreHealth'
@@ -86,6 +87,16 @@ const AppRoutes = () => {
           <ProtectedRoute>
             <Layout>
               <Servers />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/install-node"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <InstallNode />
             </Layout>
           </ProtectedRoute>
         }

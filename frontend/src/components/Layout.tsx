@@ -1,6 +1,6 @@
 import { ReactNode, useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Network, FileText, Activity, Moon, Sun, Github, Menu, X, LogOut, Settings, Heart, Globe, Languages, Shield } from 'lucide-react'
+import { LayoutDashboard, Network, FileText, Activity, Moon, Sun, Github, Menu, X, LogOut, Settings, Heart, Globe, Languages, Shield, DownloadCloud } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 
@@ -50,6 +50,7 @@ const Layout = ({ children }: LayoutProps) => {
     { path: '/dashboard', label: t.navigation.dashboard, icon: LayoutDashboard },
     { path: '/nodes', label: t.navigation.nodes, icon: Network },
     { path: '/servers', label: t.navigation.servers, icon: Globe },
+    { path: '/install-node', label: t.navigation.installNode, icon: DownloadCloud },
     { path: '/tunnels', label: t.navigation.tunnels, icon: Activity },
     { path: '/core-health', label: t.navigation.coreHealth, icon: Heart },
     { path: '/logs', label: t.navigation.logs, icon: FileText },

@@ -35,6 +35,7 @@ interface Translations {
     dashboard: string
     nodes: string
     servers: string
+    installNode: string
     tunnels: string
     coreHealth: string
     logs: string
@@ -55,6 +56,81 @@ interface Translations {
     subtitle: string
     viewCACertificate: string
     downloadCA: string
+  }
+  installNode: {
+    title: string
+    subtitle: string
+    serverSection: string
+    sshHost: string
+    sshPort: string
+    sshUsername: string
+    sshPassword: string
+    role: string
+    roleIran: string
+    roleForeign: string
+    nodeName: string
+    panelSection: string
+    panelHost: string
+    panelHostHint: string
+    panelApiPort: string
+    componentsSection: string
+    installSmiteNode: string
+    installSmiteNodeDesc: string
+    installXui: string
+    installXuiDesc: string
+    installWireguard: string
+    installWireguardDesc: string
+    wireguardForeignOnly: string
+    xuiPort: string
+    xuiUsername: string
+    xuiPassword: string
+    randomIfEmpty: string
+    artifactsSection: string
+    artifactsHint: string
+    bundleArtifact: string
+    xuiArtifact: string
+    uploadBundle: string
+    uploadXui: string
+    uploading: string
+    noArtifact: string
+    requiredForIran: string
+    startInstall: string
+    installing: string
+    selectComponent: string
+    liveLog: string
+    resultsSection: string
+    statusPending: string
+    statusRunning: string
+    statusSuccess: string
+    statusError: string
+    nodeResult: string
+    xuiResult: string
+    wireguardResult: string
+    copy: string
+    copied: string
+    fieldHost: string
+    fieldMethod: string
+    fieldNote: string
+    fieldError: string
+    panelUrl: string
+    username: string
+    password: string
+    port: string
+    webBasePath: string
+    apiToken: string
+    wgPort: string
+    serverPublicKey: string
+    serverEndpoint: string
+    apiBaseUrl: string
+    apiEndpoints: string
+    apiKeyNote: string
+    clientConfig: string
+    checkNodesPage: string
+    nodeRegistered: string
+    nodeWaitingRegistration: string
+    startFailed: string
+    uploadFailed: string
+    deleteFailed: string
   }
   tunnels: {
     title: string
@@ -277,6 +353,8 @@ interface Translations {
     updateFailedTitle: string
     updateRelayNode: string
     updatePanelRow: string
+    updateTargets: string
+    updateNoTargets: string
     updateRefresh: string
     statusPending: string
     statusUploading: string
@@ -325,6 +403,7 @@ const translations: Record<Language, Translations> = {
       dashboard: 'Dashboard',
       nodes: 'Iran Nodes',
       servers: 'Foreign Nodes',
+      installNode: 'Install Node',
       tunnels: 'Tunnels',
       coreHealth: 'Core Health',
       logs: 'Logs',
@@ -345,6 +424,81 @@ const translations: Record<Language, Translations> = {
       subtitle: 'Manage your Foreign servers',
       viewCACertificate: 'View CA Certificate',
       downloadCA: 'Download CA',
+    },
+    installNode: {
+      title: 'Install Node',
+      subtitle: 'Install Smite node, 3x-ui panel or WireGuard on a remote server over SSH',
+      serverSection: 'Target Server (SSH)',
+      sshHost: 'Server IP / Host',
+      sshPort: 'SSH Port',
+      sshUsername: 'SSH Username',
+      sshPassword: 'SSH Password',
+      role: 'Server Role',
+      roleIran: 'Iran Server',
+      roleForeign: 'Foreign Server',
+      nodeName: 'Node Name',
+      panelSection: 'Panel Address (given to the node)',
+      panelHost: 'Panel Host / IP',
+      panelHostHint: 'The address the node will use to reach this panel',
+      panelApiPort: 'Panel API Port',
+      componentsSection: 'Components to Install',
+      installSmiteNode: 'Install Smite Node',
+      installSmiteNodeDesc: 'Installs the node and registers it in the panel automatically (Iran under Nodes, Foreign under Servers)',
+      installXui: 'Install 3x-ui Panel (v2.9.4)',
+      installXuiDesc: 'Installs the Sanaei panel automatically and returns the login credentials',
+      installWireguard: 'Install WireGuard (wginstaller)',
+      installWireguardDesc: 'Installs WireGuard + wvpn management API (port 4000) and returns all details',
+      wireguardForeignOnly: 'WireGuard is only available for foreign servers',
+      xuiPort: '3x-ui Port',
+      xuiUsername: '3x-ui Username',
+      xuiPassword: '3x-ui Password',
+      randomIfEmpty: 'Random if empty',
+      artifactsSection: 'Artifacts (required for Iran servers)',
+      artifactsHint: 'The panel has no internet access, so for Iran servers upload these files once: the Smite offline bundle (smite-offline-<arch>.tar.gz) and the 3x-ui release tarball (x-ui-linux-<arch>.tar.gz). Foreign servers download directly from GitHub.',
+      bundleArtifact: 'Smite Offline Bundle',
+      xuiArtifact: '3x-ui Release Tarball',
+      uploadBundle: 'Upload Bundle',
+      uploadXui: 'Upload 3x-ui Tarball',
+      uploading: 'Uploading...',
+      noArtifact: 'No file uploaded',
+      requiredForIran: 'Required for Iran servers',
+      startInstall: 'Start Installation',
+      installing: 'Installing...',
+      selectComponent: 'Select at least one component to install',
+      liveLog: 'Live Installation Log',
+      resultsSection: 'Installation Results',
+      statusPending: 'Pending',
+      statusRunning: 'Running',
+      statusSuccess: 'Success',
+      statusError: 'Failed',
+      nodeResult: 'Smite Node',
+      xuiResult: '3x-ui Panel',
+      wireguardResult: 'WireGuard',
+      copy: 'Copy',
+      copied: 'Copied!',
+      fieldHost: 'Host',
+      fieldMethod: 'Install Method',
+      fieldNote: 'Note',
+      fieldError: 'Error',
+      panelUrl: 'Panel URL',
+      username: 'Username',
+      password: 'Password',
+      port: 'Port',
+      webBasePath: 'Web Base Path',
+      apiToken: 'API Token',
+      wgPort: 'WireGuard Port (UDP)',
+      serverPublicKey: 'Server Public Key',
+      serverEndpoint: 'Server Endpoint',
+      apiBaseUrl: 'Management API URL',
+      apiEndpoints: 'API Endpoints',
+      apiKeyNote: 'API Key',
+      clientConfig: 'Default Client Config',
+      checkNodesPage: 'The node registers itself with the panel shortly after install — check the Nodes/Servers page',
+      nodeRegistered: 'Node registered in the panel',
+      nodeWaitingRegistration: 'Waiting for the node to register in the panel...',
+      startFailed: 'Failed to start installation',
+      uploadFailed: 'Upload failed',
+      deleteFailed: 'Delete failed',
     },
     tunnels: {
       title: 'Tunnels',
@@ -554,12 +708,14 @@ const translations: Record<Language, Translations> = {
       selectRelease: 'Select release',
       noReleases: 'No releases found',
       startUpdate: 'Update panel & nodes',
-      updateConfirm: 'Update the panel and ALL nodes to {tag}? Services will restart during the update.',
+      updateConfirm: 'Update the selected targets to {tag}? Services will restart during the update.',
       updateInProgress: 'Update in progress...',
       updateDone: 'Update finished',
       updateFailedTitle: 'Update failed',
       updateRelayNode: 'Relay node',
       updatePanelRow: 'Panel (this server)',
+      updateTargets: 'What to update',
+      updateNoTargets: 'Select at least one target to update',
       updateRefresh: 'Refresh status',
       statusPending: 'Pending',
       statusUploading: 'Uploading bundle...',
@@ -613,6 +769,7 @@ const translations: Record<Language, Translations> = {
       dashboard: 'داشبورد',
       nodes: 'نودهای ایران',
       servers: 'سرورهای خارج',
+      installNode: 'نصب نود',
       tunnels: 'تونل‌ها',
       coreHealth: 'سلامت هسته',
       logs: 'لاگ‌ها',
@@ -633,6 +790,81 @@ const translations: Record<Language, Translations> = {
       subtitle: 'مدیریت سرورهای خارج',
       viewCACertificate: 'مشاهده گواهی CA',
       downloadCA: 'دانلود CA',
+    },
+    installNode: {
+      title: 'نصب نود',
+      subtitle: 'نصب نود Smite، پنل 3x-ui یا وایرگارد روی سرور از راه دور از طریق SSH',
+      serverSection: 'سرور هدف (SSH)',
+      sshHost: 'آی‌پی / هاست سرور',
+      sshPort: 'پورت SSH',
+      sshUsername: 'نام کاربری SSH',
+      sshPassword: 'رمز عبور SSH',
+      role: 'نقش سرور',
+      roleIran: 'سرور ایران',
+      roleForeign: 'سرور خارج',
+      nodeName: 'نام نود',
+      panelSection: 'آدرس پنل (به نود داده می‌شود)',
+      panelHost: 'هاست / آی‌پی پنل',
+      panelHostHint: 'آدرسی که نود برای رسیدن به این پنل استفاده می‌کند',
+      panelApiPort: 'پورت API پنل',
+      componentsSection: 'موارد قابل نصب',
+      installSmiteNode: 'نصب نود Smite',
+      installSmiteNodeDesc: 'نود را نصب و به‌صورت خودکار در پنل ثبت می‌کند (ایران زیر نودها، خارج زیر سرورها)',
+      installXui: 'نصب پنل 3x-ui (نسخه v2.9.4)',
+      installXuiDesc: 'پنل سنایی را خودکار نصب می‌کند و اطلاعات ورود را برمی‌گرداند',
+      installWireguard: 'نصب وایرگارد (wginstaller)',
+      installWireguardDesc: 'وایرگارد + API مدیریتی wvpn (پورت 4000) را نصب و همه اطلاعات را برمی‌گرداند',
+      wireguardForeignOnly: 'وایرگارد فقط برای سرورهای خارج قابل نصب است',
+      xuiPort: 'پورت 3x-ui',
+      xuiUsername: 'نام کاربری 3x-ui',
+      xuiPassword: 'رمز عبور 3x-ui',
+      randomIfEmpty: 'در صورت خالی بودن تصادفی',
+      artifactsSection: 'فایل‌های نصب (برای سرورهای ایران لازم است)',
+      artifactsHint: 'پنل به اینترنت دسترسی ندارد؛ برای سرورهای ایران این فایل‌ها را یک‌بار آپلود کنید: باندل آفلاین Smite (smite-offline-<arch>.tar.gz) و تارابال ریلیز 3x-ui (x-ui-linux-<arch>.tar.gz). سرورهای خارج مستقیم از گیت‌هاب دانلود می‌کنند.',
+      bundleArtifact: 'باندل آفلاین Smite',
+      xuiArtifact: 'تارابال ریلیز 3x-ui',
+      uploadBundle: 'آپلود باندل',
+      uploadXui: 'آپلود تارابال 3x-ui',
+      uploading: 'در حال آپلود...',
+      noArtifact: 'فایلی آپلود نشده',
+      requiredForIran: 'برای سرورهای ایران الزامی است',
+      startInstall: 'شروع نصب',
+      installing: 'در حال نصب...',
+      selectComponent: 'حداقل یک مورد را برای نصب انتخاب کنید',
+      liveLog: 'لاگ زنده نصب',
+      resultsSection: 'نتایج نصب',
+      statusPending: 'در انتظار',
+      statusRunning: 'در حال اجرا',
+      statusSuccess: 'موفق',
+      statusError: 'ناموفق',
+      nodeResult: 'نود Smite',
+      xuiResult: 'پنل 3x-ui',
+      wireguardResult: 'وایرگارد',
+      copy: 'کپی',
+      copied: 'کپی شد!',
+      fieldHost: 'هاست',
+      fieldMethod: 'روش نصب',
+      fieldNote: 'توضیح',
+      fieldError: 'خطا',
+      panelUrl: 'آدرس پنل',
+      username: 'نام کاربری',
+      password: 'رمز عبور',
+      port: 'پورت',
+      webBasePath: 'مسیر وب',
+      apiToken: 'توکن API',
+      wgPort: 'پورت وایرگارد (UDP)',
+      serverPublicKey: 'کلید عمومی سرور',
+      serverEndpoint: 'اندپوینت سرور',
+      apiBaseUrl: 'آدرس API مدیریتی',
+      apiEndpoints: 'اندپوینت‌های API',
+      apiKeyNote: 'کلید API',
+      clientConfig: 'کانفیگ کلاینت پیش‌فرض',
+      checkNodesPage: 'نود کمی بعد از نصب خودش را در پنل ثبت می‌کند — صفحه نودها/سرورها را بررسی کنید',
+      nodeRegistered: 'نود در پنل ثبت شد',
+      nodeWaitingRegistration: 'در انتظار ثبت نود در پنل...',
+      startFailed: 'شروع نصب ناموفق بود',
+      uploadFailed: 'آپلود ناموفق بود',
+      deleteFailed: 'حذف ناموفق بود',
     },
     tunnels: {
       title: 'تونل‌ها',
@@ -842,12 +1074,14 @@ const translations: Record<Language, Translations> = {
       selectRelease: 'انتخاب ریلیز',
       noReleases: 'ریلیزی یافت نشد',
       startUpdate: 'به‌روزرسانی پنل و نودها',
-      updateConfirm: 'پنل و همه نودها به {tag} به‌روزرسانی شوند؟ سرویس‌ها در حین به‌روزرسانی ری‌استارت می‌شوند.',
+      updateConfirm: 'موارد انتخاب‌شده به {tag} به‌روزرسانی شوند؟ سرویس‌ها در حین به‌روزرسانی ری‌استارت می‌شوند.',
       updateInProgress: 'به‌روزرسانی در حال انجام است...',
       updateDone: 'به‌روزرسانی تمام شد',
       updateFailedTitle: 'به‌روزرسانی ناموفق بود',
       updateRelayNode: 'نود رله',
       updatePanelRow: 'پنل (این سرور)',
+      updateTargets: 'چه چیزی به‌روزرسانی شود؟',
+      updateNoTargets: 'حداقل یک مورد را برای به‌روزرسانی انتخاب کنید',
       updateRefresh: 'تازه‌سازی وضعیت',
       statusPending: 'در انتظار',
       statusUploading: 'در حال ارسال بسته...',

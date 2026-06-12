@@ -20,6 +20,7 @@ from app.database import init_db
 from app.routers import nodes, tunnels, panel, status, logs, auth, core_health
 from app.routers import settings as settings_router
 from app.routers import update as update_router
+from app.routers import provisioning as provisioning_router
 from app.node_server import NodeServer
 from app.gost_forwarder import gost_forwarder
 from app.rathole_server import rathole_server_manager
@@ -851,6 +852,7 @@ app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(core_health.router, prefix="/api/core-health", tags=["core-health"])
 app.include_router(settings_router.router)
 app.include_router(update_router.router, prefix="/api/update", tags=["update"])
+app.include_router(provisioning_router.router, prefix="/api/provisioning", tags=["provisioning"])
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 static_path = Path(static_dir)

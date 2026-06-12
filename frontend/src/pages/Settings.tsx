@@ -53,6 +53,12 @@ interface UpdateNodeEntry {
   to_version?: string
 }
 
+interface NodeSummary {
+  id: string
+  name: string
+  metadata?: Record<string, any>
+}
+
 interface UpdatePanelEntry {
   status?: string
   message?: string
@@ -92,10 +98,31 @@ const Settings = () => {
   const [updateState, setUpdateState] = useState<UpdateState | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
 
+  // Update target selection (panel + per node), default: everything
+  const [allNodes, setAllNodes] = useState<NodeSummary[]>([])
+  const [targetPanel, setTargetPanel] = useState(true)
+  const [targetNodes, setTargetNodes] = useState<Record<string, boolean>>({})
+
   useEffect(() => {
     loadSettings()
     loadUpdateStatus()
+    loadNodes()
   }, [])
+
+  const loadNodes = async () => {
+    try {
+      const response = await api.get('/nodes')
+      const list: NodeSummary[] = response.data || []
+      setAllNodes(list)
+      setTargetNodes(prev => {
+        const next: Record<string, boolean> = {}
+        for (const node of list) next[node.id] = prev[node.id] ?? true
+        return next
+      })
+    } catch {
+      // node list is optional for the update section
+    }
+  }
 
   const loadUpdateStatus = async () => {
     try {
@@ -116,6 +143,7 @@ const Settings = () => {
   const loadReleases = async () => {
     setReleasesLoading(true)
     setReleasesError('')
+    loadNodes()
     try {
       const response = await api.get('/update/releases', { params: { limit: 10 } })
       const list: Release[] = response.data.releases || []
@@ -132,12 +160,20 @@ const Settings = () => {
     }
   }
 
+  const selectedNodeIds = allNodes.filter(n => targetNodes[n.id]).map(n => n.id)
+  const allTargetsSelected = targetPanel && selectedNodeIds.length === allNodes.length
+  const noTargetSelected = !targetPanel && selectedNodeIds.length === 0
+
   const startUpdate = async () => {
-    if (!selectedTag) return
+    if (!selectedTag || noTargetSelected) return
     if (!confirm(t.settings.updateConfirm.replace('{tag}', selectedTag))) return
     setUpdateBusy(true)
     try {
-      await api.post('/update/start', { tag: selectedTag })
+      // null targets = everything (also covers nodes registered after this page loaded)
+      const targets = allTargetsSelected
+        ? null
+        : [...(targetPanel ? ['panel'] : []), ...selectedNodeIds]
+      await api.post('/update/start', { tag: selectedTag, targets })
       await loadUpdateStatus()
     } catch (error: any) {
       setReleasesError(error?.response?.data?.detail || 'Failed to start update')
@@ -568,7 +604,7 @@ const Settings = () => {
                 </select>
                 <button
                   onClick={startUpdate}
-                  disabled={updateBusy || !selectedTag || updateState?.status === 'running'}
+                  disabled={updateBusy || !selectedTag || noTargetSelected || updateState?.status === 'running'}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {updateState?.status === 'running' ? t.settings.updateInProgress : t.settings.startUpdate}
@@ -580,6 +616,46 @@ const Settings = () => {
               <span className="text-xs text-gray-500 dark:text-gray-400">{t.settings.noReleases}</span>
             )}
           </div>
+
+          {/* What to update (panel + per-node selection) */}
+          {releases.length > 0 && updateState?.status !== 'running' && (
+            <div className="mt-4 p-3 rounded-lg bg-gray-50 dark:bg-gray-700/50">
+              <div className="text-sm font-medium text-gray-900 dark:text-white mb-2">
+                {t.settings.updateTargets}
+              </div>
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
+                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={targetPanel}
+                    onChange={(e) => setTargetPanel(e.target.checked)}
+                    className="rounded border-gray-300 dark:border-gray-600"
+                  />
+                  {t.settings.updatePanelRow}
+                </label>
+                {allNodes.map(node => (
+                  <label
+                    key={node.id}
+                    className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!targetNodes[node.id]}
+                      onChange={(e) => setTargetNodes(prev => ({ ...prev, [node.id]: e.target.checked }))}
+                      className="rounded border-gray-300 dark:border-gray-600"
+                    />
+                    {node.name}
+                    {node.metadata?.role && (
+                      <span className="text-xs text-gray-500 dark:text-gray-400">({node.metadata.role})</span>
+                    )}
+                  </label>
+                ))}
+              </div>
+              {noTargetSelected && (
+                <p className="mt-2 text-xs text-red-600 dark:text-red-400">{t.settings.updateNoTargets}</p>
+              )}
+            </div>
+          )}
 
           {releasesError && (
             <div className="mt-3 p-3 rounded-lg bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 text-sm">

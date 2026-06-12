@@ -47,6 +47,9 @@ RELAY_DOWNLOAD_TIMEOUT = httpx.Timeout(connect=20.0, read=900.0, write=900.0, po
 NODE_APPLY_TIMEOUT = httpx.Timeout(connect=20.0, read=120.0, write=120.0, pool=20.0)
 VERSION_POLL_SECONDS = 240
 VERSION_POLL_INTERVAL = 6
+# How long after launching its own installer the panel may keep reporting the
+# old version before the run is declared failed (install + restart time).
+PANEL_APPLY_GRACE_SECONDS = 420
 
 
 def panel_runtime() -> Dict[str, Any]:
@@ -266,44 +269,124 @@ class UpdateManager:
         current = await get_current_panel_version()
         state["current_version"] = current
 
-        # Reconcile after the panel's own restart: if we were left in
-        # "applying" and now run the target version, the update succeeded.
+        # Reconcile after the panel's own restart. The orchestration task does
+        # not survive the restart, so a state still marked "running" must be
+        # finalized here - otherwise the UI stays on "update in progress"
+        # forever and the start button never unlocks.
+        if not self.is_running() and state.get("status") == "running":
+            self._reconcile_interrupted(state, current)
+        return state
+
+    def _reconcile_interrupted(self, state: Dict[str, Any], current: str) -> None:
+        """Finalize a run whose orchestration task is gone (panel restarted)."""
         target = (state.get("tag") or "").lstrip("v")
-        panel_state = state.get("panel") or {}
-        if not self.is_running() and panel_state.get("status") == "applying":
+        panel_state = dict(state.get("panel") or {})
+        changed = False
+
+        if panel_state.get("status") == "applying":
+            from_version = panel_state.get("from_version") or ""
+            applied_at = panel_state.get("applied_at") or state.get("started_at") or ""
+            grace_over = True
+            try:
+                started = datetime.fromisoformat(applied_at)
+                grace_over = (datetime.utcnow() - started).total_seconds() > PANEL_APPLY_GRACE_SECONDS
+            except Exception:
+                pass
+
             if target and current == target:
+                # The panel came back on the target version: success.
                 panel_state["status"] = "updated"
                 panel_state["to_version"] = current
-                state["panel"] = panel_state
-                state["status"] = "done"
-                state["finished_at"] = datetime.utcnow().isoformat()
-                self.state = state
-                self._persist()
-            elif target:
-                # Panel restarted but version did not change: keep it visible
+                panel_state["message"] = ""
+                changed = True
+            elif current and from_version and current not in (from_version, "unknown"):
+                # Version changed, just not to the expected string (e.g. the
+                # release bundle reports a slightly different version). The
+                # installer clearly ran; report success with a note instead of
+                # blocking the update section forever.
+                panel_state["status"] = "updated"
+                panel_state["to_version"] = current
+                panel_state["message"] = (
+                    f"Panel now reports {current} (release tag was {target or '?'})."
+                )
+                changed = True
+            elif grace_over:
+                # Restarted, waited, version never changed: the install failed.
+                panel_state["status"] = "failed"
                 panel_state["message"] = (
                     f"Panel restarted but still reports {current} (expected {target}). "
                     f"Check {PANEL_UPDATE_LOG}."
                 )
+                changed = True
+            else:
+                # Still within the grace window: the detached installer may be
+                # running right now. Keep the run open but tell the user.
+                panel_state["message"] = (
+                    "Panel restarted; waiting for the installer to finish "
+                    f"(up to {PANEL_APPLY_GRACE_SECONDS // 60} minutes)..."
+                )
                 state["panel"] = panel_state
-        return state
+                return
+        elif panel_state.get("status") in ("pending", "uploading"):
+            # The run was interrupted before the panel step even started.
+            panel_state["status"] = "failed"
+            panel_state["message"] = "Interrupted by a panel restart"
+            changed = True
 
-    async def start(self, tag: str, repo: str = "") -> Dict[str, Any]:
+        # Any node still mid-flight was interrupted as well.
+        nodes = [dict(n) for n in state.get("nodes", [])]
+        for entry in nodes:
+            if entry.get("status") in ("pending", "uploading", "applying", "waiting"):
+                entry["status"] = "failed"
+                entry["message"] = "Interrupted by a panel restart"
+                changed = True
+
+        any_success = (
+            panel_state.get("status") == "updated"
+            or any(n.get("status") == "updated" for n in nodes)
+        )
+        state["panel"] = panel_state
+        state["nodes"] = nodes
+        state["status"] = "done" if any_success else "failed"
+        state["finished_at"] = datetime.utcnow().isoformat()
+        state["message"] = ""
+        self.state = state
+        self._persist()
+        if changed:
+            logger.info(
+                f"Reconciled interrupted update run: panel={panel_state.get('status')} "
+                f"overall={state['status']}"
+            )
+
+    async def start(
+        self, tag: str, repo: str = "", targets: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Start an update run.
+
+        ``targets`` selects what to update: "panel" and/or node IDs.
+        None / empty list means everything (panel + all nodes).
+        """
         if self.is_running():
             raise RuntimeError("An update is already running")
         repo = repo or DEFAULT_REPO
+        targets = [t for t in (targets or []) if t]
+        panel_selected = (not targets) or ("panel" in targets)
         self.state = {
             "status": "running",
             "tag": tag,
             "repo": repo,
+            "targets": targets or None,
             "started_at": datetime.utcnow().isoformat(),
             "message": "",
-            "panel": {"status": "pending", "message": ""},
+            "panel": {
+                "status": "pending" if panel_selected else "skipped",
+                "message": "" if panel_selected else "Not selected",
+            },
             "nodes": [],
         }
         self._persist()
-        self._task = asyncio.create_task(self._run(tag, repo))
-        return {"status": "started", "tag": tag}
+        self._task = asyncio.create_task(self._run(tag, repo, targets))
+        return {"status": "started", "tag": tag, "targets": targets or None}
 
     def _node_entry(self, node_id: str) -> Dict[str, Any]:
         for entry in self.state.get("nodes", []):
@@ -318,9 +401,9 @@ class UpdateManager:
         entry.update(kwargs)
         self._persist()
 
-    async def _run(self, tag: str, repo: str):
+    async def _run(self, tag: str, repo: str, targets: Optional[List[str]] = None):
         try:
-            await self._run_inner(tag, repo)
+            await self._run_inner(tag, repo, targets)
         except Exception as e:
             logger.error(f"Update run failed: {e}", exc_info=True)
             self.state["status"] = "failed"
@@ -328,16 +411,26 @@ class UpdateManager:
             self.state["finished_at"] = datetime.utcnow().isoformat()
             self._persist()
 
-    async def _run_inner(self, tag: str, repo: str):
+    async def _run_inner(self, tag: str, repo: str, targets: Optional[List[str]] = None):
         target_version = tag.lstrip("v")
-        nodes = await self._get_nodes()
+        all_nodes = await self._get_nodes()
+
+        # Selection: None/empty targets = everything; otherwise "panel" and/or node IDs.
+        targets = [t for t in (targets or []) if t]
+        select_all = not targets
+        panel_selected = select_all or ("panel" in targets)
+        selected_ids = None if select_all else {t for t in targets if t != "panel"}
+        nodes = [n for n in all_nodes if selected_ids is None or n.id in selected_ids]
+
+        if not panel_selected and not nodes:
+            raise RuntimeError("No valid update targets selected")
 
         for node in nodes:
             role = (node.node_metadata or {}).get("role", "unknown")
             self._set_node(node.id, name=node.name, role=role, status="pending", message="")
 
-        # 1. Relay + release
-        relay = await self._find_relay(nodes)
+        # 1. Relay + release (any foreign node can relay, selected for update or not)
+        relay = await self._find_relay(all_nodes)
         if not relay:
             raise RuntimeError("No foreign node with GitHub access found (update relay required)")
         self.state["relay_node"] = {"id": relay.id, "name": relay.name}
@@ -370,7 +463,8 @@ class UpdateManager:
                 self._set_node(node.id, status="failed", message=f"Unreachable: {e}")
 
         my_runtime = panel_runtime()
-        self.state["panel"]["from_version"] = await get_current_panel_version()
+        if panel_selected:
+            self.state["panel"]["from_version"] = await get_current_panel_version()
         self._persist()
 
         # 3. Download every needed bundle variant to the panel via the relay
@@ -404,7 +498,9 @@ class UpdateManager:
             node_variant[node.id] = variant
 
         panel_variant: Optional[str] = None
-        if my_runtime.get("install") == "docker":
+        if not panel_selected:
+            pass  # panel already marked "skipped" (not selected) in start()
+        elif my_runtime.get("install") == "docker":
             self.state["panel"].update(
                 status="skipped", message="Docker install: update the container image instead"
             )
@@ -486,6 +582,7 @@ class UpdateManager:
         if panel_variant and panel_variant in local_files:
             try:
                 self.state["panel"]["status"] = "applying"
+                self.state["panel"]["applied_at"] = datetime.utcnow().isoformat()
                 self.state["message"] = "Updating panel (the panel will restart)..."
                 self._persist()
                 self._apply_panel_update(local_files[panel_variant], panel_variant)

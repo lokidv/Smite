@@ -15,33 +15,24 @@ VERSION = "0.1.0"
 
 @router.get("/version")
 async def get_version():
-    """Get panel version from git tag, VERSION file, Docker image label, or environment"""
+    """Get panel version from the installed VERSION file, environment/Docker label, or git tag.
+
+    Order matters: the VERSION file written by the installer reflects what is
+    actually installed and must win over git metadata, which may describe an
+    unrelated repo checkout on the same host (this previously made the panel
+    report the wrong version after a self-update).
+    """
     import os
     import subprocess
     from pathlib import Path
-    
-    try:
-        result = subprocess.run(
-            ["git", "describe", "--tags", "--always", "--dirty"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            cwd="/app"
-        )
-        if result.returncode == 0:
-            git_version = result.stdout.strip()
-            if git_version and not git_version.startswith("fatal"):
-                version = git_version.split("-")[0].lstrip("v")
-                if version and version not in ["next", "latest", "main", "master"]:
-                    return {"version": version}
-    except:
-        pass
-    
-    # VERSION file: /app (Docker image) or the app root (native install,
-    # e.g. /opt/smite/panel/VERSION written by install-native.sh).
+
+    app_root = Path(__file__).resolve().parents[2]  # .../panel (or /app in Docker)
+
+    # 1. VERSION file: /app (Docker image) or the app root (native install,
+    #    e.g. /opt/smite/panel/VERSION written by install-native.sh).
     version_candidates = [
         Path("/app/VERSION"),
-        Path(__file__).resolve().parents[2] / "VERSION",
+        app_root / "VERSION",
         Path("/opt/smite/VERSION"),
     ]
     for version_file in version_candidates:
@@ -52,7 +43,25 @@ async def get_version():
                     return {"version": version.lstrip("v")}
         except:
             pass
-    
+
+    # 2. Dev checkout: derive the version from the panel's own git repo.
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            cwd=str(app_root)
+        )
+        if result.returncode == 0:
+            git_version = result.stdout.strip()
+            if git_version and not git_version.startswith("fatal"):
+                version = git_version.split("-")[0].lstrip("v")
+                if version and version not in ["next", "latest", "main", "master"]:
+                    return {"version": version}
+    except:
+        pass
+
     smite_version = os.getenv("SMITE_VERSION", "")
     if smite_version in ["next", "latest"]:
         try:

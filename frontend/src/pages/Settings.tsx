@@ -73,7 +73,8 @@ interface UpdateState {
   current_version?: string
   panel?: UpdatePanelEntry
   nodes?: UpdateNodeEntry[]
-  relay_node?: { id: string; name: string }
+  relay_node?: { id: string; name: string } | null
+  source?: 'relay' | 'direct'
   started_at?: string
   finished_at?: string
 }
@@ -95,6 +96,7 @@ const Settings = () => {
   const [releasesError, setReleasesError] = useState('')
   const [selectedTag, setSelectedTag] = useState('')
   const [relayName, setRelayName] = useState('')
+  const [updateSource, setUpdateSource] = useState<'relay' | 'direct' | ''>('')
   const [updateState, setUpdateState] = useState<UpdateState | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
 
@@ -149,6 +151,7 @@ const Settings = () => {
       const list: Release[] = response.data.releases || []
       setReleases(list)
       setRelayName(response.data.relay_node?.name || '')
+      setUpdateSource(response.data.source || '')
       setUpdateState(prev => prev
         ? { ...prev, current_version: response.data.current_version }
         : { status: 'idle', current_version: response.data.current_version })
@@ -576,6 +579,11 @@ const Settings = () => {
             {relayName && (
               <span className="text-xs text-gray-500 dark:text-gray-400">
                 ({t.settings.updateRelayNode}: {relayName})
+              </span>
+            )}
+            {!relayName && updateSource === 'direct' && (
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                ({t.settings.updateDirectSource})
               </span>
             )}
           </div>

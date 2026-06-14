@@ -41,6 +41,18 @@ DEFAULT_REPO = os.environ.get("SMITE_UPDATE_REPO", "lokidv/Smite")
 UPDATE_DIR = Path(os.environ.get("SMITE_UPDATE_DIR", "./data/update"))
 STATE_FILE = UPDATE_DIR / "last_update.json"
 PANEL_UPDATE_LOG = "/var/log/smite-panel-update.log"
+GITHUB_API = "https://api.github.com"
+
+
+def _github_headers() -> Dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "smite-panel-updater",
+    }
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 # Generous timeouts: bundles are 100-300 MB and may cross the FRP relay.
 RELAY_DOWNLOAD_TIMEOUT = httpx.Timeout(connect=20.0, read=900.0, write=900.0, pool=20.0)
@@ -225,6 +237,55 @@ class UpdateManager:
             result = await session.execute(select(Node))
             return list(result.scalars().all())
 
+    # ---- direct GitHub access (when the panel host itself has internet) ----
+
+    async def _github_list_releases(self, repo: str, limit: int) -> List[Dict[str, Any]]:
+        """Fetch releases straight from GitHub (no relay).
+
+        Returns the same shape the foreign-node relay produces, so the rest of
+        the flow does not care which source was used (asset ``url`` is the
+        browser_download_url).
+        """
+        url = f"{GITHUB_API}/repos/{repo}/releases?per_page={max(1, min(limit, 30))}"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), follow_redirects=True) as client:
+            resp = await client.get(url, headers=_github_headers())
+            resp.raise_for_status()
+            releases = resp.json()
+        trimmed: List[Dict[str, Any]] = []
+        for release in releases:
+            trimmed.append({
+                "tag": release.get("tag_name"),
+                "name": release.get("name") or release.get("tag_name"),
+                "published_at": release.get("published_at"),
+                "prerelease": release.get("prerelease", False),
+                "assets": [
+                    {
+                        "name": a.get("name"),
+                        "size": a.get("size"),
+                        "url": a.get("browser_download_url"),
+                    }
+                    for a in release.get("assets", [])
+                ],
+            })
+        return trimmed
+
+    async def _github_download(self, url: str, dest: Path) -> int:
+        """Stream a release asset from GitHub straight to panel disk."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        size = 0
+        async with httpx.AsyncClient(
+            timeout=RELAY_DOWNLOAD_TIMEOUT, follow_redirects=True
+        ) as client:
+            async with client.stream("GET", url, headers=_github_headers()) as resp:
+                resp.raise_for_status()
+                with open(dest, "wb") as f:
+                    async for chunk in resp.aiter_bytes(chunk_size=1024 * 256):
+                        f.write(chunk)
+                        size += len(chunk)
+        if size == 0:
+            raise RuntimeError("GitHub returned an empty bundle")
+        return size
+
     async def _find_relay(self, nodes: List[Node]) -> Optional[Node]:
         """First foreign node that can reach GitHub."""
         foreign = [n for n in nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
@@ -242,20 +303,41 @@ class UpdateManager:
         return None
 
     async def list_releases(self, repo: str = "", limit: int = 10) -> Dict[str, Any]:
+        repo = repo or DEFAULT_REPO
         nodes = await self._get_nodes()
         relay = await self._find_relay(nodes)
-        if not relay:
-            raise RuntimeError(
-                "No foreign node with GitHub access found (a foreign node is required as update relay)"
+
+        # Preferred path (Iran panel): a foreign node relays GitHub for us.
+        if relay:
+            result = await self._node_request(
+                relay, "GET", "/api/agent/update/releases",
+                params={"repo": repo, "limit": limit},
+                timeout=httpx.Timeout(30.0), retries=2,
             )
-        result = await self._node_request(
-            relay, "GET", "/api/agent/update/releases",
-            params={"repo": repo or DEFAULT_REPO, "limit": limit},
-            timeout=httpx.Timeout(30.0), retries=2,
-        )
+            return {
+                "releases": result.get("releases", []),
+                "relay_node": {"id": relay.id, "name": relay.name},
+                "source": "relay",
+                "current_version": await get_current_panel_version(),
+            }
+
+        # Fallback: no foreign-node relay, so try GitHub directly. This works
+        # when the panel host itself has internet access (e.g. a foreign-hosted
+        # panel, or an Iran box that can still reach github.com).
+        try:
+            releases = await self._github_list_releases(repo, limit)
+        except Exception as e:
+            raise RuntimeError(
+                "Cannot fetch releases: no foreign node is registered to relay "
+                "GitHub, and this panel server could not reach github.com directly. "
+                "Either add a foreign node (it acts as the update relay for an Iran "
+                "panel), or give this server internet access to GitHub. "
+                f"(direct GitHub error: {e})"
+            )
         return {
-            "releases": result.get("releases", []),
-            "relay_node": {"id": relay.id, "name": relay.name},
+            "releases": releases,
+            "relay_node": None,
+            "source": "direct",
             "current_version": await get_current_panel_version(),
         }
 
@@ -429,21 +511,34 @@ class UpdateManager:
             role = (node.node_metadata or {}).get("role", "unknown")
             self._set_node(node.id, name=node.name, role=role, status="pending", message="")
 
-        # 1. Relay + release (any foreign node can relay, selected for update or not)
+        # 1. Pick the release source: a foreign-node relay (Iran panel) or, if
+        #    none is available, GitHub directly (panel host has internet).
         relay = await self._find_relay(all_nodes)
-        if not relay:
-            raise RuntimeError("No foreign node with GitHub access found (update relay required)")
-        self.state["relay_node"] = {"id": relay.id, "name": relay.name}
-        self._persist()
+        if relay:
+            self.state["relay_node"] = {"id": relay.id, "name": relay.name}
+            self.state["source"] = "relay"
+            self._persist()
+            releases_resp = await self._node_request(
+                relay, "GET", "/api/agent/update/releases",
+                params={"repo": repo, "limit": 30}, timeout=httpx.Timeout(30.0), retries=2,
+            )
+            releases_list = releases_resp.get("releases", [])
+        else:
+            try:
+                releases_list = await self._github_list_releases(repo, 30)
+            except Exception as e:
+                raise RuntimeError(
+                    "No foreign node is registered to relay GitHub, and this panel "
+                    "server could not reach github.com directly. Add a foreign node "
+                    "(update relay for an Iran panel) or give this server internet "
+                    f"access to GitHub. (direct GitHub error: {e})"
+                )
+            self.state["relay_node"] = None
+            self.state["source"] = "direct"
+            self.state["message"] = "Fetching the release directly from GitHub..."
+            self._persist()
 
-        releases_resp = await self._node_request(
-            relay, "GET", "/api/agent/update/releases",
-            params={"repo": repo, "limit": 30}, timeout=httpx.Timeout(30.0), retries=2,
-        )
-        release = next(
-            (r for r in releases_resp.get("releases", []) if r.get("tag") == tag),
-            None,
-        )
+        release = next((r for r in releases_list if r.get("tag") == tag), None)
         if not release:
             raise RuntimeError(f"Release {tag} not found in {repo}")
         assets = release.get("assets", [])
@@ -518,22 +613,26 @@ class UpdateManager:
 
         UPDATE_DIR.mkdir(parents=True, exist_ok=True)
         local_files: Dict[str, Path] = {}
+        src_label = relay.name if relay else "GitHub (direct)"
         for download_id, asset in needed.items():
             dest = UPDATE_DIR / f"{download_id}.tar.gz"
             expected_size = asset.get("size") or 0
             if dest.exists() and expected_size and dest.stat().st_size == expected_size:
                 local_files[download_id] = dest  # already cached from a previous run
                 continue
-            self.state["message"] = f"Downloading {download_id} via relay {relay.name}..."
+            self.state["message"] = f"Downloading {download_id} via {src_label}..."
             self._persist()
             try:
-                await self._node_request(
-                    relay, "POST", "/api/agent/update/download",
-                    json_body={"download_id": download_id, "url": asset["url"]},
-                    timeout=RELAY_DOWNLOAD_TIMEOUT, retries=1,
-                )
-                size = await self._pull_file_from_node(relay, download_id, dest)
-                logger.info(f"Bundle {download_id} pulled to panel ({size} bytes)")
+                if relay:
+                    await self._node_request(
+                        relay, "POST", "/api/agent/update/download",
+                        json_body={"download_id": download_id, "url": asset["url"]},
+                        timeout=RELAY_DOWNLOAD_TIMEOUT, retries=1,
+                    )
+                    size = await self._pull_file_from_node(relay, download_id, dest)
+                else:
+                    size = await self._github_download(asset["url"], dest)
+                logger.info(f"Bundle {download_id} obtained via {src_label} ({size} bytes)")
                 local_files[download_id] = dest
             except Exception as e:
                 # Every node needing this variant fails

@@ -354,6 +354,7 @@ interface Translations {
     updateDone: string
     updateFailedTitle: string
     updateRelayNode: string
+    updateDirectSource: string
     updatePanelRow: string
     updateTargets: string
     updateNoTargets: string
@@ -717,6 +718,7 @@ const translations: Record<Language, Translations> = {
       updateDone: 'Update finished',
       updateFailedTitle: 'Update failed',
       updateRelayNode: 'Relay node',
+      updateDirectSource: 'direct from GitHub',
       updatePanelRow: 'Panel (this server)',
       updateTargets: 'What to update',
       updateNoTargets: 'Select at least one target to update',
@@ -1085,6 +1087,7 @@ const translations: Record<Language, Translations> = {
       updateDone: 'به‌روزرسانی تمام شد',
       updateFailedTitle: 'به‌روزرسانی ناموفق بود',
       updateRelayNode: 'نود رله',
+      updateDirectSource: 'مستقیم از گیت‌هاب',
       updatePanelRow: 'پنل (این سرور)',
       updateTargets: 'چه چیزی به‌روزرسانی شود؟',
       updateNoTargets: 'حداقل یک مورد را برای به‌روزرسانی انتخاب کنید',

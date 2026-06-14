@@ -68,18 +68,35 @@ if [ -f "$BUNDLE_DIR/ARCH" ]; then
 fi
 
 # --- Local prerequisites ---
+# Building the venv needs both the venv module AND ensurepip; on Debian/Ubuntu
+# ensurepip ships in the version-specific python3.X-venv package. Note that
+# `python3 -m venv --help` succeeds even when ensurepip is missing, so test
+# ensurepip directly.
+PYVER="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || true)"
 need_pkgs=""
 command -v python3 >/dev/null 2>&1 || need_pkgs="$need_pkgs python3"
-python3 -m venv --help >/dev/null 2>&1 || need_pkgs="$need_pkgs python3-venv"
+if ! python3 -c 'import ensurepip, venv' >/dev/null 2>&1; then
+    need_pkgs="$need_pkgs python3-venv"
+    [ -n "$PYVER" ] && need_pkgs="$need_pkgs python${PYVER}-venv"
+fi
 if [ -n "$need_pkgs" ]; then
     warn "Missing prerequisites:$need_pkgs - attempting local install"
-    apt-get install -y $need_pkgs 2>/dev/null || {
-        echo -e "${RED}Could not install:$need_pkgs${NC}"
-        echo "Install these from your local OS repository/mirror and re-run."
-        exit 1
-    }
+    if command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
+        # Install each package independently so a version-specific package that
+        # is absent on this release (e.g. python3.12-venv on Ubuntu 22.04) does
+        # not abort installing the generic python3-venv.
+        for pkg in $need_pkgs; do
+            DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >/dev/null 2>&1 || true
+        done
+    fi
 fi
-progress "Prerequisites present"
+if ! python3 -c 'import ensurepip, venv' >/dev/null 2>&1; then
+    echo -e "${RED}python3 venv/ensurepip is unavailable and could not be installed.${NC}"
+    echo "Install 'python3-venv' (and 'python${PYVER}-venv') from your OS mirror and re-run."
+    exit 1
+fi
+progress "Prerequisites present (python ${PYVER:-unknown})"
 
 # --- Configuration ---
 # An existing /etc/smite-node/.env means this is a reinstall/update: preserve

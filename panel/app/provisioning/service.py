@@ -33,6 +33,7 @@ REMOTE_SMITE_NODE = "/root/smite-node.sh"
 REMOTE_XUI_SCRIPT = "/root/smite-install-3xui.sh"
 REMOTE_XUI_TARBALL = "/root/smite-x-ui.tar.gz"
 REMOTE_WG_SCRIPT = "/root/smite-install-wireguard.sh"
+REMOTE_PREP_SCRIPT = "/tmp/smite-prepare.sh"
 
 
 class ProvisioningError(Exception):
@@ -59,6 +60,11 @@ class ProvisionParams:
     bundle_path: Optional[str] = None
     xui_tarball_path: Optional[str] = None
     ca_pem: str = ""
+    # Run apt-get update + upgrade on the target before installing.
+    system_upgrade: bool = True
+    # All uploaded Smite offline bundles (the panel auto-picks the one matching
+    # the target's arch + Python version).
+    bundle_candidates: List[str] = field(default_factory=list)
 
 
 class ProvisioningJob:
@@ -175,8 +181,23 @@ def _execute(job: ProvisioningJob) -> None:
         arch, os_id = _detect_target(ssh, job)
         job.results["target"] = {"arch": arch, "os": os_id, "host": p.host}
 
+        # Always prepare the server first: refresh package lists, optionally
+        # upgrade, and install python/venv/curl prerequisites. This must run
+        # before any component so apt-based installers have what they need.
+        _step(
+            job,
+            "prepare",
+            "Prepare server (update & prerequisites)",
+            lambda: _prepare_server(ssh, job, os_id, p.system_upgrade),
+        )
+
+        # Detect the target's Python AFTER prepare so it reflects the installed
+        # interpreter (used to pick the matching offline bundle).
+        py = _detect_python(ssh, job)
+        job.results["target"]["python"] = py
+
         if p.install_node:
-            _step(job, "node", "Install Smite node", lambda: _install_node(ssh, job, arch))
+            _step(job, "node", "Install Smite node", lambda: _install_node(ssh, job, arch, py))
         if p.install_xui:
             _step(job, "xui", "Install 3x-ui panel", lambda: _install_xui(ssh, job))
         if p.install_wireguard:
@@ -226,18 +247,137 @@ def _detect_target(ssh: SSHSession, job: ProvisioningJob) -> tuple[str, str]:
     return arch, os_id
 
 
+def _detect_python(ssh: SSHSession, job: ProvisioningJob) -> str:
+    """Return the target's default python3 minor version, e.g. "3.10"."""
+    _, out = ssh.run(
+        "python3 -c 'import sys;print(\"%d.%d\"%sys.version_info[:2])' 2>/dev/null || true"
+    )
+    py = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if py.count(".") == 1 and py.replace(".", "").isdigit():
+        job.log(f"Target Python: {py}", "info")
+        return py
+    job.log("Target Python: not detected (python3 missing?)", "info")
+    return ""
+
+
+# Build one prepare script and push it (avoids brittle inline quoting over SSH).
+_PREPARE_SCRIPT_TEMPLATE = """#!/bin/bash
+set +e
+export DEBIAN_FRONTEND=noninteractive
+# Avoid interactive service-restart prompts on Ubuntu 22.04+.
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+
+if ! command -v apt-get >/dev/null 2>&1; then
+    echo "apt-get not found; skipping system update (non-Debian/Ubuntu OS)."
+    echo "Make sure python3, python3-venv, python3-pip, curl and tar are installed."
+    exit 0
+fi
+
+echo "Updating package lists (apt-get update)..."
+apt-get update -y || echo "WARNING: apt-get update reported errors (continuing)."
+
+__UPGRADE_BLOCK__
+
+echo "Installing prerequisites (python3, venv, pip, curl, tar)..."
+apt-get install -y python3 python3-venv python3-pip python3-dev \\
+    curl ca-certificates tar gzip git || \\
+    echo "WARNING: some prerequisites failed to install (continuing)."
+
+PYVER="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || true)"
+if [ -n "$PYVER" ]; then
+    # The version-specific venv package is what actually ships ensurepip on
+    # Ubuntu/Debian; install it but never fail if it is not in the repo.
+    apt-get install -y "python${PYVER}-venv" 2>/dev/null || \\
+        echo "Note: python${PYVER}-venv not available; relying on python3-venv."
+fi
+
+if python3 -c 'import ensurepip, venv' >/dev/null 2>&1; then
+    echo "Python venv/ensurepip ready (python ${PYVER:-unknown})."
+else
+    echo "WARNING: python venv/ensurepip still unavailable; node install may fail."
+fi
+echo "Server preparation finished."
+"""
+
+_UPGRADE_BLOCK = """echo "Upgrading installed packages (apt-get upgrade; this can take a few minutes)..."
+apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade || \\
+    echo "WARNING: apt-get upgrade reported errors (continuing)."
+"""
+
+
+def _prepare_server(ssh: SSHSession, job: ProvisioningJob, os_id: str, do_upgrade: bool) -> Dict[str, Any]:
+    """Update the server and install python/venv prerequisites before install."""
+    script = _PREPARE_SCRIPT_TEMPLATE.replace(
+        "__UPGRADE_BLOCK__", _UPGRADE_BLOCK if do_upgrade else 'echo "Skipping apt-get upgrade (disabled)."'
+    )
+    ssh.put_text(script, REMOTE_PREP_SCRIPT, mode=0o755)
+    # Generous timeout: a full `apt-get upgrade` on a stale server is slow.
+    _run(job, ssh, f"bash {REMOTE_PREP_SCRIPT}", timeout=2700, allow_fail=True)
+    return {"upgraded": bool(do_upgrade), "os": os_id}
+
+
+def _select_bundle(
+    candidates: List[str], explicit: Optional[str], arch: str, py: str
+) -> Optional[str]:
+    """Pick the offline bundle matching the target's arch + Python version.
+
+    Binary wheels in the bundle (uvloop, psutil, pydantic-core, ...) are built
+    for one CPython minor version only, so the bundle's Python MUST match the
+    target's python3. Returns the chosen path, or None if nothing matches.
+    """
+    pool: List[str] = []
+    if explicit:
+        pool.append(explicit)
+    for c in candidates:
+        if c not in pool:
+            pool.append(c)
+    if not pool:
+        return None
+
+    arch_frag = f"-{arch}-"
+    pytag = ("py" + py.replace(".", "")) if py else ""
+
+    if pytag:
+        for c in pool:
+            name = Path(c).name
+            if arch_frag in name and name.endswith(f"-{pytag}.tar.gz"):
+                return c
+        return None  # no python-matching bundle => caller raises a clear error
+
+    # Python version unknown: best-effort arch match (may still fail at pip).
+    for c in pool:
+        if arch_frag in Path(c).name:
+            return c
+    return pool[0]
+
+
 def _read_script(name: str) -> str:
     path = SCRIPTS_DIR / name
     return path.read_text(encoding="utf-8")
 
 
 # -- step: node --------------------------------------------------------------
-def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str) -> Dict[str, Any]:
+def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str, py: str) -> Dict[str, Any]:
     p = job.params
     if not p.ca_pem.strip():
         raise ProvisioningError("Panel CA certificate is empty; cannot enroll node.")
     if not p.panel_host:
         raise ProvisioningError("Panel host is required to register the node.")
+
+    # Pick the offline bundle whose wheels match the target's arch + Python.
+    bundle = _select_bundle(p.bundle_candidates, p.bundle_path, arch, py)
+
+    # An Iran target has no internet, so a matching offline bundle is mandatory.
+    if not bundle and p.role == "iran":
+        have = ", ".join(sorted({Path(c).name for c in (p.bundle_candidates or [])})) or "none"
+        pyhint = f"py{py.replace('.', '')}" if py else "<server-python>"
+        raise ProvisioningError(
+            f"No offline bundle matches this server (arch={arch}, Python={py or 'unknown'}). "
+            f"The bundle's Python must match the server because its wheels are compiled per "
+            f"Python version. Upload smite-offline-{arch}-...-{pyhint}.tar.gz and retry. "
+            f"Uploaded bundles: {have}."
+        )
 
     job.log("Uploading panel CA certificate ...", "info")
     ssh.put_text(p.ca_pem, REMOTE_CA, mode=0o600)
@@ -252,15 +392,16 @@ def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str) -> Dict[str,
         f"PANEL_CA_FILE={REMOTE_CA}"
     )
 
-    use_bundle = bool(p.bundle_path)
-    if p.role == "iran" and not use_bundle:
-        raise ProvisioningError(
-            "Iran node install requires an uploaded Smite offline bundle (panel has no internet)."
-        )
-
-    if use_bundle:
-        job.log(f"Uploading offline bundle ({Path(p.bundle_path).name}) ...", "info")
-        size = ssh.put_file(p.bundle_path, REMOTE_BUNDLE)
+    if bundle:
+        if p.bundle_path and Path(bundle) != Path(p.bundle_path):
+            job.log(
+                f"Selected bundle {Path(bundle).name} matching the server "
+                f"(arch={arch}, Python={py or 'unknown'}) instead of the picked "
+                f"{Path(p.bundle_path).name}.",
+                "info",
+            )
+        job.log(f"Uploading offline bundle ({Path(bundle).name}) ...", "info")
+        size = ssh.put_file(bundle, REMOTE_BUNDLE)
         job.log(f"Bundle uploaded ({size} bytes). Extracting ...", "info")
         _run(
             job,
@@ -278,8 +419,12 @@ def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str) -> Dict[str,
         )
         method = "offline-bundle (native)"
     else:
-        # Foreign target with internet: push the installer; it fetches node
-        # source / Docker image from GitHub on the target itself.
+        # Foreign target with internet and no matching bundle: push the
+        # installer; it fetches node source / Docker image from GitHub.
+        job.log(
+            "No matching offline bundle; using the GitHub/Docker installer on the target.",
+            "info",
+        )
         job.log("Uploading node installer script ...", "info")
         ssh.put_text(_read_script("smite-node.sh"), REMOTE_SMITE_NODE, mode=0o755)
         job.log("Running Docker node installer (fetches from GitHub on the target) ...", "info")

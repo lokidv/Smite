@@ -133,6 +133,7 @@ class ProvisionRequest(BaseModel):
     xui_password: Optional[str] = None
     bundle_artifact: Optional[str] = None
     xui_artifact: Optional[str] = None
+    system_upgrade: bool = True
 
 
 @router.post("/install")
@@ -149,6 +150,14 @@ async def start_install(req: ProvisionRequest, _user=Depends(get_current_user)):
 
     artifacts_dir = _artifacts_dir()
 
+    # All uploaded offline bundles; the service auto-picks the one matching the
+    # target's arch + Python version (their wheels are Python-version specific).
+    bundle_candidates = [
+        str(f)
+        for f in sorted(artifacts_dir.glob("smite-offline-*.tar.gz"))
+        if f.is_file()
+    ]
+
     bundle_path: Optional[str] = None
     if req.bundle_artifact:
         candidate = artifacts_dir / _safe_name(req.bundle_artifact)
@@ -164,9 +173,11 @@ async def start_install(req: ProvisionRequest, _user=Depends(get_current_user)):
         xui_tarball_path = str(candidate)
 
     # An Iran target cannot reach GitHub, so the relevant artifacts must be
-    # pre-uploaded for the components that need them.
+    # pre-uploaded for the components that need them. The exact bundle is chosen
+    # at run time once the target's Python version is known, so here we only
+    # require that at least one offline bundle has been uploaded.
     if req.role == "iran":
-        if req.install_node and not bundle_path:
+        if req.install_node and not (bundle_path or bundle_candidates):
             raise HTTPException(
                 status_code=400,
                 detail="Iran node install requires an uploaded Smite offline bundle",
@@ -199,6 +210,8 @@ async def start_install(req: ProvisionRequest, _user=Depends(get_current_user)):
         bundle_path=bundle_path,
         xui_tarball_path=xui_tarball_path,
         ca_pem=ca_pem,
+        system_upgrade=req.system_upgrade,
+        bundle_candidates=bundle_candidates,
     )
 
     job = create_job(params)

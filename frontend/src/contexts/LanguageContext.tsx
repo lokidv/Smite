@@ -68,6 +68,8 @@ interface Translations {
     role: string
     roleIran: string
     roleForeign: string
+    systemUpgrade: string
+    systemUpgradeDesc: string
     nodeName: string
     panelSection: string
     panelHost: string
@@ -436,6 +438,8 @@ const translations: Record<Language, Translations> = {
       role: 'Server Role',
       roleIran: 'Iran Server',
       roleForeign: 'Foreign Server',
+      systemUpgrade: 'Update & upgrade the server first',
+      systemUpgradeDesc: 'Runs apt-get update and upgrade and installs prerequisites (python3, venv, curl) before installing. Recommended; adds a few minutes.',
       nodeName: 'Node Name',
       panelSection: 'Panel Address (given to the node)',
       panelHost: 'Panel Host / IP',
@@ -454,7 +458,7 @@ const translations: Record<Language, Translations> = {
       xuiPassword: '3x-ui Password',
       randomIfEmpty: 'Random if empty',
       artifactsSection: 'Artifacts (required for Iran servers)',
-      artifactsHint: 'The panel has no internet access, so for Iran servers upload these files once: the Smite offline bundle (smite-offline-<arch>.tar.gz) and the 3x-ui release tarball (x-ui-linux-<arch>.tar.gz). Foreign servers download directly from GitHub.',
+      artifactsHint: 'The panel has no internet access, so for Iran servers upload these files once: the Smite offline bundle (smite-offline-<arch>-<os>-py<XY>.tar.gz) and the 3x-ui release tarball (x-ui-linux-<arch>.tar.gz). Upload the bundle that matches the server Python (py310 for Ubuntu 22.04, py311 for Debian 12, py312 for Ubuntu 24.04) — its wheels are built per Python version. You can upload several bundles; the panel picks the matching one automatically. Foreign servers download directly from GitHub.',
       bundleArtifact: 'Smite Offline Bundle',
       xuiArtifact: '3x-ui Release Tarball',
       uploadBundle: 'Upload Bundle',
@@ -802,6 +806,8 @@ const translations: Record<Language, Translations> = {
       role: 'نقش سرور',
       roleIran: 'سرور ایران',
       roleForeign: 'سرور خارج',
+      systemUpgrade: 'ابتدا سرور را آپدیت و آپگرید کن',
+      systemUpgradeDesc: 'قبل از نصب، apt-get update و upgrade را اجرا و پیش‌نیازها (python3، venv، curl) را نصب می‌کند. توصیه می‌شود؛ چند دقیقه زمان می‌برد.',
       nodeName: 'نام نود',
       panelSection: 'آدرس پنل (به نود داده می‌شود)',
       panelHost: 'هاست / آی‌پی پنل',
@@ -820,7 +826,7 @@ const translations: Record<Language, Translations> = {
       xuiPassword: 'رمز عبور 3x-ui',
       randomIfEmpty: 'در صورت خالی بودن تصادفی',
       artifactsSection: 'فایل‌های نصب (برای سرورهای ایران لازم است)',
-      artifactsHint: 'پنل به اینترنت دسترسی ندارد؛ برای سرورهای ایران این فایل‌ها را یک‌بار آپلود کنید: باندل آفلاین Smite (smite-offline-<arch>.tar.gz) و تارابال ریلیز 3x-ui (x-ui-linux-<arch>.tar.gz). سرورهای خارج مستقیم از گیت‌هاب دانلود می‌کنند.',
+      artifactsHint: 'پنل به اینترنت دسترسی ندارد؛ برای سرورهای ایران این فایل‌ها را یک‌بار آپلود کنید: باندل آفلاین Smite (smite-offline-<arch>-<os>-py<XY>.tar.gz) و تارابال ریلیز 3x-ui (x-ui-linux-<arch>.tar.gz). باندلی را آپلود کنید که با نسخه پایتون سرور هم‌خوان باشد (py310 برای Ubuntu 22.04، py311 برای Debian 12، py312 برای Ubuntu 24.04) چون wheelهای آن مخصوص هر نسخه پایتون است. می‌توانید چند باندل آپلود کنید؛ پنل خودش باندل مناسب را انتخاب می‌کند. سرورهای خارج مستقیم از گیت‌هاب دانلود می‌کنند.',
       bundleArtifact: 'باندل آفلاین Smite',
       xuiArtifact: 'تارابال ریلیز 3x-ui',
       uploadBundle: 'آپلود باندل',

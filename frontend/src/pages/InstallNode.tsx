@@ -44,6 +44,7 @@ const InstallNode = () => {
   const [installNode, setInstallNode] = useState(true)
   const [installXui, setInstallXui] = useState(false)
   const [installWireguard, setInstallWireguard] = useState(false)
+  const [systemUpgrade, setSystemUpgrade] = useState(true)
   const [xuiPort, setXuiPort] = useState('')
   const [xuiUsername, setXuiUsername] = useState('')
   const [xuiPassword, setXuiPassword] = useState('')
@@ -192,6 +193,7 @@ const InstallNode = () => {
         install_node: installNode,
         install_xui: installXui,
         install_wireguard: role === 'foreign' ? installWireguard : false,
+        system_upgrade: systemUpgrade,
         xui_version: 'v2.9.4',
         xui_port: xuiPort ? parseInt(xuiPort) : null,
         xui_username: xuiUsername || null,
@@ -329,6 +331,19 @@ const InstallNode = () => {
                 </button>
               </div>
             </div>
+
+            <label className="mt-4 flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={systemUpgrade}
+                onChange={(e) => setSystemUpgrade(e.target.checked)}
+                className="mt-1 w-4 h-4 text-blue-600 rounded"
+              />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-gray-900 dark:text-white">{tr.systemUpgrade}</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{tr.systemUpgradeDesc}</div>
+              </div>
+            </label>
           </div>
 
           {/* Components */}

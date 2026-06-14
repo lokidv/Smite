@@ -136,13 +136,34 @@ else
     warn "No bin/ directory in bundle; panel-side cores (gost/frp) may be unavailable"
 fi
 
-# --- Python virtual environment (fully offline) ---
+# --- Python virtual environment (offline-first, PyPI fallback if reachable) ---
 echo ""
 echo "Creating Python virtual environment (offline)..."
 python3 -m venv "$INSTALL_DIR/panel/.venv"
-"$INSTALL_DIR/panel/.venv/bin/pip" install --no-index --upgrade pip 2>/dev/null || true
-"$INSTALL_DIR/panel/.venv/bin/pip" install --no-index --find-links="$BUNDLE_DIR/wheels/panel" -r "$INSTALL_DIR/panel/requirements.txt"
-progress "Python dependencies installed from offline wheels"
+VENV_PIP="$INSTALL_DIR/panel/.venv/bin/pip"
+WHEEL_DIR="$BUNDLE_DIR/wheels/panel"
+REQ_FILE="$INSTALL_DIR/panel/requirements.txt"
+"$VENV_PIP" install --no-index --upgrade pip 2>/dev/null || true
+if "$VENV_PIP" install --no-index --find-links="$WHEEL_DIR" -r "$REQ_FILE"; then
+    progress "Python dependencies installed from offline wheels"
+else
+    # The bundle is missing one or more wheels for this Python/arch (e.g. a
+    # partial download, or a bundle built for a different Python). If this
+    # server can reach PyPI, pull only the missing wheels from there.
+    warn "Offline wheels are incomplete for this Python ($(python3 -V 2>&1 | awk '{print $2}'))."
+    warn "Trying PyPI for the missing wheels (this server appears to have internet)..."
+    if "$VENV_PIP" install --find-links="$WHEEL_DIR" -r "$REQ_FILE"; then
+        progress "Python dependencies installed (offline wheels + PyPI for the gaps)"
+    else
+        echo -e "${RED}Could not install Python dependencies.${NC}"
+        echo "The offline bundle is missing wheels for this Python version and PyPI is not reachable."
+        echo "Fix one of these and re-run:"
+        echo "  - Re-download the bundle matching this server's Python (py310/py311/py312);"
+        echo "    a truncated download silently drops wheels."
+        echo "  - Or give this server internet access to PyPI."
+        exit 1
+    fi
+fi
 
 # --- .env ---
 if [ ! -f "$INSTALL_DIR/.env" ]; then

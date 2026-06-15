@@ -1345,6 +1345,39 @@ class Udp2rawAdapter:
             "udp2raw binary not found. Expected at UDP2RAW_BINARY, '/usr/local/bin/udp2raw', or in PATH."
         )
 
+    def _pid_file(self, tunnel_id: str) -> Path:
+        return self.config_dir / f"{tunnel_id}.pid"
+
+    @staticmethod
+    def _kill_udp2raw_pid(pid: int) -> None:
+        """Kill a udp2raw process by PID (SIGTERM first so it removes its iptables rules)."""
+        try:
+            p = psutil.Process(pid)
+            if "udp2raw" not in " ".join(p.cmdline()).lower():
+                return  # PID was recycled into an unrelated process
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except psutil.TimeoutExpired:
+                p.kill()
+        except Exception:
+            pass
+
+    def _kill_stale_on_addr(self, listen_addr: str) -> None:
+        """Kill any orphaned udp2raw still bound to listen_addr.
+
+        After a node-agent restart the in-memory process handle is lost but the
+        udp2raw OS process keeps running and holds the port, which makes a new
+        tunnel on the same port fail with 'socket bind error'. Clear it first.
+        """
+        for p in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmdline = p.info.get("cmdline") or []
+                if any("udp2raw" in (c or "") for c in cmdline) and listen_addr in cmdline:
+                    self._kill_udp2raw_pid(p.info["pid"])
+            except Exception:
+                continue
+
     def apply(self, tunnel_id: str, spec: Dict[str, Any]):
         """Apply udp2raw tunnel - supports both server and client modes"""
         if tunnel_id in self.processes:
@@ -1418,6 +1451,11 @@ class Udp2rawAdapter:
             "-a",  # auto add/remove the iptables rule needed by faketcp/icmp raw modes
         ]
 
+        # Free the listen address if an orphaned udp2raw (e.g. left over after an
+        # agent restart) is still bound to it - otherwise this one hits 'socket
+        # bind error' and the old tunnel keeps running.
+        self._kill_stale_on_addr(str(local_flag_addr))
+
         log_file = self.config_dir / f"{tunnel_id}.log"
         log_f = open(log_file, 'w', buffering=1)
         try:
@@ -1455,6 +1493,13 @@ class Udp2rawAdapter:
                 del self.log_handles[tunnel_id]
             raise RuntimeError(f"udp2raw failed to start: {stderr[-500:] if len(stderr) > 500 else stderr}")
 
+        # Persist the PID so remove() can kill this process even if the agent
+        # restarts and loses the in-memory handle (prevents un-deletable tunnels).
+        try:
+            self._pid_file(tunnel_id).write_text(str(proc.pid))
+        except Exception:
+            pass
+
         logger.info(
             f"udp2raw {mode} started for tunnel {tunnel_id}: raw_mode={raw_mode}, listen={local_flag_addr}, remote={remote_flag_addr}"
         )
@@ -1473,6 +1518,23 @@ class Udp2rawAdapter:
             except:
                 pass
             del self.processes[tunnel_id]
+
+        # Fallback: kill an orphaned udp2raw whose handle was lost across an agent
+        # restart, using the persisted PID. Without this a "deleted" tunnel keeps
+        # running - holding its port and the client's (e.g. WireGuard) connection.
+        pid_file = self._pid_file(tunnel_id)
+        try:
+            if pid_file.exists():
+                pid = int(pid_file.read_text().strip() or "0")
+                if pid > 1:
+                    self._kill_udp2raw_pid(pid)
+        except Exception:
+            pass
+        finally:
+            try:
+                pid_file.unlink()
+            except Exception:
+                pass
 
         if tunnel_id in self.log_handles:
             try:

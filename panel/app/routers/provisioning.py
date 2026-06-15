@@ -235,6 +235,24 @@ async def start_install(req: ProvisionRequest, _user=Depends(get_current_user)):
         bundle_candidates=bundle_candidates,
     )
 
+    # An explicit (re)install means the admin wants this host enrolled, so clear
+    # any prior revocation for it. Otherwise the freshly provisioned node's
+    # self-registration is rejected with 403 and the agent (which stops retrying
+    # on 403) leaves the job hanging on "waiting for the node to register".
+    # The node registers with its own IP and api_port 8888.
+    if req.install_node:
+        import hashlib
+        from sqlalchemy import delete as _sa_delete
+        from app.database import AsyncSessionLocal as _Session
+        from app.models import RevokedNode as _Revoked
+        _fp = hashlib.sha256(f"{req.host}:8888".encode()).hexdigest()[:16]
+        try:
+            async with _Session() as _s:
+                await _s.execute(_sa_delete(_Revoked).where(_Revoked.fingerprint == _fp))
+                await _s.commit()
+        except Exception:
+            pass
+
     job = create_job(params)
     asyncio.create_task(run_job(job))
     return {"job_id": job.id, "status": job.status}

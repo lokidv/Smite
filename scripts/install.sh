@@ -298,7 +298,7 @@ fi
 
 # Try to pull prebuilt images first (will fallback to build if not available)
 echo "  Pulling prebuilt images from GHCR..."
-if docker pull ghcr.io/zzedix/smite-panel:${SMITE_VERSION} 2>/dev/null; then
+if docker pull ghcr.io/lokidv/smite-panel:${SMITE_VERSION} 2>/dev/null; then
     progress "Panel image pulled from GHCR"
 else
     echo -e "${YELLOW}Prebuilt image not found, will build locally...${NC}"

@@ -1,5 +1,5 @@
 """
-Smite Panel - Central Controller
+Loki Panel - Central Controller
 """
 import os
 import asyncio
@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from app.models import Tunnel, Node, CoreResetConfig
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +21,7 @@ from app.routers import nodes, tunnels, panel, status, logs, auth, core_health
 from app.routers import settings as settings_router
 from app.routers import update as update_router
 from app.routers import provisioning as provisioning_router
+from app.routers.auth import get_current_user
 from app.node_server import NodeServer
 from app.gost_forwarder import gost_forwarder
 from app.rathole_server import rathole_server_manager
@@ -835,22 +836,29 @@ app = FastAPI(
     redoc_url="/redoc" if settings.docs_enabled else None,
 )
 
+_cors_origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    # Auth uses bearer tokens (not cookies), so credentials are not needed.
+    # "*" origins with credentials=True is invalid/unsafe; keep credentials off.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+_admin_auth = [Depends(get_current_user)]
+
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+# panel + nodes routers mix node-facing (public) and admin endpoints, so auth is
+# applied per-endpoint inside them rather than to the whole router.
 app.include_router(panel.router, prefix="/api/panel", tags=["panel"])
 app.include_router(nodes.router, prefix="/api/nodes", tags=["nodes"])
-app.include_router(tunnels.router, prefix="/api/tunnels", tags=["tunnels"])
+app.include_router(tunnels.router, prefix="/api/tunnels", tags=["tunnels"], dependencies=_admin_auth)
 app.include_router(status.router, prefix="/api/status", tags=["status"])
-app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
-app.include_router(core_health.router, prefix="/api/core-health", tags=["core-health"])
-app.include_router(settings_router.router)
+app.include_router(logs.router, prefix="/api/logs", tags=["logs"], dependencies=_admin_auth)
+app.include_router(core_health.router, prefix="/api/core-health", tags=["core-health"], dependencies=_admin_auth)
+app.include_router(settings_router.router, dependencies=_admin_auth)
 app.include_router(update_router.router, prefix="/api/update", tags=["update"])
 app.include_router(provisioning_router.router, prefix="/api/provisioning", tags=["provisioning"])
 
@@ -885,7 +893,7 @@ async def root():
     if index_path.exists():
         from fastapi.responses import FileResponse
         return FileResponse(index_path)
-    return {"message": "Smite Panel API", "docs": "/docs"}
+    return {"message": "Loki Panel API", "docs": "/docs"}
 
 
 if __name__ == "__main__":

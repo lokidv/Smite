@@ -71,8 +71,18 @@ class FrpCommClient:
             else:
                 self.remote_port = None
             
+            # loginFailExit: false -> frpc keeps retrying instead of exiting the
+            # moment the panel's FRP port is briefly unreachable (firewall not yet
+            # open, panel restarting, transient network). Without this, the very
+            # first failed login kills the reverse tunnel permanently until the
+            # node re-registers, which is exactly how foreign nodes end up with a
+            # dead/defunct frpc and an unreachable API.
             config_content = f"""serverAddr: {server_addr}
 serverPort: {server_port}
+loginFailExit: false
+transport:
+  dialServerTimeout: 10
+  dialServerKeepalive: 7200
 """
             if token:
                 config_content += f"""auth:

@@ -187,7 +187,7 @@ mkdir -p config
 if [ -z "${SMITE_VERSION}" ]; then
     export SMITE_VERSION=latest
 fi
-if docker pull ghcr.io/zzedix/smite-node:${SMITE_VERSION} 2>/dev/null; then
+if docker pull ghcr.io/lokidv/smite-node:${SMITE_VERSION} 2>/dev/null; then
     echo "Node image pulled from GHCR"
 else
     echo "Prebuilt image not found, building locally..."

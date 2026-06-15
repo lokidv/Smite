@@ -515,6 +515,7 @@ def _install_wireguard(ssh: SSHSession, job: ProvisioningJob) -> Dict[str, Any]:
         except Exception:  # noqa: BLE001
             client_config = ""
 
+    api_key = data.get("apiKey", "")
     return {
         "wgPort": wg_port,
         "serverPublicKey": data.get("serverPublicKey", ""),
@@ -522,9 +523,14 @@ def _install_wireguard(ssh: SSHSession, job: ProvisioningJob) -> Dict[str, Any]:
         "apiPort": api_port,
         "apiBaseUrl": f"http://{p.host}:{api_port}",
         "apiEndpoints": "GET /create?publicKey=, /remove?publicKey=, /list, /check?publicKey=",
-        "apiKey": "",
-        "apiKeyNote": "wvpn management API has no API key (open on the management port). "
-        "Restrict access with a firewall.",
+        "apiKey": api_key,
+        "apiKeyNote": (
+            "Send this key with every management API request (as required by wvpn). "
+            "Keep it secret and restrict the management port with a firewall."
+            if api_key
+            else "Could not read the wvpn API key from /etc/wvpn/wvpn.json on the server. "
+                 "Check the server's wvpn config and restrict the management port with a firewall."
+        ),
         "defaultClientConfig": client_config,
         "note": "Open the WireGuard UDP port and the management API port in your firewall.",
     }

@@ -50,6 +50,9 @@ interface Translations {
     addNode: string
     viewCACertificate: string
     downloadCA: string
+    revokedTitle: string
+    revokedDesc: string
+    allowAgain: string
   }
   servers: {
     title: string
@@ -125,6 +128,7 @@ interface Translations {
     serverEndpoint: string
     apiBaseUrl: string
     apiEndpoints: string
+    apiKey: string
     apiKeyNote: string
     clientConfig: string
     checkNodesPage: string
@@ -355,6 +359,28 @@ interface Translations {
     updateFailedTitle: string
     updateRelayNode: string
     updateDirectSource: string
+    accountSecurity: string
+    accountSecurityDesc: string
+    currentPasswordLabel: string
+    currentPasswordHint: string
+    newPasswordLabel: string
+    confirmPasswordLabel: string
+    changePasswordBtn: string
+    newUsernameLabel: string
+    changeUsernameBtn: string
+    passwordChanged: string
+    usernameChanged: string
+    passwordMismatch: string
+    fillAllFields: string
+    panelPortTitle: string
+    panelPortDesc: string
+    panelPortLabel: string
+    panelPortWarning: string
+    applyPort: string
+    panelPortDockerNote: string
+    panelPortInvalid: string
+    panelPortConfirm: string
+    panelPortSaved: string
     updatePanelRow: string
     updateTargets: string
     updateNoTargets: string
@@ -375,7 +401,7 @@ interface Translations {
 const translations: Record<Language, Translations> = {
   en: {
     login: {
-      title: 'Panel',
+      title: 'Loki',
       subtitle: 'Tunnel Management Platform',
       username: 'Username',
       password: 'Password',
@@ -421,6 +447,9 @@ const translations: Record<Language, Translations> = {
       addNode: 'Add Iran Server',
       viewCACertificate: 'View CA Certificate',
       downloadCA: 'Download CA',
+      revokedTitle: 'Blocked (deleted) nodes',
+      revokedDesc: 'These servers were deleted and are blocked from auto-registering again. Allow one to let its agent re-enroll (within ~60s).',
+      allowAgain: 'Allow again',
     },
     servers: {
       title: 'Foreign Nodes',
@@ -430,7 +459,7 @@ const translations: Record<Language, Translations> = {
     },
     installNode: {
       title: 'Install Node',
-      subtitle: 'Install Smite node, 3x-ui panel or WireGuard on a remote server over SSH',
+      subtitle: 'Install Loki node, 3x-ui panel or WireGuard on a remote server over SSH',
       serverSection: 'Target Server (SSH)',
       sshHost: 'Server IP / Host',
       sshPort: 'SSH Port',
@@ -447,7 +476,7 @@ const translations: Record<Language, Translations> = {
       panelHostHint: 'The address the node will use to reach this panel',
       panelApiPort: 'Panel API Port',
       componentsSection: 'Components to Install',
-      installSmiteNode: 'Install Smite Node',
+      installSmiteNode: 'Install Loki Node',
       installSmiteNodeDesc: 'Installs the node and registers it in the panel automatically (Iran under Nodes, Foreign under Servers)',
       installXui: 'Install 3x-ui Panel (v2.9.4)',
       installXuiDesc: 'Installs the Sanaei panel automatically and returns the login credentials',
@@ -459,8 +488,8 @@ const translations: Record<Language, Translations> = {
       xuiPassword: '3x-ui Password',
       randomIfEmpty: 'Random if empty',
       artifactsSection: 'Artifacts (required for Iran servers)',
-      artifactsHint: 'The panel has no internet access, so for Iran servers upload these files once: the Smite offline bundle (smite-offline-<arch>-<os>-py<XY>.tar.gz) and the 3x-ui release tarball (x-ui-linux-<arch>.tar.gz). Upload the bundle that matches the server Python (py310 for Ubuntu 22.04, py311 for Debian 12, py312 for Ubuntu 24.04) — its wheels are built per Python version. You can upload several bundles; the panel picks the matching one automatically. Foreign servers download directly from GitHub.',
-      bundleArtifact: 'Smite Offline Bundle',
+      artifactsHint: 'The panel has no internet access, so for Iran servers upload these files once: the Loki offline bundle (smite-offline-<arch>-<os>-py<XY>.tar.gz) and the 3x-ui release tarball (x-ui-linux-<arch>.tar.gz). Upload the bundle that matches the server Python (py310 for Ubuntu 22.04, py311 for Debian 12, py312 for Ubuntu 24.04) — its wheels are built per Python version. You can upload several bundles; the panel picks the matching one automatically. Foreign servers download directly from GitHub.',
+      bundleArtifact: 'Loki Offline Bundle',
       xuiArtifact: '3x-ui Release Tarball',
       uploadBundle: 'Upload Bundle',
       uploadXui: 'Upload 3x-ui Tarball',
@@ -476,7 +505,7 @@ const translations: Record<Language, Translations> = {
       statusRunning: 'Running',
       statusSuccess: 'Success',
       statusError: 'Failed',
-      nodeResult: 'Smite Node',
+      nodeResult: 'Loki Node',
       xuiResult: '3x-ui Panel',
       wireguardResult: 'WireGuard',
       copy: 'Copy',
@@ -496,6 +525,7 @@ const translations: Record<Language, Translations> = {
       serverEndpoint: 'Server Endpoint',
       apiBaseUrl: 'Management API URL',
       apiEndpoints: 'API Endpoints',
+      apiKey: 'API Key',
       apiKeyNote: 'API Key',
       clientConfig: 'Default Client Config',
       checkNodesPage: 'The node registers itself with the panel shortly after install — check the Nodes/Servers page',
@@ -719,6 +749,28 @@ const translations: Record<Language, Translations> = {
       updateFailedTitle: 'Update failed',
       updateRelayNode: 'Relay node',
       updateDirectSource: 'direct from GitHub',
+      accountSecurity: 'Account & Security',
+      accountSecurityDesc: 'Change the username and password you use to sign in to the panel.',
+      currentPasswordLabel: 'Current password',
+      currentPasswordHint: 'Required to change your password or username.',
+      newPasswordLabel: 'New password',
+      confirmPasswordLabel: 'Confirm new password',
+      changePasswordBtn: 'Change password',
+      newUsernameLabel: 'New username',
+      changeUsernameBtn: 'Change username',
+      passwordChanged: 'Password changed successfully.',
+      usernameChanged: 'Username changed successfully.',
+      passwordMismatch: 'New password and confirmation do not match.',
+      fillAllFields: 'Please fill in all required fields.',
+      panelPortTitle: 'Panel Port',
+      panelPortDesc: 'Change the port this panel listens on.',
+      panelPortLabel: 'Port',
+      panelPortWarning: 'Warning: registered nodes connect to the panel on this port. After changing it you must update each node and reopen the panel at the new URL. On native installs the panel restarts automatically.',
+      applyPort: 'Apply & restart',
+      panelPortDockerNote: 'Docker install detected: the new port is saved, but run `smite restart` on the host to apply it.',
+      panelPortInvalid: 'Enter a valid port (1-65535).',
+      panelPortConfirm: 'Change the panel port now? The panel will restart and its URL will change; nodes pointing at the old port will need updating.',
+      panelPortSaved: 'Panel port saved.',
       updatePanelRow: 'Panel (this server)',
       updateTargets: 'What to update',
       updateNoTargets: 'Select at least one target to update',
@@ -744,7 +796,7 @@ const translations: Record<Language, Translations> = {
   },
   fa: {
     login: {
-      title: 'پنل',
+      title: 'لوکی',
       subtitle: 'پلتفرم مدیریت تونل',
       username: 'نام کاربری',
       password: 'رمز عبور',
@@ -790,6 +842,9 @@ const translations: Record<Language, Translations> = {
       addNode: 'افزودن سرور ایران',
       viewCACertificate: 'مشاهده گواهی CA',
       downloadCA: 'دانلود CA',
+      revokedTitle: 'نودهای مسدود (حذف‌شده)',
+      revokedDesc: 'این سرورها حذف شده‌اند و از ثبت‌نام خودکار مجدد مسدودند. برای اجازه‌ی دوباره، آزاد کنید تا ایجنت آن (ظرف حدود ۶۰ ثانیه) دوباره ثبت شود.',
+      allowAgain: 'اجازه‌ی دوباره',
     },
     servers: {
       title: 'سرورهای خارج',
@@ -799,7 +854,7 @@ const translations: Record<Language, Translations> = {
     },
     installNode: {
       title: 'نصب نود',
-      subtitle: 'نصب نود Smite، پنل 3x-ui یا وایرگارد روی سرور از راه دور از طریق SSH',
+      subtitle: 'نصب نود Loki، پنل 3x-ui یا وایرگارد روی سرور از راه دور از طریق SSH',
       serverSection: 'سرور هدف (SSH)',
       sshHost: 'آی‌پی / هاست سرور',
       sshPort: 'پورت SSH',
@@ -816,7 +871,7 @@ const translations: Record<Language, Translations> = {
       panelHostHint: 'آدرسی که نود برای رسیدن به این پنل استفاده می‌کند',
       panelApiPort: 'پورت API پنل',
       componentsSection: 'موارد قابل نصب',
-      installSmiteNode: 'نصب نود Smite',
+      installSmiteNode: 'نصب نود Loki',
       installSmiteNodeDesc: 'نود را نصب و به‌صورت خودکار در پنل ثبت می‌کند (ایران زیر نودها، خارج زیر سرورها)',
       installXui: 'نصب پنل 3x-ui (نسخه v2.9.4)',
       installXuiDesc: 'پنل سنایی را خودکار نصب می‌کند و اطلاعات ورود را برمی‌گرداند',
@@ -828,8 +883,8 @@ const translations: Record<Language, Translations> = {
       xuiPassword: 'رمز عبور 3x-ui',
       randomIfEmpty: 'در صورت خالی بودن تصادفی',
       artifactsSection: 'فایل‌های نصب (برای سرورهای ایران لازم است)',
-      artifactsHint: 'پنل به اینترنت دسترسی ندارد؛ برای سرورهای ایران این فایل‌ها را یک‌بار آپلود کنید: باندل آفلاین Smite (smite-offline-<arch>-<os>-py<XY>.tar.gz) و تارابال ریلیز 3x-ui (x-ui-linux-<arch>.tar.gz). باندلی را آپلود کنید که با نسخه پایتون سرور هم‌خوان باشد (py310 برای Ubuntu 22.04، py311 برای Debian 12، py312 برای Ubuntu 24.04) چون wheelهای آن مخصوص هر نسخه پایتون است. می‌توانید چند باندل آپلود کنید؛ پنل خودش باندل مناسب را انتخاب می‌کند. سرورهای خارج مستقیم از گیت‌هاب دانلود می‌کنند.',
-      bundleArtifact: 'باندل آفلاین Smite',
+      artifactsHint: 'پنل به اینترنت دسترسی ندارد؛ برای سرورهای ایران این فایل‌ها را یک‌بار آپلود کنید: باندل آفلاین Loki (smite-offline-<arch>-<os>-py<XY>.tar.gz) و تارابال ریلیز 3x-ui (x-ui-linux-<arch>.tar.gz). باندلی را آپلود کنید که با نسخه پایتون سرور هم‌خوان باشد (py310 برای Ubuntu 22.04، py311 برای Debian 12، py312 برای Ubuntu 24.04) چون wheelهای آن مخصوص هر نسخه پایتون است. می‌توانید چند باندل آپلود کنید؛ پنل خودش باندل مناسب را انتخاب می‌کند. سرورهای خارج مستقیم از گیت‌هاب دانلود می‌کنند.',
+      bundleArtifact: 'باندل آفلاین Loki',
       xuiArtifact: 'تارابال ریلیز 3x-ui',
       uploadBundle: 'آپلود باندل',
       uploadXui: 'آپلود تارابال 3x-ui',
@@ -845,7 +900,7 @@ const translations: Record<Language, Translations> = {
       statusRunning: 'در حال اجرا',
       statusSuccess: 'موفق',
       statusError: 'ناموفق',
-      nodeResult: 'نود Smite',
+      nodeResult: 'نود Loki',
       xuiResult: 'پنل 3x-ui',
       wireguardResult: 'وایرگارد',
       copy: 'کپی',
@@ -865,6 +920,7 @@ const translations: Record<Language, Translations> = {
       serverEndpoint: 'اندپوینت سرور',
       apiBaseUrl: 'آدرس API مدیریتی',
       apiEndpoints: 'اندپوینت‌های API',
+      apiKey: 'کلید API',
       apiKeyNote: 'کلید API',
       clientConfig: 'کانفیگ کلاینت پیش‌فرض',
       checkNodesPage: 'نود کمی بعد از نصب خودش را در پنل ثبت می‌کند — صفحه نودها/سرورها را بررسی کنید',
@@ -1088,6 +1144,28 @@ const translations: Record<Language, Translations> = {
       updateFailedTitle: 'به‌روزرسانی ناموفق بود',
       updateRelayNode: 'نود رله',
       updateDirectSource: 'مستقیم از گیت‌هاب',
+      accountSecurity: 'حساب و امنیت',
+      accountSecurityDesc: 'نام کاربری و رمز عبوری که با آن وارد پنل می‌شوید را تغییر دهید.',
+      currentPasswordLabel: 'رمز عبور فعلی',
+      currentPasswordHint: 'برای تغییر رمز عبور یا نام کاربری لازم است.',
+      newPasswordLabel: 'رمز عبور جدید',
+      confirmPasswordLabel: 'تکرار رمز عبور جدید',
+      changePasswordBtn: 'تغییر رمز عبور',
+      newUsernameLabel: 'نام کاربری جدید',
+      changeUsernameBtn: 'تغییر نام کاربری',
+      passwordChanged: 'رمز عبور با موفقیت تغییر کرد.',
+      usernameChanged: 'نام کاربری با موفقیت تغییر کرد.',
+      passwordMismatch: 'رمز عبور جدید و تکرار آن یکسان نیستند.',
+      fillAllFields: 'لطفاً همه فیلدهای لازم را پر کنید.',
+      panelPortTitle: 'پورت پنل',
+      panelPortDesc: 'پورتی که پنل روی آن گوش می‌دهد را تغییر دهید.',
+      panelPortLabel: 'پورت',
+      panelPortWarning: 'هشدار: نودها روی این پورت به پنل وصل می‌شوند. پس از تغییر باید هر نود را به‌روزرسانی کنید و پنل را با آدرس/پورت جدید باز کنید. در نصب بومی، پنل به‌صورت خودکار ری‌استارت می‌شود.',
+      applyPort: 'اعمال و ری‌استارت',
+      panelPortDockerNote: 'نصب داکر شناسایی شد: پورت جدید ذخیره شد ولی برای اعمال باید روی هاست دستور `smite restart` را اجرا کنید.',
+      panelPortInvalid: 'یک پورت معتبر وارد کنید (۱ تا ۶۵۵۳۵).',
+      panelPortConfirm: 'پورت پنل همین حالا تغییر کند؟ پنل ری‌استارت می‌شود و آدرسش عوض می‌شود؛ نودهایی که به پورت قبلی وصل‌اند باید به‌روزرسانی شوند.',
+      panelPortSaved: 'پورت پنل ذخیره شد.',
       updatePanelRow: 'پنل (این سرور)',
       updateTargets: 'چه چیزی به‌روزرسانی شود؟',
       updateNoTargets: 'حداقل یک مورد را برای به‌روزرسانی انتخاب کنید',

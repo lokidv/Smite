@@ -1,11 +1,12 @@
 """
-Smite Node - Lightweight Agent
+Loki Node - Lightweight Agent
 """
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
@@ -19,6 +20,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Optional node-API authentication. Default OFF so existing panels keep working
+# unchanged. To harden (after every node is updated): set NODE_API_TOKEN to a
+# shared secret and NODE_AUTH_ENFORCE=1 on both the panel and the nodes. This is
+# the "flip enforcement on" step of the staged rollout.
+NODE_API_TOKEN = os.environ.get("NODE_API_TOKEN", "")
+NODE_AUTH_ENFORCE = os.environ.get("NODE_AUTH_ENFORCE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def require_node_token(x_node_token: str = Header(default="")):
+    """Gate agent endpoints behind a shared token, but only when enforcement is on."""
+    if NODE_AUTH_ENFORCE and NODE_API_TOKEN and x_node_token != NODE_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing node token")
+    return True
+
 
 async def registration_loop(panel_client: PanelClient):
     """Periodic registration loop to pick up FRP config changes"""
@@ -27,6 +42,9 @@ async def registration_loop(panel_client: PanelClient):
             await asyncio.sleep(60)  # Re-register every 60 seconds
             if panel_client and panel_client.client:
                 await panel_client.register_with_panel()
+                if getattr(panel_client, "blocked", False):
+                    logger.error("Node revoked by panel; stopping periodic re-registration.")
+                    break
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -81,7 +99,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Smite Node",
+    title="Loki Node",
     description="Lightweight Tunnel Agent",
     version="1.0.0",
     lifespan=lifespan,
@@ -96,7 +114,7 @@ app.add_middleware(
 )
 
 
-app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
+app.include_router(agent.router, prefix="/api/agent", tags=["agent"], dependencies=[Depends(require_node_token)])
 
 
 @app.get("/")

@@ -33,7 +33,7 @@ from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
 from app.models import Node
-from app.node_client import NodeClient
+from app.node_client import NodeClient, _node_auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,25 @@ VERSION_POLL_INTERVAL = 6
 # How long after launching its own installer the panel may keep reporting the
 # old version before the run is declared failed (install + restart time).
 PANEL_APPLY_GRACE_SECONDS = 420
+
+
+def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> None:
+    """Extract a tarball, rejecting members/links that escape dest.
+
+    Bundles are extracted and then a bundled installer is run as root, so an
+    unchecked extractall is an arbitrary-file-write -> RCE vector.
+    """
+    dest_r = dest.resolve()
+    base = str(dest_r) + os.sep
+    for member in tar.getmembers():
+        target = (dest_r / member.name).resolve()
+        if target != dest_r and not str(target).startswith(base):
+            raise RuntimeError(f"Refusing unsafe path in update bundle: {member.name!r}")
+        if member.issym() or member.islnk():
+            link_target = (target.parent / member.linkname).resolve()
+            if link_target != dest_r and not str(link_target).startswith(base):
+                raise RuntimeError(f"Refusing unsafe link in update bundle: {member.name!r}")
+    tar.extractall(dest_r)
 
 
 def panel_runtime() -> Dict[str, Any]:
@@ -169,7 +188,7 @@ class UpdateManager:
                     verify=False,
                     limits=httpx.Limits(max_keepalive_connections=0 if using_frp else 5),
                 ) as client:
-                    response = await client.request(method, url, json=json_body, params=params)
+                    response = await client.request(method, url, json=json_body, params=params, headers=_node_auth_headers())
                     response.raise_for_status()
                     return response.json()
             except httpx.HTTPStatusError as e:
@@ -225,7 +244,7 @@ class UpdateManager:
                 url,
                 params={"download_id": download_id},
                 content=file_chunks(),
-                headers={"Content-Type": "application/octet-stream"},
+                headers={"Content-Type": "application/octet-stream", **_node_auth_headers()},
             )
             response.raise_for_status()
             return response.json()
@@ -740,7 +759,7 @@ class UpdateManager:
         extract_dir.mkdir(parents=True, exist_ok=True)
 
         with tarfile.open(bundle, "r:gz") as tar:
-            tar.extractall(extract_dir)
+            _safe_extractall(tar, extract_dir)
         bundle_root = _find_bundle_root(extract_dir, "install-native.sh")
 
         runner = work_dir / f"run-panel-{download_id}.sh"

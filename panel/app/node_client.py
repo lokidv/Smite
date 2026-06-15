@@ -1,9 +1,22 @@
 """Client for panel to communicate with nodes"""
 import httpx
+import os
 import ssl
 import logging
 import asyncio
 from typing import Dict, Any, Optional, Tuple
+
+
+def _node_auth_headers() -> Dict[str, str]:
+    """Send the shared node token when configured (no-op until NODE_API_TOKEN is set)."""
+    token = os.environ.get("NODE_API_TOKEN", "")
+    return {"X-Node-Token": token} if token else {}
+
+
+def _verify_tls():
+    """TLS verification for panel->node calls. Default OFF (self-signed/FRP loopback);
+    enable with NODE_TLS_VERIFY=1 once nodes present a trusted certificate (H10)."""
+    return os.environ.get("NODE_TLS_VERIFY", "").strip().lower() in ("1", "true", "yes", "on")
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -96,10 +109,10 @@ class NodeClient:
                         
                         async with httpx.AsyncClient(
                             timeout=req_timeout, 
-                            verify=False,
+                            verify=_verify_tls(),
                             limits=httpx.Limits(max_keepalive_connections=0 if using_frp else 5)  # Disable keep-alive for FRP
                         ) as client:
-                            response = await client.post(url, json=data)
+                            response = await client.post(url, json=data, headers=_node_auth_headers())
                             response.raise_for_status()
                             return response.json()
                     except httpx.RequestError as e:
@@ -143,8 +156,8 @@ class NodeClient:
             
             try:
                 timeout = httpx.Timeout(3.0, connect=2.0)
-                async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
-                    response = await client.get(url)
+                async with httpx.AsyncClient(timeout=timeout, verify=_verify_tls()) as client:
+                    response = await client.get(url, headers=_node_auth_headers())
                     response.raise_for_status()
                     return response.json()
             except httpx.RequestError as e:

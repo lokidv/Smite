@@ -91,6 +91,27 @@ async def upload_artifact(
             out.write(chunk)
             size += len(chunk)
 
+    if size == 0:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    # Integrity: a truncated/corrupt archive would only fail later during the SSH
+    # install. Validate the archive header up-front and reject bad uploads.
+    name_lower = dest.name.lower()
+    try:
+        if name_lower.endswith((".tar.gz", ".tgz")):
+            import tarfile
+            with tarfile.open(dest, "r:gz") as tf:
+                if tf.next() is None:
+                    raise ValueError("empty tar archive")
+        elif name_lower.endswith(".gz"):
+            import gzip
+            with gzip.open(dest, "rb") as gz:
+                gz.read(1024)
+    except Exception as e:  # noqa: BLE001
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Uploaded archive is corrupt or truncated: {e}")
+
     return {"name": dest.name, "size": size, "kind": kind}
 
 

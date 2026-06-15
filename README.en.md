@@ -1,10 +1,10 @@
-# Smite - Tunneling Control Panel
+# Loki - Tunneling Control Panel
 
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/SmiteD.png"/>
     <source media="(prefers-color-scheme: light)" srcset="assets/SmiteL.png"/>
-    <img src="assets/SmiteL.png" alt="Smite Logo" width="200"/>
+    <img src="assets/SmiteL.png" alt="Loki Logo" width="200"/>
   </picture>
   
   **Modern tunnel management built on GOST, Backhaul, Rathole, Chisel, FRP, and udp2raw, featuring dual-node architecture, intuitive WebUI, real-time status tracking, and open-source freedom.**
@@ -23,7 +23,7 @@
 
 > 🇮🇷 **نسخه فارسی این راهنما: [README.md](README.md)**
 
-> **About this fork** ([`lokidv/Smite`](https://github.com/lokidv/Smite), forked from [`zZedix/Smite`](https://github.com/zZedix/Smite)) — adds a fully **offline, Docker-free installer** for restricted/Iran servers, the **udp2raw** tunnel core (FakeTCP / ICMP / UDP), and the **zapret** DPI-bypass core (SNI spoofing).
+> **About Loki** — adds a fully **offline, Docker-free installer** for restricted/Iran servers, the **udp2raw** tunnel core (FakeTCP / ICMP / UDP), and the **zapret** DPI-bypass core (SNI spoofing).
 
 ### Which install should I use?
 
@@ -387,7 +387,7 @@ If you find Smite useful and want to support its development, consider making a 
 
 <div align="center">
   
-  **Originally made with ❤️ by [zZedix](https://github.com/zZedix)** · This fork (offline install, udp2raw, zapret) maintained by [lokidv](https://github.com/lokidv)
+  **Loki** · maintained by [lokidv](https://github.com/lokidv)
   
   *Securing the digital world, one line of code at a time!*
   

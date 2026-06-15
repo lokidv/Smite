@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
+# Returned by GET in place of stored secrets so they are never exposed; on PUT,
+# this placeholder (or an empty value) means "keep the existing secret".
+SECRET_MASK = "********"
+
 
 class FrpSettings(BaseModel):
     enabled: bool = False
@@ -57,11 +61,11 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         "frp": {
             "enabled": frp_settings.get("enabled", False),
             "port": frp_settings.get("port", 7000),
-            "token": frp_settings.get("token")
+            "token": SECRET_MASK if frp_settings.get("token") else None
         },
         "telegram": {
             "enabled": telegram_settings.get("enabled", False),
-            "bot_token": telegram_settings.get("bot_token"),
+            "bot_token": SECRET_MASK if telegram_settings.get("bot_token") else None,
             "admin_ids": telegram_settings.get("admin_ids", []),
             "backup_enabled": telegram_settings.get("backup_enabled", False),
             "backup_interval": telegram_settings.get("backup_interval", 60),
@@ -84,28 +88,35 @@ async def update_settings(settings_update: SettingsUpdate, request: Request, db:
         result = await db.execute(select(Settings).where(Settings.key == "frp"))
         setting = result.scalar_one_or_none()
         
-        old_enabled = False
-        if setting and setting.value:
-            old_enabled = setting.value.get("enabled", False)
+        old_value = dict(setting.value) if (setting and setting.value) else {}
+        old_enabled = old_value.get("enabled", False)
         
         new_enabled = settings_update.frp.enabled
         
+        frp_value = settings_update.frp.dict(exclude_none=True)
+        # Never overwrite the stored token with the masked placeholder/empty value
+        # (GET returns SECRET_MASK so the real token is never exposed).
+        new_token = frp_value.get("token")
+        if not new_token or new_token == SECRET_MASK:
+            if old_value.get("token"):
+                frp_value["token"] = old_value["token"]
+            else:
+                frp_value.pop("token", None)
+        
         if setting:
-            setting.value = settings_update.frp.dict(exclude_none=True)
+            setting.value = frp_value
             setting.updated_at = datetime.utcnow()
         else:
-            setting = Settings(
-                key="frp",
-                value=settings_update.frp.dict(exclude_none=True)
-            )
+            setting = Settings(key="frp", value=frp_value)
             db.add(setting)
         
         await db.commit()
         await db.refresh(setting)
         
+        resolved_token = frp_value.get("token")
         if new_enabled and not old_enabled:
             try:
-                success = frp_comm_manager.start(settings_update.frp.port, settings_update.frp.token)
+                success = frp_comm_manager.start(settings_update.frp.port, resolved_token)
                 if success:
                     logger.info(f"FRP communication server started on port {settings_update.frp.port}")
                 else:
@@ -122,20 +133,25 @@ async def update_settings(settings_update: SettingsUpdate, request: Request, db:
         result = await db.execute(select(Settings).where(Settings.key == "telegram"))
         setting = result.scalar_one_or_none()
         
-        old_enabled = False
-        if setting and setting.value:
-            old_enabled = setting.value.get("enabled", False)
+        old_value = dict(setting.value) if (setting and setting.value) else {}
+        old_enabled = old_value.get("enabled", False)
         
         new_enabled = settings_update.telegram.enabled
         
+        telegram_value = settings_update.telegram.dict(exclude_none=True)
+        # Keep the stored bot token when the client sends the masked placeholder.
+        new_bot_token = telegram_value.get("bot_token")
+        if not new_bot_token or new_bot_token == SECRET_MASK:
+            if old_value.get("bot_token"):
+                telegram_value["bot_token"] = old_value["bot_token"]
+            else:
+                telegram_value.pop("bot_token", None)
+        
         if setting:
-            setting.value = settings_update.telegram.dict(exclude_none=True)
+            setting.value = telegram_value
             setting.updated_at = datetime.utcnow()
         else:
-            setting = Settings(
-                key="telegram",
-                value=settings_update.telegram.dict(exclude_none=True)
-            )
+            setting = Settings(key="telegram", value=telegram_value)
             db.add(setting)
         
         await db.commit()

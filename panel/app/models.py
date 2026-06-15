@@ -84,3 +84,17 @@ class Settings(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
+class RevokedNode(Base):
+    """Fingerprints of nodes an admin deleted.
+
+    The node agent keeps re-registering every 60s, so without this tombstone a
+    deleted node silently reappears. Register rejects revoked fingerprints; an
+    admin can clear the entry to allow a server to enroll again.
+    """
+    __tablename__ = "revoked_nodes"
+
+    fingerprint = Column(String, primary_key=True)
+    name = Column(String, nullable=True)
+    revoked_at = Column(DateTime, default=datetime.utcnow)
+

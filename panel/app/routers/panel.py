@@ -1,12 +1,43 @@
 """Panel API endpoints"""
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, Response
-from pathlib import Path
 import logging
+import os
+import shutil
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
+
 from app.config import settings
+from app.models import Admin
+from app.routers.auth import get_current_user
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _resolve_env_file() -> Path:
+    """Locate the .env that the running panel actually reads (native: /opt/smite/.env)."""
+    candidates = [
+        os.environ.get("SMITE_ENV_FILE"),
+        "/opt/smite/.env",
+        str(Path.cwd() / ".env"),
+        str(Path(__file__).resolve().parents[3] / ".env"),
+    ]
+    for c in candidates:
+        if c and Path(c).is_file():
+            return Path(c)
+    return Path("/opt/smite/.env")
+
+
+def _install_kind() -> str:
+    return "docker" if Path("/.dockerenv").exists() else "native"
+
+
+class PanelPortRequest(BaseModel):
+    port: int
 
 
 @router.get("/ca")
@@ -125,4 +156,81 @@ async def get_server_ca_cert(download: bool = False):
 async def health():
     """Health check"""
     return {"status": "ok"}
+
+
+@router.get("/config")
+async def get_panel_config(_user: Admin = Depends(get_current_user)):
+    """Current panel listen settings (admin only)."""
+    install = _install_kind()
+    return {
+        "port": settings.panel_port,
+        "host": settings.panel_host,
+        "install": install,
+        "env_file": str(_resolve_env_file()),
+        "self_restart_supported": install == "native",
+    }
+
+
+@router.put("/config/port")
+async def set_panel_port(req: PanelPortRequest, _user: Admin = Depends(get_current_user)):
+    """Change the panel listen port (admin only).
+
+    Rewrites PANEL_PORT in the .env and, on native installs, restarts the panel
+    out-of-band so the response is delivered before the restart. NOTE: registered
+    nodes target this port, so changing it requires updating the nodes too.
+    """
+    port = req.port
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be between 1 and 65535")
+    if port == settings.node_port:
+        raise HTTPException(status_code=400, detail=f"Port {port} is reserved for the node TLS channel")
+
+    install = _install_kind()
+    env_file = _resolve_env_file()
+
+    try:
+        lines = env_file.read_text().splitlines() if env_file.exists() else []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cannot read {env_file}: {e}")
+
+    found = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith("PANEL_PORT="):
+            lines[i] = f"PANEL_PORT={port}"
+            found = True
+            break
+    if not found:
+        lines.append(f"PANEL_PORT={port}")
+
+    try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text("\n".join(lines) + "\n")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cannot write {env_file}: {e}")
+
+    if install == "docker":
+        return {
+            "status": "saved",
+            "port": port,
+            "restarted": False,
+            "message": "Saved PANEL_PORT. Docker installs cannot self-restart; run `smite restart` on the host to apply.",
+        }
+
+    # Native: defer the restart so this HTTP response is returned first.
+    ts = int(datetime.utcnow().timestamp())
+    restart_cmd = "sleep 1; systemctl restart smite-panel"
+    if shutil.which("systemd-run"):
+        cmd = ["systemd-run", f"--unit=smite-panel-portchange-{ts}", "--collect", "/bin/bash", "-c", restart_cmd]
+    else:
+        cmd = ["setsid", "/bin/bash", "-c", restart_cmd]
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception as e:
+        return {
+            "status": "saved",
+            "port": port,
+            "restarted": False,
+            "message": f"Saved PANEL_PORT but auto-restart failed: {e}. Run `smite restart` on the host.",
+        }
+    return {"status": "restarting", "port": port, "restarted": True, "message": "Panel is restarting on the new port."}
 

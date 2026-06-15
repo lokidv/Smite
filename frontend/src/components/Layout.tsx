@@ -159,17 +159,7 @@ const Layout = ({ children }: LayoutProps) => {
             </div>
             <div className="flex flex-col items-center gap-2 text-xs text-gray-500 dark:text-gray-400 pt-2 border-t border-gray-200 dark:border-gray-700">
               <div className="flex items-center gap-1 flex-wrap justify-center">
-                <span>Made with</span>
-                <span className="text-red-500">❤️</span>
-                <span>by</span>
-                <a 
-                  href="https://github.com/zZedix" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="text-blue-600 dark:text-blue-400 hover:underline"
-                >
-                  zZedix
-                </a>
+                <span>Loki Panel</span>
               </div>
               <div className="flex items-center gap-2">
                 <span>{version}</span>

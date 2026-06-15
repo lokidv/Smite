@@ -68,8 +68,22 @@ fi
 # wvpn management API listens on a fixed port (see wvpn/main.js).
 API_PORT="4000"
 
+# wvpn generates an API key at install time and stores it in its config file.
+# Read it so the panel can show it to the user (it is required to call the API).
+API_KEY=""
+for WVPN_CONFIG in "/etc/wvpn/wvpn.json" "/opt/wginstaller/wvpn/wvpn.json"; do
+    [[ -f "$WVPN_CONFIG" ]] || continue
+    if command -v jq >/dev/null 2>&1; then
+        API_KEY="$(jq -r '.apiKey // .api_key // .apikey // empty' "$WVPN_CONFIG" 2>/dev/null || true)"
+    fi
+    if [[ -z "$API_KEY" ]]; then
+        API_KEY="$(grep -oE '"api[_]?[Kk]ey"[[:space:]]*:[[:space:]]*"[^"]*"' "$WVPN_CONFIG" 2>/dev/null | head -n1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+    fi
+    [[ -n "$API_KEY" ]] && break
+done
+
 echo ""
 echo -e "${green}WireGuard + wvpn installation finished.${plain}"
-printf '===SMITE_WG_RESULT=== {"wgPort":"%s","serverPublicKey":"%s","serverPublicIp":"%s","wgInterface":"%s","apiPort":"%s","clientConfigB64":"%s"}\n' \
+printf '===SMITE_WG_RESULT=== {"wgPort":"%s","serverPublicKey":"%s","serverPublicIp":"%s","wgInterface":"%s","apiPort":"%s","apiKey":"%s","clientConfigB64":"%s"}\n' \
     "$(json_escape "${WG_PORT}")" "$(json_escape "${SERVER_PUB_KEY}")" "$(json_escape "${SERVER_PUB_IP}")" \
-    "$(json_escape "${WG_NIC}")" "$(json_escape "${API_PORT}")" "$(json_escape "${CLIENT_CONF_B64}")"
+    "$(json_escape "${WG_NIC}")" "$(json_escape "${API_PORT}")" "$(json_escape "${API_KEY}")" "$(json_escape "${CLIENT_CONF_B64}")"

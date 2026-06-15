@@ -1695,7 +1695,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
             
             if remote_addr and token and proxy_port and hasattr(request.app.state, 'rathole_server_manager'):
                 try:
-                    logger.info(f"Starting Rathole server for tunnel {db_tunnel.id}: remote_addr={remote_addr}, token={token}, proxy_port={proxy_port}, use_ipv6={use_ipv6}")
+                    logger.info(f"Starting Rathole server for tunnel {db_tunnel.id}: remote_addr={remote_addr}, token=***, proxy_port={proxy_port}, use_ipv6={use_ipv6}")
                     request.app.state.rathole_server_manager.start_server(
                         tunnel_id=db_tunnel.id,
                         remote_addr=remote_addr,

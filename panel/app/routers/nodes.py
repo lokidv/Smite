@@ -1,5 +1,5 @@
 """Nodes API endpoints"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
@@ -7,10 +7,16 @@ from datetime import datetime
 from pydantic import BaseModel
 import httpx
 import logging
+import os
+
+
+def _node_auth_enforced() -> bool:
+    return os.environ.get("NODE_AUTH_ENFORCE", "").strip().lower() in ("1", "true", "yes", "on")
 
 from app.database import get_db
-from app.models import Node, Settings
+from app.models import Node, Settings, RevokedNode
 from app.node_client import NodeClient
+from app.routers.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +51,16 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
     
     fingerprint_data = f"{node.ip_address}:{node.api_port}".encode()
     fingerprint = hashlib.sha256(fingerprint_data).hexdigest()[:16]
+    
+    # A deleted node keeps its agent running and re-registers every 60s. Block
+    # re-registration for fingerprints an admin explicitly revoked.
+    revoked = await db.execute(select(RevokedNode).where(RevokedNode.fingerprint == fingerprint))
+    if revoked.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="This node was removed by an administrator and is blocked from re-registering. "
+                   "Clear its revocation in the panel to allow it again.",
+        )
     
     result = await db.execute(select(Node).where(Node.fingerprint == fingerprint))
     existing = result.scalar_one_or_none()
@@ -160,7 +176,7 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.get("", response_model=List[NodeResponse])
+@router.get("", response_model=List[NodeResponse], dependencies=[Depends(get_current_user)])
 async def list_nodes(db: AsyncSession = Depends(get_db)):
     """List all nodes with connection state"""
     import asyncio
@@ -238,7 +254,31 @@ async def list_nodes(db: AsyncSession = Depends(get_db)):
     return results
 
 
-@router.get("/{node_id}", response_model=NodeResponse)
+@router.get("/revoked", dependencies=[Depends(get_current_user)])
+async def list_revoked(db: AsyncSession = Depends(get_db)):
+    """List fingerprints blocked from re-registering (admin-deleted nodes)."""
+    result = await db.execute(select(RevokedNode))
+    rows = result.scalars().all()
+    return [
+        {"fingerprint": r.fingerprint, "name": r.name,
+         "revoked_at": r.revoked_at.isoformat() if r.revoked_at else None}
+        for r in rows
+    ]
+
+
+@router.delete("/revoked/{fingerprint}", dependencies=[Depends(get_current_user)])
+async def clear_revoked(fingerprint: str, db: AsyncSession = Depends(get_db)):
+    """Allow a previously-deleted node to enroll again (its agent re-registers within ~60s)."""
+    result = await db.execute(select(RevokedNode).where(RevokedNode.fingerprint == fingerprint))
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Fingerprint is not revoked")
+    await db.delete(row)
+    await db.commit()
+    return {"status": "cleared"}
+
+
+@router.get("/{node_id}", response_model=NodeResponse, dependencies=[Depends(get_current_user)])
 async def get_node(node_id: str, db: AsyncSession = Depends(get_db)):
     """Get node by ID"""
     result = await db.execute(select(Node).where(Node.id == node_id))
@@ -257,9 +297,16 @@ async def get_node(node_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{node_id}/frp-status")
-async def update_frp_status(node_id: str, frp_status: dict, db: AsyncSession = Depends(get_db)):
+async def update_frp_status(node_id: str, frp_status: dict, request: Request, db: AsyncSession = Depends(get_db)):
     """Update node FRP connection status"""
     from sqlalchemy.orm.attributes import flag_modified
+    
+    # Optional node auth (default OFF): when enforcement is enabled the calling
+    # node must present the shared token, preventing frp-status hijacking (H16).
+    if _node_auth_enforced():
+        _tok = os.environ.get("NODE_API_TOKEN", "")
+        if _tok and request.headers.get("x-node-token") != _tok:
+            raise HTTPException(status_code=401, detail="Invalid or missing node token")
     
     result = await db.execute(select(Node).where(Node.id == node_id))
     node = result.scalar_one_or_none()
@@ -286,13 +333,21 @@ async def update_frp_status(node_id: str, frp_status: dict, db: AsyncSession = D
     return {"status": "success"}
 
 
-@router.delete("/{node_id}")
+@router.delete("/{node_id}", dependencies=[Depends(get_current_user)])
 async def delete_node(node_id: str, db: AsyncSession = Depends(get_db)):
     """Delete a node"""
     result = await db.execute(select(Node).where(Node.id == node_id))
     node = result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
+    
+    # Tombstone the fingerprint so the still-running agent cannot silently
+    # re-register the node a minute later.
+    existing_rev = await db.execute(
+        select(RevokedNode).where(RevokedNode.fingerprint == node.fingerprint)
+    )
+    if existing_rev.scalar_one_or_none() is None:
+        db.add(RevokedNode(fingerprint=node.fingerprint, name=node.name))
     
     await db.delete(node)
     await db.commit()

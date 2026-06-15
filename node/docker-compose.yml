@@ -3,7 +3,7 @@
 
 services:
   smite-node:
-    image: ghcr.io/zzedix/smite-node:${SMITE_VERSION:-latest}
+    image: ghcr.io/lokidv/smite-node:${SMITE_VERSION:-latest}
     build:
       context: .
       dockerfile: Dockerfile

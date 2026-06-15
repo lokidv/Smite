@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import api from '../api/client'
 import { useLanguage } from '../contexts/LanguageContext'
+import { useAuth } from '../contexts/AuthContext'
 
 interface FrpSettings {
   enabled: boolean
@@ -81,6 +82,7 @@ interface UpdateState {
 
 const Settings = () => {
   const { t } = useLanguage()
+  const { login } = useAuth()
   const [settings, setSettings] = useState<SettingsData>({
     frp: { enabled: false, port: 7000 },
     telegram: { enabled: false, admin_ids: [] },
@@ -89,6 +91,67 @@ const Settings = () => {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
+
+  // Account & Security (panel admin login credentials)
+  const [acctCurrentPw, setAcctCurrentPw] = useState('')
+  const [acctNewPw, setAcctNewPw] = useState('')
+  const [acctConfirmPw, setAcctConfirmPw] = useState('')
+  const [acctNewUsername, setAcctNewUsername] = useState('')
+  const [acctBusy, setAcctBusy] = useState(false)
+
+  const changePassword = async () => {
+    if (!acctCurrentPw || !acctNewPw) { setMessage({ type: 'error', text: t.settings.fillAllFields }); return }
+    if (acctNewPw !== acctConfirmPw) { setMessage({ type: 'error', text: t.settings.passwordMismatch }); return }
+    setAcctBusy(true)
+    try {
+      await api.post('/auth/change-password', { current_password: acctCurrentPw, new_password: acctNewPw })
+      setMessage({ type: 'success', text: t.settings.passwordChanged })
+      setAcctCurrentPw(''); setAcctNewPw(''); setAcctConfirmPw('')
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.response?.data?.detail || 'Error' })
+    } finally { setAcctBusy(false) }
+  }
+
+  const changeUsername = async () => {
+    if (!acctCurrentPw || !acctNewUsername) { setMessage({ type: 'error', text: t.settings.fillAllFields }); return }
+    setAcctBusy(true)
+    try {
+      const res = await api.patch('/auth/username', { current_password: acctCurrentPw, new_username: acctNewUsername })
+      login(res.data.access_token, res.data.username)
+      setMessage({ type: 'success', text: t.settings.usernameChanged })
+      setAcctCurrentPw(''); setAcctNewUsername('')
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.response?.data?.detail || 'Error' })
+    } finally { setAcctBusy(false) }
+  }
+
+  // Panel port (self-service)
+  const [panelPort, setPanelPort] = useState<string>('')
+  const [panelInstall, setPanelInstall] = useState<string>('')
+  const [panelPortBusy, setPanelPortBusy] = useState(false)
+
+  const loadPanelConfig = async () => {
+    try {
+      const res = await api.get('/panel/config')
+      setPanelPort(String(res.data.port ?? ''))
+      setPanelInstall(res.data.install || '')
+    } catch {
+      // optional
+    }
+  }
+
+  const savePanelPort = async () => {
+    const p = parseInt(panelPort, 10)
+    if (!p || p < 1 || p > 65535) { setMessage({ type: 'error', text: t.settings.panelPortInvalid }); return }
+    if (!window.confirm(t.settings.panelPortConfirm)) return
+    setPanelPortBusy(true)
+    try {
+      const res = await api.put('/panel/config/port', { port: p })
+      setMessage({ type: 'success', text: res.data.message || t.settings.panelPortSaved })
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.response?.data?.detail || 'Error' })
+    } finally { setPanelPortBusy(false) }
+  }
 
   // Panel update state
   const [releases, setReleases] = useState<Release[]>([])
@@ -109,6 +172,7 @@ const Settings = () => {
     loadSettings()
     loadUpdateStatus()
     loadNodes()
+    loadPanelConfig()
   }, [])
 
   const loadNodes = async () => {
@@ -294,6 +358,105 @@ const Settings = () => {
       )}
 
       <div className="space-y-6">
+        {/* Account & Security */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">{t.settings.accountSecurity}</h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">{t.settings.accountSecurityDesc}</p>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t.settings.currentPasswordLabel}</label>
+              <input
+                type="password"
+                value={acctCurrentPw}
+                onChange={(e) => setAcctCurrentPw(e.target.value)}
+                autoComplete="current-password"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{t.settings.currentPasswordHint}</p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t.settings.newPasswordLabel}</label>
+                <input
+                  type="password"
+                  value={acctNewPw}
+                  onChange={(e) => setAcctNewPw(e.target.value)}
+                  autoComplete="new-password"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t.settings.confirmPasswordLabel}</label>
+                <input
+                  type="password"
+                  value={acctConfirmPw}
+                  onChange={(e) => setAcctConfirmPw(e.target.value)}
+                  autoComplete="new-password"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={changePassword}
+              disabled={acctBusy}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium disabled:opacity-50"
+            >
+              {t.settings.changePasswordBtn}
+            </button>
+            <hr className="border-gray-200 dark:border-gray-700" />
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t.settings.newUsernameLabel}</label>
+              <input
+                type="text"
+                value={acctNewUsername}
+                onChange={(e) => setAcctNewUsername(e.target.value)}
+                autoComplete="username"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={changeUsername}
+              disabled={acctBusy}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium disabled:opacity-50"
+            >
+              {t.settings.changeUsernameBtn}
+            </button>
+          </div>
+        </div>
+
+        {/* Panel Port */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">{t.settings.panelPortTitle}</h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">{t.settings.panelPortDesc}</p>
+          <div className="mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 text-xs">{t.settings.panelPortWarning}</div>
+          <div className="flex items-end gap-3">
+            <div className="flex-1 max-w-xs">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t.settings.panelPortLabel}</label>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={panelPort}
+                onChange={(e) => setPanelPort(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={savePanelPort}
+              disabled={panelPortBusy}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium disabled:opacity-50"
+            >
+              {t.settings.applyPort}
+            </button>
+          </div>
+          {panelInstall === 'docker' && (
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">{t.settings.panelPortDockerNote}</p>
+          )}
+        </div>
+
         {/* FRP Communication Settings */}
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">{t.settings.frpCommunication}</h2>

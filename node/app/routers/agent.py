@@ -1,12 +1,22 @@
 """Agent API endpoints"""
+import re
 from fastapi import APIRouter, Request, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Dict, Any
 import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# tunnel_id is interpolated into config file paths and process-kill patterns, so
+# it must not contain path separators or shell/glob metacharacters.
+_TUNNEL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _valid_tunnel_id(v: str) -> str:
+    if not isinstance(v, str) or not _TUNNEL_ID_RE.match(v):
+        raise ValueError("invalid tunnel_id (allowed: letters, digits, '_' and '-')")
+    return v
 
 
 class TunnelApply(BaseModel):
@@ -15,9 +25,19 @@ class TunnelApply(BaseModel):
     type: str
     spec: Dict[str, Any]
 
+    @field_validator("tunnel_id")
+    @classmethod
+    def _check_tunnel_id(cls, v):
+        return _valid_tunnel_id(v)
+
 
 class TunnelRemove(BaseModel):
     tunnel_id: str
+
+    @field_validator("tunnel_id")
+    @classmethod
+    def _check_tunnel_id(cls, v):
+        return _valid_tunnel_id(v)
 
 
 @router.post("/tunnels/apply")

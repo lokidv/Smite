@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 import httpx
 
@@ -25,6 +26,25 @@ UPDATE_DIR = Path(os.environ.get("SMITE_UPDATE_DIR", "/tmp/smite-update"))
 GITHUB_API = "https://api.github.com"
 DEFAULT_REPO = os.environ.get("SMITE_UPDATE_REPO", "lokidv/Smite")
 UPDATE_LOG = "/var/log/smite-node-update.log"
+
+
+def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> None:
+    """Extract a tarball, rejecting members/links that escape dest.
+
+    Bundles are extracted and then a bundled installer is run as root, so an
+    unchecked extractall is an arbitrary-file-write -> RCE vector.
+    """
+    dest_r = dest.resolve()
+    base = str(dest_r) + os.sep
+    for member in tar.getmembers():
+        target = (dest_r / member.name).resolve()
+        if target != dest_r and not str(target).startswith(base):
+            raise RuntimeError(f"Refusing unsafe path in update bundle: {member.name!r}")
+        if member.issym() or member.islnk():
+            link_target = (target.parent / member.linkname).resolve()
+            if link_target != dest_r and not str(link_target).startswith(base):
+                raise RuntimeError(f"Refusing unsafe link in update bundle: {member.name!r}")
+    tar.extractall(dest_r)
 
 
 def _headers() -> Dict[str, str]:
@@ -71,8 +91,23 @@ def file_path(download_id: str) -> Path:
     return UPDATE_DIR / f"{safe_id}.tar.gz"
 
 
+_ALLOWED_DOWNLOAD_HOSTS = ("github.com", "objects.githubusercontent.com")
+
+
+def _assert_allowed_download_url(url: str) -> None:
+    """Only allow GitHub release-asset URLs (prevents SSRF to internal hosts)."""
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    ok = parsed.scheme == "https" and (
+        host in _ALLOWED_DOWNLOAD_HOSTS or host.endswith(".githubusercontent.com")
+    )
+    if not ok:
+        raise ValueError(f"Refusing to download from a non-GitHub URL: {host or url!r}")
+
+
 async def download_asset(download_id: str, url: str) -> Dict[str, Any]:
     """Download a release asset to local disk (foreign node only)."""
+    _assert_allowed_download_url(url)
     UPDATE_DIR.mkdir(parents=True, exist_ok=True)
     target = file_path(download_id)
     sha256 = hashlib.sha256()
@@ -120,7 +155,7 @@ def apply_update(download_id: str) -> Dict[str, Any]:
     extract_dir.mkdir(parents=True, exist_ok=True)
 
     with tarfile.open(bundle, "r:gz") as tar:
-        tar.extractall(extract_dir)
+        _safe_extractall(tar, extract_dir)
 
     bundle_root = _find_bundle_root(extract_dir)
 

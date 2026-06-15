@@ -353,7 +353,7 @@ const InstallNode = () => {
               {tr.componentsSection}
             </h2>
             <div className="space-y-3">
-              {/* Smite node */}
+              {/* Loki node */}
               <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${installNode ? 'border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/10' : 'border-gray-200 dark:border-gray-700'}`}>
                 <input type="checkbox" checked={installNode} onChange={(e) => setInstallNode(e.target.checked)} className="mt-1 w-4 h-4 text-blue-600 rounded" />
                 <div className="flex-1">
@@ -653,6 +653,7 @@ const InstallNode = () => {
                     <ResultRow label={tr.serverPublicKey} value={wgRes.serverPublicKey} />
                     <ResultRow label={tr.apiBaseUrl} value={wgRes.apiBaseUrl} />
                     <ResultRow label={tr.apiEndpoints} value={wgRes.apiEndpoints} />
+                    <ResultRow label={tr.apiKey} value={wgRes.apiKey} />
                     {wgRes.apiKeyNote && (
                       <div className="mt-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-300 flex items-start gap-1.5">
                         <AlertTriangle size={14} className="shrink-0 mt-0.5" />

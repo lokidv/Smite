@@ -2,6 +2,7 @@
 import asyncio
 import httpx
 import hashlib
+import os
 import socket
 import logging
 from pathlib import Path
@@ -24,6 +25,7 @@ class PanelClient:
         self.registered = False
         self.using_frp = False
         self.frp_panel_url: Optional[str] = None
+        self.blocked = False  # set when the panel revokes this node (HTTP 403)
     
     async def start(self):
         """Start client and connect to panel"""
@@ -138,6 +140,12 @@ class PanelClient:
                 
                 return True
             else:
+                if response.status_code == 403:
+                    self.blocked = True
+                    logger.error(
+                        "Panel revoked this node (HTTP 403): it was deleted in the panel. "
+                        "Stopping auto-registration. Clear its revocation in the panel to re-enroll."
+                    )
                 logger.error(f"Registration failed: {response.status_code} - {response.text}")
                 return False
         except httpx.ConnectError as e:
@@ -202,10 +210,11 @@ class PanelClient:
             panel_api_url = f"http://{panel_host}:{panel_api_port}"
             
             url = f"{panel_api_url}/api/nodes/{self.node_id}/frp-status"
+            _tok = os.environ.get("NODE_API_TOKEN", "")
             response = await self.client.put(url, json={
                 "connected": True,
                 "remote_port": remote_port
-            }, timeout=10.0)
+            }, headers=({"X-Node-Token": _tok} if _tok else None), timeout=10.0)
             
             if response.status_code == 200:
                 logger.info(f"[HTTP] FRP status reported to panel: remote_port={remote_port} (last HTTP call)")

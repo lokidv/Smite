@@ -22,9 +22,11 @@ const Nodes = () => {
   const [certContent, setCertContent] = useState<string>('')
   const [certLoading, setCertLoading] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [revoked, setRevoked] = useState<{ fingerprint: string; name?: string }[]>([])
 
   useEffect(() => {
     fetchNodes()
+    fetchRevoked()
     const params = new URLSearchParams(window.location.search)
     if (params.get('add') === 'true') {
       setShowAddModal(true)
@@ -104,9 +106,29 @@ const Nodes = () => {
     try {
       await api.delete(`/nodes/${id}`)
       fetchNodes()
+      fetchRevoked()
     } catch (error) {
       console.error('Failed to delete node:', error)
       alert('Failed to delete node')
+    }
+  }
+
+  const fetchRevoked = async () => {
+    try {
+      const response = await api.get('/nodes/revoked')
+      setRevoked(response.data || [])
+    } catch {
+      // optional
+    }
+  }
+
+  const allowAgain = async (fingerprint: string) => {
+    try {
+      await api.delete(`/nodes/revoked/${fingerprint}`)
+      fetchRevoked()
+    } catch (error) {
+      console.error('Failed to clear revocation:', error)
+      alert('Failed to clear revocation')
     }
   }
 
@@ -152,6 +174,26 @@ const Nodes = () => {
           </button>
         </div>
       </div>
+
+      {revoked.length > 0 && (
+        <div className="mb-6 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
+          <h2 className="text-sm font-semibold text-amber-800 dark:text-amber-200 mb-1">{t.nodes.revokedTitle}</h2>
+          <p className="text-xs text-amber-700 dark:text-amber-300 mb-3">{t.nodes.revokedDesc}</p>
+          <ul className="space-y-2">
+            {revoked.map((r) => (
+              <li key={r.fingerprint} className="flex items-center justify-between gap-3 text-sm">
+                <span className="font-mono text-gray-700 dark:text-gray-300">{r.name ? `${r.name} · ` : ''}{r.fingerprint}</span>
+                <button
+                  onClick={() => allowAgain(r.fingerprint)}
+                  className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded"
+                >
+                  {t.nodes.allowAgain}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm">
         <table className="w-full">

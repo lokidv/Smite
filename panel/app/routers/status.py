@@ -6,6 +6,7 @@ import psutil
 
 from app.database import get_db
 from app.models import Tunnel, Node
+from app.routers.auth import get_current_user
 
 
 router = APIRouter()
@@ -99,7 +100,7 @@ async def get_version():
     return {"version": version}
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(get_current_user)])
 async def get_status(db: AsyncSession = Depends(get_db)):
     """Get system status"""
     cpu_percent = psutil.cpu_percent(interval=1)

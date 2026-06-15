@@ -1,7 +1,8 @@
 """Authentication endpoints"""
+import time
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -21,6 +22,25 @@ SECRET_KEY = settings.secret_key
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
+# Simple in-memory login throttle (per client IP + username) to slow brute force.
+_LOGIN_MAX_ATTEMPTS = 10
+_LOGIN_WINDOW_SECONDS = 300
+_login_attempts: dict = {}
+
+
+def _check_login_rate(key: str) -> None:
+    now = time.time()
+    count, start = _login_attempts.get(key, (0, now))
+    if now - start > _LOGIN_WINDOW_SECONDS:
+        count, start = 0, now
+    count += 1
+    _login_attempts[key] = (count, start)
+    if count > _LOGIN_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please wait a few minutes and try again.",
+        )
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -35,6 +55,16 @@ class LoginResponse(BaseModel):
 
 class TokenData(BaseModel):
     username: Optional[str] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class ChangeUsernameRequest(BaseModel):
+    current_password: str
+    new_username: str
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -88,8 +118,12 @@ async def get_current_user(
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(login_data: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(login_data: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Login endpoint"""
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{client_ip}:{login_data.username}"
+    _check_login_rate(rate_key)
+    
     result = await db.execute(select(Admin).where(Admin.username == login_data.username))
     user = result.scalar_one_or_none()
     
@@ -99,6 +133,8 @@ async def login(login_data: LoginRequest, db: AsyncSession = Depends(get_db)):
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    _login_attempts.pop(rate_key, None)  # reset throttle on success
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -126,4 +162,44 @@ async def get_current_user_info(current_user: Admin = Depends(get_current_user))
 async def logout():
     """Logout endpoint (client-side token removal)"""
     return {"message": "Logged out successfully"}
+
+
+@router.post("/change-password")
+async def change_password(
+    data: ChangePasswordRequest,
+    current_user: Admin = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the logged-in admin's password (requires the current password)."""
+    if not verify_password(data.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+    if len(data.new_password) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be at least 8 characters")
+    current_user.password_hash = get_password_hash(data.new_password)
+    await db.commit()
+    return {"message": "Password changed successfully"}
+
+
+@router.patch("/username", response_model=LoginResponse)
+async def change_username(
+    data: ChangeUsernameRequest,
+    current_user: Admin = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the logged-in admin's username (requires the current password); returns a fresh token."""
+    if not verify_password(data.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+    new_username = data.new_username.strip()
+    if len(new_username) < 3:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username must be at least 3 characters")
+    if new_username != current_user.username:
+        existing = await db.execute(select(Admin).where(Admin.username == new_username))
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already taken")
+        current_user.username = new_username
+        await db.commit()
+    access_token = create_access_token(
+        data={"sub": new_username}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    return LoginResponse(access_token=access_token, token_type="bearer", username=new_username)
 

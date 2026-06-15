@@ -1,10 +1,10 @@
-# Smite - پنل مدیریت تانل
+# Loki - پنل مدیریت تانل
 
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/SmiteD.png"/>
     <source media="(prefers-color-scheme: light)" srcset="assets/SmiteL.png"/>
-    <img src="assets/SmiteL.png" alt="Smite Logo" width="200"/>
+    <img src="assets/SmiteL.png" alt="Loki Logo" width="200"/>
   </picture>
   
   **مدیریت مدرن تانل بر پایه GOST ،Backhaul ،Rathole ،Chisel ،FRP و udp2raw — با معماری دو‌نودی، رابط وب ساده، نمایش لحظه‌ای وضعیت اتصال و متن‌باز.**
@@ -25,7 +25,7 @@
 
 > 🇬🇧 **English version: [README.en.md](README.en.md)**
 
-> **درباره این فورک** ([`lokidv/Smite`](https://github.com/lokidv/Smite) — فورک‌شده از [`zZedix/Smite`](https://github.com/zZedix/Smite)): این نسخه سه قابلیت اصلی به Smite اضافه می‌کند: **نصب کاملاً آفلاین و بدون داکر** برای سرورهای ایران/محدودشده، هسته تانل **udp2raw** (حالت‌های FakeTCP / ICMP / UDP) و هسته **zapret** برای دور زدن DPI (جعل SNI).
+> **درباره Loki**: این پنل سه قابلیت اصلی دارد که برجسته‌اند: **نصب کاملاً آفلاین و بدون داکر** برای سرورهای ایران/محدودشده، هسته تانل **udp2raw** (حالت‌های FakeTCP / ICMP / UDP) و هسته **zapret** برای دور زدن DPI (جعل SNI).
 
 ### کدام روش نصب مناسب من است؟
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
 import threading
 import uuid
@@ -34,6 +35,12 @@ REMOTE_XUI_SCRIPT = "/root/smite-install-3xui.sh"
 REMOTE_XUI_TARBALL = "/root/smite-x-ui.tar.gz"
 REMOTE_WG_SCRIPT = "/root/smite-install-wireguard.sh"
 REMOTE_PREP_SCRIPT = "/tmp/smite-prepare.sh"
+
+# Foreign nodes have internet, so when no offline bundle is uploaded they install
+# NATIVELY by downloading the matching release bundle from GitHub on the target.
+# This keeps every node native and panel-updatable (no Docker dead-end).
+PROVISION_REPO = os.environ.get("SMITE_UPDATE_REPO", "lokidv/Smite")
+_PY_OSLABEL = {"3.10": "ubuntu22.04-py310", "3.11": "debian12-py311", "3.12": "ubuntu24.04-py312"}
 
 
 class ProvisioningError(Exception):
@@ -419,17 +426,36 @@ def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str, py: str) -> 
         )
         method = "offline-bundle (native)"
     else:
-        # Foreign target with internet and no matching bundle: push the
-        # installer; it fetches node source / Docker image from GitHub.
+        # Foreign target with internet but no uploaded bundle: download the
+        # matching offline bundle from the GitHub release ON the target and run
+        # the NATIVE installer. Foreign nodes stay native (panel-updatable)
+        # instead of becoming Docker containers the panel updater cannot touch.
+        oslabel = _PY_OSLABEL.get(py, "ubuntu24.04-py312")
+        asset = f"smite-offline-{arch}-{oslabel}.tar.gz"
+        url = f"https://github.com/{PROVISION_REPO}/releases/latest/download/{asset}"
         job.log(
-            "No matching offline bundle; using the GitHub/Docker installer on the target.",
+            f"No uploaded bundle; the target will download {asset} from GitHub and install natively.",
             "info",
         )
-        job.log("Uploading node installer script ...", "info")
-        ssh.put_text(_read_script("smite-node.sh"), REMOTE_SMITE_NODE, mode=0o755)
-        job.log("Running Docker node installer (fetches from GitHub on the target) ...", "info")
-        _run(job, ssh, f"{env} bash {REMOTE_SMITE_NODE}", timeout=2400)
-        method = "docker (github)"
+        _run(
+            job,
+            ssh,
+            # Remove any previous Docker-based node so the native install can take
+            # over the API port (lets re-provisioning convert Docker -> native).
+            f"set -e; (docker rm -f smite-node 2>/dev/null || true); "
+            f"curl -fL --retry 3 -o {REMOTE_BUNDLE} {shlex.quote(url)} && "
+            f"rm -rf {REMOTE_BUNDLE_DIR} && mkdir -p {REMOTE_BUNDLE_DIR} && "
+            f"tar -xzf {REMOTE_BUNDLE} -C {REMOTE_BUNDLE_DIR} --strip-components=1",
+            timeout=900,
+        )
+        job.log("Running native node installer (this may take a few minutes) ...", "info")
+        _run(
+            job,
+            ssh,
+            f"cd {REMOTE_BUNDLE_DIR} && {env} bash scripts/install-node-native.sh --yes",
+            timeout=2400,
+        )
+        method = "github-release (native)"
 
     return {
         "method": method,

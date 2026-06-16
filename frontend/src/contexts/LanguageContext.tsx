@@ -162,6 +162,8 @@ interface Translations {
     loadingTunnels: string
     reapplyAll: string
     confirmReapplyAll: string
+    autoRestartTitle: string
+    autoRestartOff: string
     reapplyAllSuccess: string
     udp2rawHint: string
     trusttunnelHint: string
@@ -559,6 +561,8 @@ const translations: Record<Language, Translations> = {
       loadingTunnels: 'Loading tunnels...',
       reapplyAll: 'Reapply All',
       confirmReapplyAll: 'Are you sure you want to reapply all tunnels?',
+      autoRestartTitle: 'Auto-restart this tunnel on a schedule',
+      autoRestartOff: 'Off',
       reapplyAllSuccess: 'Success',
       udp2rawHint: 'udp2raw wraps UDP traffic in raw FakeTCP / ICMP / UDP packets between the Iran node (entry) and the foreign server (exit).',
       trusttunnelHint: 'TrustTunnel (rstun) is a QUIC-based reverse tunnel. The Iran node runs the server (public entry ports) and the foreign server dials in over QUIC/UDP and forwards traffic to its local service.',
@@ -954,6 +958,8 @@ const translations: Record<Language, Translations> = {
       loadingTunnels: 'در حال بارگذاری تونل‌ها...',
       reapplyAll: 'اعمال مجدد همه',
       confirmReapplyAll: 'آیا از اعمال مجدد همه تونل‌ها مطمئن هستید؟',
+      autoRestartTitle: 'ری‌استارت خودکار این تونل طبق زمان‌بندی',
+      autoRestartOff: 'خاموش',
       reapplyAllSuccess: 'موفقیت',
       udp2rawHint: 'udp2raw ترافیک UDP را بین نود ایران (ورودی) و سرور خارجی (خروجی) در بسته‌های خام FakeTCP / ICMP / UDP کپسوله می‌کند.',
       trusttunnelHint: 'TrustTunnel (rstun) یک تونل معکوس مبتنی بر QUIC است. نود ایران سرور را اجرا می‌کند (پورت‌های عمومی ورودی) و سرور خارجی از طریق QUIC/UDP به آن وصل شده و ترافیک را به سرویس محلی خود هدایت می‌کند.',

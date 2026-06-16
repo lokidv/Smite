@@ -17,6 +17,52 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+class RestartRequest(BaseModel):
+    tunnel_ids: List[str]
+
+
+class AutoRestartRequest(BaseModel):
+    minutes: int
+
+
+@router.post("/restart")
+async def restart_tunnels(req: RestartRequest):
+    """Restart (re-apply) several tunnels on demand. Returns how many succeeded."""
+    from app.tunnel_reapply_manager import tunnel_reapply_manager
+    applied, failed = await tunnel_reapply_manager.reapply_tunnels(req.tunnel_ids)
+    return {"status": "done", "applied": applied, "failed": failed}
+
+
+@router.post("/{tunnel_id}/restart")
+async def restart_tunnel(tunnel_id: str):
+    """Restart (re-apply) a single tunnel on demand."""
+    from app.tunnel_reapply_manager import tunnel_reapply_manager
+    applied, failed = await tunnel_reapply_manager.reapply_tunnels([tunnel_id])
+    if applied == 0:
+        raise HTTPException(
+            status_code=502,
+            detail="Restart failed (node unreachable or tunnel inactive). Check the node connection.",
+        )
+    return {"status": "restarted", "applied": applied, "failed": failed}
+
+
+@router.put("/{tunnel_id}/auto-restart")
+async def set_auto_restart(tunnel_id: str, req: AutoRestartRequest, db: AsyncSession = Depends(get_db)):
+    """Set a per-tunnel scheduled restart in minutes (0 disables)."""
+    from sqlalchemy.orm.attributes import flag_modified
+    result = await db.execute(select(Tunnel).where(Tunnel.id == tunnel_id))
+    tunnel = result.scalar_one_or_none()
+    if not tunnel:
+        raise HTTPException(status_code=404, detail="Tunnel not found")
+    minutes = max(0, int(req.minutes))
+    spec = dict(tunnel.spec or {})
+    spec["auto_restart_minutes"] = minutes
+    tunnel.spec = spec
+    flag_modified(tunnel, "spec")
+    await db.commit()
+    return {"status": "ok", "auto_restart_minutes": minutes}
+
+
 def prepare_frp_spec_for_node(spec: dict, node: Node, request: Request) -> dict:
     """Prepare FRP spec for node by determining correct server_addr from node metadata"""
     spec_for_node = spec.copy()

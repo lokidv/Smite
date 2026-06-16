@@ -21,6 +21,9 @@ class TunnelReapplyManager:
         self.interval = 60
         self.interval_unit = "minutes"
         self.request: Optional[Request] = None
+        # Per-tunnel scheduled restart (independent of the global auto-reapply).
+        self._cron_task: Optional[asyncio.Task] = None
+        self._last_restart: dict = {}
     
     async def load_settings(self):
         """Load settings from database"""
@@ -86,20 +89,23 @@ class TunnelReapplyManager:
         except Exception as e:
             logger.error(f"Tunnel reapply loop error: {e}", exc_info=True)
     
-    async def _reapply_all_tunnels(self):
-        """Reapply all tunnels"""
+    async def _reapply_all_tunnels(self, tunnel_ids=None):
+        """Reapply all active tunnels, or only the given ids. Returns (applied, failed)."""
         from app.routers.tunnels import prepare_frp_spec_for_node
         from app.models import Node
         from fastapi import Request
         from starlette.requests import Request as StarletteRequest
         
         async with AsyncSessionLocal() as session:
-            result = await session.execute(select(Tunnel).where(Tunnel.status == "active"))
+            query = select(Tunnel).where(Tunnel.status == "active")
+            if tunnel_ids:
+                query = query.where(Tunnel.id.in_(list(tunnel_ids)))
+            result = await session.execute(query)
             tunnels = result.scalars().all()
             
             if not tunnels:
                 logger.debug("No active tunnels to reapply")
-                return
+                return 0, 0
             
             client = NodeClient()
             applied = 0
@@ -471,6 +477,72 @@ class TunnelReapplyManager:
                     failed += 1
             
             logger.info(f"Auto reapply completed: {applied} applied, {failed} failed")
+            return applied, failed
+    
+    async def reapply_tunnels(self, tunnel_ids):
+        """Restart (re-apply) specific tunnels on demand. Returns (applied, failed)."""
+        ids = [t for t in (tunnel_ids or []) if t]
+        if not ids:
+            return 0, 0
+        try:
+            return await self._reapply_all_tunnels(tunnel_ids=ids)
+        except Exception as e:
+            logger.error(f"reapply_tunnels error: {e}", exc_info=True)
+            return 0, len(ids)
+    
+    async def start_cron(self):
+        """Start the per-tunnel scheduled-restart loop (runs independently)."""
+        if self._cron_task and not self._cron_task.done():
+            return
+        self._cron_task = asyncio.create_task(self._cron_loop())
+        logger.info("Per-tunnel scheduled-restart loop started")
+    
+    async def stop_cron(self):
+        if self._cron_task:
+            self._cron_task.cancel()
+            try:
+                await self._cron_task
+            except asyncio.CancelledError:
+                pass
+            self._cron_task = None
+    
+    async def _cron_loop(self):
+        """Every minute, restart tunnels whose per-tunnel schedule is due."""
+        import time as _time
+        try:
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    now = _time.time()
+                    async with AsyncSessionLocal() as session:
+                        result = await session.execute(select(Tunnel).where(Tunnel.status == "active"))
+                        tunnels = result.scalars().all()
+                    due = []
+                    active_ids = set()
+                    for t in tunnels:
+                        active_ids.add(t.id)
+                        spec = t.spec or {}
+                        try:
+                            mins = int(spec.get("auto_restart_minutes") or 0)
+                        except (TypeError, ValueError):
+                            mins = 0
+                        if mins <= 0:
+                            continue
+                        last = self._last_restart.get(t.id, 0)
+                        if now - last >= mins * 60:
+                            due.append(t.id)
+                    # Forget tunnels that no longer exist.
+                    for gone in [tid for tid in self._last_restart if tid not in active_ids]:
+                        self._last_restart.pop(gone, None)
+                    for tid in due:
+                        self._last_restart[tid] = now
+                        applied, failed = await self.reapply_tunnels([tid])
+                        logger.info(f"Per-tunnel scheduled restart of {tid}: applied={applied} failed={failed}")
+                except Exception as e:
+                    logger.error(f"Per-tunnel restart cron error: {e}", exc_info=True)
+        except asyncio.CancelledError:
+            logger.info("Per-tunnel scheduled-restart loop cancelled")
+            raise
     
     def set_request(self, request: Request):
         """Set request object for reapply operations"""

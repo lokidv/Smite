@@ -969,6 +969,16 @@ const Tunnels = () => {
     }
   }
 
+  const setTunnelAutoRestart = async (tunnel: Tunnel, minutes: number) => {
+    try {
+      await api.put(`/tunnels/${tunnel.id}/auto-restart`, { minutes })
+      fetchData()
+    } catch (error: any) {
+      console.error('Failed to set auto-restart:', error)
+      alert(error.response?.data?.detail || 'Failed to set auto-restart schedule')
+    }
+  }
+
   const handleReapplyAll = async () => {
     if (!confirm(t.tunnels.confirmReapplyAll || 'Are you sure you want to reapply all tunnels?')) return
     
@@ -1350,7 +1360,20 @@ const Tunnels = () => {
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-2 shrink-0">
+                <div className="flex gap-2 shrink-0 items-center">
+                  <select
+                    value={(tunnel as any).spec?.auto_restart_minutes || 0}
+                    onChange={(e) => setTunnelAutoRestart(tunnel, parseInt(e.target.value))}
+                    title={t.tunnels.autoRestartTitle}
+                    className="text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-1.5 py-1.5"
+                  >
+                    <option value={0}>{`\u27F3 ${t.tunnels.autoRestartOff}`}</option>
+                    <option value={5}>{'\u27F3 5m'}</option>
+                    <option value={10}>{'\u27F3 10m'}</option>
+                    <option value={30}>{'\u27F3 30m'}</option>
+                    <option value={60}>{'\u27F3 60m'}</option>
+                    <option value={120}>{'\u27F3 120m'}</option>
+                  </select>
                   <button
                     onClick={() => reapplyTunnel(tunnel)}
                     className="p-2.5 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-lg transition-colors"

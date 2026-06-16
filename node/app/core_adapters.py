@@ -76,6 +76,28 @@ class RatholeAdapter:
         self.config_dir = Path("/etc/smite-node/rathole")
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.processes = {}
+        self.log_handles = {}
+
+    def _spawn(self, tunnel_id: str, config_path: Path, flag: str) -> subprocess.Popen:
+        """Start rathole with output going to a log file.
+
+        Using subprocess.PIPE without draining it deadlocks rathole once the
+        ~64KB pipe buffer fills (after a few minutes of logs): rathole blocks on
+        write, stalls, and the tunnel silently drops. Writing to a file avoids it.
+        """
+        log_path = self.config_dir / f"{tunnel_id}.log"
+        log_f = open(log_path, "w", buffering=1)
+        self.log_handles[tunnel_id] = log_f
+        try:
+            return subprocess.Popen(
+                ["/usr/local/bin/rathole", flag, str(config_path)],
+                stdout=log_f, stderr=subprocess.STDOUT,
+            )
+        except FileNotFoundError:
+            return subprocess.Popen(
+                ["rathole", flag, str(config_path)],
+                stdout=log_f, stderr=subprocess.STDOUT,
+            )
 
     def _write_tls_pkcs12(self, tunnel_id: str, spec: Dict[str, Any]) -> Path:
         """Write the server PKCS#12 identity (base64 in spec) to disk."""
@@ -142,6 +164,7 @@ class RatholeAdapter:
             config = f"""[server]
 bind_addr = "{bind_host}:{bind_port}"
 default_token = "{token}"
+heartbeat_interval = 30
 """
             
             if use_tls:
@@ -183,18 +206,7 @@ bind_addr = "0.0.0.0:{port_num}"
             with open(config_path, "w") as f:
                 f.write(config)
             
-            try:
-                proc = subprocess.Popen(
-                    ["/usr/local/bin/rathole", "-s", str(config_path)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-            except FileNotFoundError:
-                proc = subprocess.Popen(
-                    ["rathole", "-s", str(config_path)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
+            proc = self._spawn(tunnel_id, config_path, "-s")
         else:
             remote_addr = spec.get('remote_addr', '').strip()
             token = spec.get('token', '').strip()
@@ -225,6 +237,8 @@ bind_addr = "0.0.0.0:{port_num}"
             config = f"""[client]
 remote_addr = "{remote_addr}"
 default_token = "{token}"
+retry_interval = 1
+heartbeat_timeout = 40
 """
             
             if use_tls:
@@ -266,24 +280,17 @@ local_addr = "{local_addr}"
             with open(config_path, "w") as f:
                 f.write(config)
             
-            try:
-                proc = subprocess.Popen(
-                    ["/usr/local/bin/rathole", "-c", str(config_path)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-            except FileNotFoundError:
-                proc = subprocess.Popen(
-                    ["rathole", "-c", str(config_path)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
+            proc = self._spawn(tunnel_id, config_path, "-c")
         
         self.processes[tunnel_id] = proc
         time.sleep(0.5)
         if proc.poll() is not None:
-            stderr = proc.stderr.read().decode() if proc.stderr else "Unknown error"
-            raise RuntimeError(f"rathole failed to start: {stderr}")
+            log_path = self.config_dir / f"{tunnel_id}.log"
+            try:
+                err = log_path.read_text()[-500:]
+            except Exception:
+                err = "Unknown error"
+            raise RuntimeError(f"rathole failed to start: {err}")
     
     def remove(self, tunnel_id: str):
         """Remove Rathole tunnel"""
@@ -299,6 +306,13 @@ local_addr = "{local_addr}"
             except:
                 pass
             del self.processes[tunnel_id]
+        
+        handle = self.log_handles.pop(tunnel_id, None)
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
         
         try:
             subprocess.run(["pkill", "-f", f"rathole.*{tunnel_id}"], check=False, timeout=3)

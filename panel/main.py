@@ -782,6 +782,8 @@ async def _load_and_start_tunnel_reapply():
     try:
         from app.tunnel_reapply_manager import tunnel_reapply_manager
         await tunnel_reapply_manager.start()
+        # Per-tunnel scheduled-restart runs independently of the global setting.
+        await tunnel_reapply_manager.start_cron()
     except Exception as e:
         logger.error(f"Error starting tunnel reapply manager: {e}", exc_info=True)
 

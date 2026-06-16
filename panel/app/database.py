@@ -48,6 +48,23 @@ async def migrate_db():
                 "ALTER TABLE tunnels ADD COLUMN iran_node_id VARCHAR"
             ))
 
+        # Real-time health columns (separate from the configured `status`).
+        if "health" not in columns:
+            logger.info("Adding health column to tunnels table")
+            await conn.execute(text(
+                "ALTER TABLE tunnels ADD COLUMN health VARCHAR DEFAULT 'unknown'"
+            ))
+        if "health_detail" not in columns:
+            logger.info("Adding health_detail column to tunnels table")
+            await conn.execute(text(
+                "ALTER TABLE tunnels ADD COLUMN health_detail TEXT"
+            ))
+        if "health_checked_at" not in columns:
+            logger.info("Adding health_checked_at column to tunnels table")
+            await conn.execute(text(
+                "ALTER TABLE tunnels ADD COLUMN health_checked_at DATETIME"
+            ))
+
 
 async def init_db():
     """Initialize database tables"""

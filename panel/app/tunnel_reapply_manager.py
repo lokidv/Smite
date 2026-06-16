@@ -248,14 +248,18 @@ class TunnelReapplyManager:
                                     continue
                                 
                                 from app.utils import parse_address_port
-                                remote_addr = server_spec.get("remote_addr", "0.0.0.0:23333")
-                                _, control_port, _ = parse_address_port(remote_addr)
+                                control_port = server_spec.get("control_port")
+                                if not control_port:
+                                    remote_addr = server_spec.get("remote_addr", "0.0.0.0:23333")
+                                    _, control_port, _ = parse_address_port(remote_addr)
                                 if not control_port:
                                     import hashlib
                                     port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
                                     control_port = 23333 + (port_hash % 1000)
+                                control_port = int(control_port)
                                 server_spec["mode"] = "server"
                                 server_spec["bind_addr"] = f"0.0.0.0:{control_port}"
+                                server_spec["control_port"] = control_port
                                 server_spec["proxy_port"] = proxy_port
                                 server_spec["transport"] = transport
                                 server_spec["token"] = token

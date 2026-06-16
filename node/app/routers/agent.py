@@ -74,14 +74,39 @@ async def remove_tunnel(data: TunnelRemove, request: Request):
 
 @router.get("/tunnels/status")
 async def get_tunnel_status(tunnel_id: str, request: Request):
-    """Get tunnel status"""
+    """Get tunnel status (now enriched with real connection_state)."""
     adapter_manager = request.app.state.adapter_manager
     
     try:
         status = await adapter_manager.get_tunnel_status(tunnel_id)
+        try:
+            health = adapter_manager.get_tunnel_health(tunnel_id)
+            if isinstance(status, dict) and isinstance(health, dict):
+                status = {**status, **health}
+        except Exception:
+            pass
         return {"status": "success", "data": status}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/health")
+async def get_health(request: Request):
+    """Bulk real health for every active tunnel on this node.
+
+    The panel health monitor polls this to learn each tunnel's true
+    connection state (process alive + control-channel up) and the exact set of
+    tunnels this node is currently running (for reconciliation)."""
+    adapter_manager = request.app.state.adapter_manager
+    try:
+        health = adapter_manager.get_all_health()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "status": "ok",
+        "running": list(adapter_manager.active_tunnels.keys()),
+        "tunnels": health,
+    }
 
 
 @router.get("/status")

@@ -138,6 +138,22 @@ interface Translations {
     uploadFailed: string
     deleteFailed: string
   }
+  health: {
+    title: string
+    subtitle: string
+    allHealthy: string
+    runCheck: string
+    checking: string
+    autoHeal: string
+    autoHealHint: string
+    fixNow: string
+    resolve: string
+    occurrences: string
+    openProblems: string
+    lastChecked: string
+    healDone: string
+    healFailed: string
+  }
   tunnels: {
     title: string
     subtitle: string
@@ -167,6 +183,8 @@ interface Translations {
     restartService: string
     confirmRestart: string
     restartFailed: string
+    healthLabel: string
+    healthStates: Record<string, string>
     reapplyAllSuccess: string
     udp2rawHint: string
     trusttunnelHint: string
@@ -540,6 +558,22 @@ const translations: Record<Language, Translations> = {
       uploadFailed: 'Upload failed',
       deleteFailed: 'Delete failed',
     },
+    health: {
+      title: 'Health & Self-Healing',
+      subtitle: 'Automatic detection and repair of tunnel problems',
+      allHealthy: 'All tunnels healthy. No problems detected.',
+      runCheck: 'Run check now',
+      checking: 'Checking...',
+      autoHeal: 'Automatic self-healing',
+      autoHealHint: 'Detects disconnected/conflicting tunnels and fixes them automatically.',
+      fixNow: 'Fix now',
+      resolve: 'Resolve',
+      occurrences: 'times',
+      openProblems: 'Open problems',
+      lastChecked: 'Last checked',
+      healDone: 'Repair triggered',
+      healFailed: 'Repair failed (check node connectivity)',
+    },
     tunnels: {
       title: 'Tunnels',
       subtitle: 'Manage your tunnel connections',
@@ -569,6 +603,17 @@ const translations: Record<Language, Translations> = {
       restartService: 'Restart service (full stop + start)',
       confirmRestart: 'Restart this tunnel? It fully stops and starts the service on both nodes (a few seconds of downtime).',
       restartFailed: 'Failed to restart the tunnel (check node connectivity).',
+      healthLabel: 'Live',
+      healthStates: {
+        healthy: 'Connected',
+        connecting: 'Connecting',
+        degraded: 'Degraded',
+        disconnected: 'Disconnected',
+        conflict: 'Conflict',
+        node_offline: 'Node offline',
+        stopped: 'Stopped',
+        unknown: 'Unknown',
+      },
       reapplyAllSuccess: 'Success',
       udp2rawHint: 'udp2raw wraps UDP traffic in raw FakeTCP / ICMP / UDP packets between the Iran node (entry) and the foreign server (exit).',
       trusttunnelHint: 'TrustTunnel (rstun) is a QUIC-based reverse tunnel. The Iran node runs the server (public entry ports) and the foreign server dials in over QUIC/UDP and forwards traffic to its local service.',
@@ -940,6 +985,22 @@ const translations: Record<Language, Translations> = {
       uploadFailed: 'آپلود ناموفق بود',
       deleteFailed: 'حذف ناموفق بود',
     },
+    health: {
+      title: 'سلامت و خودترمیمی',
+      subtitle: 'تشخیص و رفع خودکار مشکلات تونل‌ها',
+      allHealthy: 'همه‌ی تونل‌ها سالم‌اند. مشکلی یافت نشد.',
+      runCheck: 'بررسی همین حالا',
+      checking: 'در حال بررسی...',
+      autoHeal: 'ترمیم خودکار هوشمند',
+      autoHealHint: 'تونل‌های قطع‌شده/متداخل را تشخیص می‌دهد و خودکار رفع می‌کند.',
+      fixNow: 'رفع کن',
+      resolve: 'بستن',
+      occurrences: 'بار',
+      openProblems: 'مشکلات باز',
+      lastChecked: 'آخرین بررسی',
+      healDone: 'ترمیم اجرا شد',
+      healFailed: 'ترمیم ناموفق بود (اتصال نود را بررسی کنید)',
+    },
     tunnels: {
       title: 'تونل‌ها',
       subtitle: 'مدیریت اتصالات تونل',
@@ -969,6 +1030,17 @@ const translations: Record<Language, Translations> = {
       restartService: 'ری‌استارت سرویس (توقف کامل و شروع دوباره)',
       confirmRestart: 'این تونل ری‌استارت شود؟ سرویس روی هر دو نود کامل متوقف و دوباره شروع می‌شود (چند ثانیه قطعی).',
       restartFailed: 'ری‌استارت تونل ناموفق بود (اتصال نود را بررسی کنید).',
+      healthLabel: 'وضعیت زنده',
+      healthStates: {
+        healthy: 'متصل',
+        connecting: 'در حال اتصال',
+        degraded: 'ناقص',
+        disconnected: 'قطع',
+        conflict: 'تداخل',
+        node_offline: 'نود آفلاین',
+        stopped: 'متوقف',
+        unknown: 'نامشخص',
+      },
       reapplyAllSuccess: 'موفقیت',
       udp2rawHint: 'udp2raw ترافیک UDP را بین نود ایران (ورودی) و سرور خارجی (خروجی) در بسته‌های خام FakeTCP / ICMP / UDP کپسوله می‌کند.',
       trusttunnelHint: 'TrustTunnel (rstun) یک تونل معکوس مبتنی بر QUIC است. نود ایران سرور را اجرا می‌کند (پورت‌های عمومی ورودی) و سرور خارجی از طریق QUIC/UDP به آن وصل شده و ترافیک را به سرویس محلی خود هدایت می‌کند.',

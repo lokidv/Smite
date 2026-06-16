@@ -162,6 +162,9 @@ class TunnelResponse(BaseModel):
     spec: dict
     status: str
     error_message: str | None = None
+    health: str | None = "unknown"
+    health_detail: str | None = None
+    health_checked_at: datetime | None = None
     revision: int
     used_mb: float = 0.0
     quota_mb: float = 0.0
@@ -1126,7 +1129,19 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     db.add(db_tunnel)
     await db.commit()
     await db.refresh(db_tunnel)
-    
+
+    # Assign a collision-free control/raw port per node and persist it into the
+    # spec so multiple foreign nodes sharing one iran node never bind the same
+    # rathole control port (the cause of the repeated tunnel drops).
+    if is_reverse_tunnel:
+        try:
+            from app.port_allocator import assign_reverse_ports
+            if await assign_reverse_ports(db, db_tunnel, iran_node, foreign_node):
+                await db.commit()
+                await db.refresh(db_tunnel)
+        except Exception as e:
+            logger.warning(f"Port allocation skipped for tunnel {db_tunnel.id}: {e}")
+
     try:
         if db_tunnel.core in SINGLE_NODE_CORES:
             return await apply_singlenode_tunnel(db_tunnel, db)
@@ -1202,14 +1217,18 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     await db.refresh(db_tunnel)
                     return db_tunnel
                 
-                remote_addr = server_spec.get("remote_addr", "0.0.0.0:23333")
-                from app.utils import parse_address_port
-                _, control_port, _ = parse_address_port(remote_addr)
+                control_port = server_spec.get("control_port")
+                if not control_port:
+                    remote_addr = server_spec.get("remote_addr", "0.0.0.0:23333")
+                    from app.utils import parse_address_port
+                    _, control_port, _ = parse_address_port(remote_addr)
                 if not control_port:
                     import hashlib
                     port_hash = int(hashlib.md5(db_tunnel.id.encode()).hexdigest()[:8], 16)
                     control_port = 23333 + (port_hash % 1000)
+                control_port = int(control_port)
                 server_spec["bind_addr"] = f"0.0.0.0:{control_port}"
+                server_spec["control_port"] = control_port
                 server_spec["ports"] = ports
                 server_spec["transport"] = transport
                 server_spec["type"] = transport
@@ -2677,17 +2696,26 @@ async def _resolve_hysteria2_nodes(tunnel_id: str, db: AsyncSession):
         raise HTTPException(status_code=404, detail="Tunnel not found")
     if tunnel.core != "hysteria2":
         raise HTTPException(status_code=400, detail="This action is only available for hysteria2 tunnels")
-    iran_node = None
-    if tunnel.node_id:
-        r = await db.execute(select(Node).where(Node.id == tunnel.node_id))
-        iran_node = r.scalar_one_or_none()
     r = await db.execute(select(Node))
     all_nodes = r.scalars().all()
+    nodes_by_id = {n.id: n for n in all_nodes}
+    iran_node = None
+    foreign_node = None
+    # Prefer the tunnel's recorded nodes so multi-node setups stay isolated.
+    if tunnel.iran_node_id:
+        iran_node = nodes_by_id.get(tunnel.iran_node_id)
+    if tunnel.foreign_node_id:
+        foreign_node = nodes_by_id.get(tunnel.foreign_node_id)
+    if not iran_node and tunnel.node_id:
+        cand = nodes_by_id.get(tunnel.node_id)
+        if cand and cand.node_metadata and cand.node_metadata.get("role") == "iran":
+            iran_node = cand
     if not iran_node:
         iran_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "iran"]
         iran_node = iran_nodes[0] if iran_nodes else None
-    foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
-    foreign_node = foreign_nodes[0] if foreign_nodes else None
+    if not foreign_node:
+        foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
+        foreign_node = foreign_nodes[0] if foreign_nodes else None
     if not iran_node or not foreign_node:
         raise HTTPException(status_code=400, detail="hysteria2 auto-tune needs both an iran and a foreign node")
     for n in (iran_node, foreign_node):
@@ -3178,16 +3206,20 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         raise HTTPException(status_code=400, detail="Missing required fields: remote_port/listen_port or token")
                     
                     from app.utils import parse_address_port
-                    remote_addr = spec.get("remote_addr", "0.0.0.0:23333")
-                    _, control_port, _ = parse_address_port(remote_addr)
+                    control_port = spec.get("control_port")
+                    if not control_port:
+                        remote_addr = spec.get("remote_addr", "0.0.0.0:23333")
+                        _, control_port, _ = parse_address_port(remote_addr)
                     if not control_port:
                         import hashlib
                         port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
                         control_port = 23333 + (port_hash % 1000)
+                    control_port = int(control_port)
                     
                     server_spec = spec.copy()
                     server_spec["mode"] = "server"
                     server_spec["bind_addr"] = f"0.0.0.0:{control_port}"
+                    server_spec["control_port"] = control_port
                     server_spec["proxy_port"] = proxy_port
                     server_spec["transport"] = transport
                     server_spec["token"] = token

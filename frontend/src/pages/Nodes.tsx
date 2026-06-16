@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Plus, Copy, Trash2, CheckCircle, XCircle, Download, AlertCircle } from 'lucide-react'
 import api from '../api/client'
 import { useLanguage } from '../contexts/LanguageContext'
+import HealthPanel from '../components/HealthPanel'
 
 interface Node {
   id: string
@@ -174,6 +175,8 @@ const Nodes = () => {
           </button>
         </div>
       </div>
+
+      <HealthPanel />
 
       {revoked.length > 0 && (
         <div className="mb-6 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4">

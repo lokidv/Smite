@@ -14,7 +14,7 @@ def _node_auth_enforced() -> bool:
     return os.environ.get("NODE_AUTH_ENFORCE", "").strip().lower() in ("1", "true", "yes", "on")
 
 from app.database import get_db
-from app.models import Node, Settings, RevokedNode
+from app.models import Node, Settings, RevokedNode, Tunnel
 from app.node_client import NodeClient
 from app.routers.auth import get_current_user
 
@@ -96,6 +96,22 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
         await db.refresh(existing)
         
         response_metadata = existing.node_metadata.copy() if existing.node_metadata else {}
+
+        # Tell the node exactly which tunnels the panel assigns to it. On startup
+        # the node prunes any other persisted tunnel before re-applying, so stale
+        # / mis-routed clients from a previous run cannot come back and fight over
+        # the iran control port. `manages_tunnels` lets the node distinguish an
+        # updated panel (authoritative, prune) from an old one (skip pruning).
+        try:
+            tres = await db.execute(select(Tunnel).where(Tunnel.status == "active"))
+            desired_ids = [
+                t.id for t in tres.scalars().all()
+                if existing.id in (t.iran_node_id, t.foreign_node_id, t.node_id)
+            ]
+            response_metadata["manages_tunnels"] = True
+            response_metadata["desired_tunnels"] = desired_ids
+        except Exception as e:
+            logger.warning(f"Could not compute desired tunnels for node {existing.id}: {e}")
         
         result = await db.execute(select(Settings).where(Settings.key == "frp"))
         frp_setting = result.scalar_one_or_none()

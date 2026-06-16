@@ -21,6 +21,7 @@ from app.routers import nodes, tunnels, panel, status, logs, auth, core_health
 from app.routers import settings as settings_router
 from app.routers import update as update_router
 from app.routers import provisioning as provisioning_router
+from app.routers import health as health_router
 from app.routers.auth import get_current_user
 from app.node_server import NodeServer
 from app.gost_forwarder import gost_forwarder
@@ -96,8 +97,24 @@ async def lifespan(app: FastAPI):
     
     reset_task = asyncio.create_task(_auto_reset_scheduler(app))
     app.state.reset_task = reset_task
+
+    # Health monitor + self-healer: keeps tunnel status real, reconciles each
+    # node to its assigned tunnels (so one iran node can serve many foreign
+    # nodes without conflicts) and auto-heals disconnections.
+    try:
+        from app.health_monitor import health_monitor
+        await health_monitor.start()
+        app.state.health_monitor = health_monitor
+    except Exception as e:
+        logger.error(f"Failed to start health monitor: {e}", exc_info=True)
     
     yield
+
+    if hasattr(app.state, 'health_monitor'):
+        try:
+            await app.state.health_monitor.stop()
+        except Exception:
+            pass
     
     if hasattr(app.state, 'reset_task'):
         app.state.reset_task.cancel()
@@ -319,36 +336,44 @@ async def _restore_node_tunnels():
             failed_count = 0
             skipped_count = 0
             
+            result = await db.execute(select(Node))
+            all_nodes_cache = result.scalars().all()
+            nodes_by_id = {n.id: n for n in all_nodes_cache}
+
             for tunnel in reverse_tunnels:
                 try:
                     iran_node = None
                     foreign_node = None
-                    
+
+                    # Prefer the tunnel's explicitly recorded nodes. Routing every
+                    # tunnel to foreign_nodes[0] made multiple foreign nodes fight
+                    # over the same rathole service on the iran node, so tunnels kept
+                    # dropping after each panel restart. Only fall back to role-based
+                    # discovery for legacy tunnels that never recorded the node ids.
+                    if tunnel.iran_node_id:
+                        iran_node = nodes_by_id.get(tunnel.iran_node_id)
+                    if tunnel.foreign_node_id:
+                        foreign_node = nodes_by_id.get(tunnel.foreign_node_id)
+
+                    # node_id historically holds the iran node (occasionally foreign).
                     if tunnel.node_id:
-                        result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
-                        iran_node = result.scalar_one_or_none()
-                        if iran_node and iran_node.node_metadata.get("role") != "iran":
-                            foreign_node = iran_node
-                            iran_node = None
-                    
+                        cand = nodes_by_id.get(tunnel.node_id)
+                        if cand and cand.node_metadata:
+                            role = cand.node_metadata.get("role")
+                            if role == "iran" and not iran_node:
+                                iran_node = cand
+                            elif role == "foreign" and not foreign_node:
+                                foreign_node = cand
+
+                    if not iran_node:
+                        iran_nodes = [n for n in all_nodes_cache if n.node_metadata and n.node_metadata.get("role") == "iran"]
+                        if iran_nodes:
+                            iran_node = iran_nodes[0]
                     if not foreign_node:
-                        result = await db.execute(select(Node))
-                        all_nodes = result.scalars().all()
-                        foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
+                        foreign_nodes = [n for n in all_nodes_cache if n.node_metadata and n.node_metadata.get("role") == "foreign"]
                         if foreign_nodes:
                             foreign_node = foreign_nodes[0]
-                    
-                    if not iran_node:
-                        if tunnel.node_id:
-                            result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
-                            iran_node = result.scalar_one_or_none()
-                        if not iran_node:
-                            result = await db.execute(select(Node))
-                            all_nodes = result.scalars().all()
-                            iran_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "iran"]
-                            if iran_nodes:
-                                iran_node = iran_nodes[0]
-                    
+
                     if not foreign_node or not iran_node:
                         logger.warning(f"Tunnel {tunnel.id}: Missing foreign or iran node, skipping sync (nodes will restore themselves)")
                         skipped_count += 1
@@ -368,14 +393,18 @@ async def _restore_node_tunnels():
                             logger.warning(f"Tunnel {tunnel.id}: Missing remote_port or token, skipping")
                             continue
                         
-                        remote_addr = server_spec.get("remote_addr", "0.0.0.0:23333")
-                        from app.utils import parse_address_port
-                        _, control_port, _ = parse_address_port(remote_addr)
+                        control_port = server_spec.get("control_port")
+                        if not control_port:
+                            remote_addr = server_spec.get("remote_addr", "0.0.0.0:23333")
+                            from app.utils import parse_address_port
+                            _, control_port, _ = parse_address_port(remote_addr)
                         if not control_port:
                             import hashlib
                             port_hash = int(hashlib.md5(tunnel.id.encode()).hexdigest()[:8], 16)
                             control_port = 23333 + (port_hash % 1000)  # Ports 23333-24332
+                        control_port = int(control_port)
                         server_spec["bind_addr"] = f"0.0.0.0:{control_port}"
+                        server_spec["control_port"] = control_port
                         server_spec["proxy_port"] = proxy_port
                         server_spec["transport"] = transport
                         server_spec["type"] = transport
@@ -695,9 +724,13 @@ async def _restore_node_tunnels():
                     if not foreign_ip or foreign_ip in ["127.0.0.1", "localhost"]:
                         result = await db.execute(select(Node))
                         all_nodes = result.scalars().all()
-                        foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
-                        if foreign_nodes:
-                            foreign_node = foreign_nodes[0]
+                        foreign_node = None
+                        if tunnel.foreign_node_id:
+                            foreign_node = next((n for n in all_nodes if n.id == tunnel.foreign_node_id), None)
+                        if not foreign_node:
+                            foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
+                            foreign_node = foreign_nodes[0] if foreign_nodes else None
+                        if foreign_node:
                             foreign_ip = foreign_node.node_metadata.get("ip_address")
                     
                     if not foreign_ip:
@@ -860,6 +893,7 @@ app.include_router(tunnels.router, prefix="/api/tunnels", tags=["tunnels"], depe
 app.include_router(status.router, prefix="/api/status", tags=["status"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"], dependencies=_admin_auth)
 app.include_router(core_health.router, prefix="/api/core-health", tags=["core-health"], dependencies=_admin_auth)
+app.include_router(health_router.router, prefix="/api/health", tags=["health"], dependencies=_admin_auth)
 app.include_router(settings_router.router, dependencies=_admin_auth)
 app.include_router(update_router.router, prefix="/api/update", tags=["update"])
 app.include_router(provisioning_router.router, prefix="/api/provisioning", tags=["provisioning"])

@@ -9,6 +9,72 @@ from pathlib import Path
 import shutil
 
 logger = logging.getLogger(__name__)
+
+
+def _tail_lines(path, max_lines: int = 80, max_bytes: int = 65536):
+    """Return the last ``max_lines`` lines of a (possibly large) log file."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+        return data.decode("utf-8", "replace").splitlines()[-max_lines:]
+    except Exception:
+        return []
+
+
+# Rathole log signatures. The control channel line is the authoritative
+# "connected" signal on both client and server sides.
+_RATHOLE_CONNECTED = ("control channel established",)
+_RATHOLE_DISCONNECT = (
+    "failed to connect", "connection refused", "connection reset",
+    "connection timed out", "timed out", "early eof", "broken pipe",
+    "failed to run the control channel", "retrying", "re-connect", "reconnect",
+)
+_UDP2RAW_FATAL = (
+    "bind error", "address already in use", "fatal", "cannot bind",
+    "can't bind", "failed to", "socket error",
+)
+
+
+def analyze_rathole_log(log_path):
+    """Inspect a rathole tunnel log tail.
+
+    Returns (connection_state, recent_errors, last_event) where connection_state
+    is one of connected | disconnected | connecting | unknown. The most recent
+    relevant line wins, so a tunnel that reconnected after earlier failures
+    reports ``connected``.
+    """
+    lines = _tail_lines(log_path)
+    if not lines:
+        return "unknown", 0, ""
+    last_event = lines[-1][:200]
+    state = None
+    recent_errors = 0
+    for ln in reversed(lines):
+        low = ln.lower()
+        if state is None:
+            if any(p in low for p in _RATHOLE_CONNECTED):
+                state = "connected"
+            elif any(p in low for p in _RATHOLE_DISCONNECT):
+                state = "disconnected"
+        if any(p in low for p in _RATHOLE_DISCONNECT) or "error" in low:
+            recent_errors += 1
+    if state is None:
+        state = "connecting"
+    return state, recent_errors, last_event
+
+
+def analyze_udp2raw_log(log_path):
+    """Best-effort udp2raw health from its log tail (no control-channel concept)."""
+    lines = _tail_lines(log_path)
+    last_event = lines[-1][:200] if lines else ""
+    fatal = sum(1 for ln in lines if any(p in ln.lower() for p in _UDP2RAW_FATAL))
+    recent_fatal_tail = bool(lines) and any(p in lines[-1].lower() for p in _UDP2RAW_FATAL)
+    return fatal, recent_fatal_tail, last_event
+
+
 def parse_address_port(address_str: str):
     """Parse address:port string, returns (host, port, is_ipv6)"""
     import re
@@ -345,6 +411,26 @@ local_addr = "{local_addr}"
             "type": "rathole",
             "config_exists": config_path.exists(),
             "process_running": is_running
+        }
+
+    def health(self, tunnel_id: str) -> Dict[str, Any]:
+        """Real connection health (process alive + log-derived link state)."""
+        config_path = self.config_dir / f"{tunnel_id}.toml"
+        log_path = self.config_dir / f"{tunnel_id}.log"
+        is_running = False
+        if tunnel_id in self.processes:
+            is_running = self.processes[tunnel_id].poll() is None
+        if is_running:
+            state, errs, last_event = analyze_rathole_log(log_path)
+        else:
+            state, errs, last_event = "disconnected", 0, ""
+        return {
+            "type": "rathole",
+            "process_running": is_running,
+            "config_exists": config_path.exists(),
+            "connection_state": state,
+            "recent_errors": errs,
+            "last_event": last_event,
         }
 
 
@@ -1569,6 +1655,26 @@ class Udp2rawAdapter:
             "active": is_running,
             "type": "udp2raw",
             "process_running": is_running
+        }
+
+    def health(self, tunnel_id: str) -> Dict[str, Any]:
+        """Best-effort udp2raw health. udp2raw has no control channel, so an
+        alive process with no fatal bind/socket error in the log tail is treated
+        as connected."""
+        log_path = self.config_dir / f"{tunnel_id}.log"
+        is_running = tunnel_id in self.processes and self.processes[tunnel_id].poll() is None
+        if not is_running:
+            return {
+                "type": "udp2raw", "process_running": False,
+                "connection_state": "disconnected", "recent_errors": 0, "last_event": "",
+            }
+        fatal, recent_fatal_tail, last_event = analyze_udp2raw_log(log_path)
+        return {
+            "type": "udp2raw",
+            "process_running": True,
+            "connection_state": "disconnected" if recent_fatal_tail else "connected",
+            "recent_errors": fatal,
+            "last_event": last_event,
         }
 
 
@@ -3541,7 +3647,120 @@ class AdapterManager:
             adapter = self.active_tunnels[tunnel_id]
             return adapter.status(tunnel_id)
         return {"active": False}
-    
+
+    def get_tunnel_health(self, tunnel_id: str) -> Dict[str, Any]:
+        """Per-tunnel health: prefer adapter.health(), fall back to status()."""
+        adapter = self.active_tunnels.get(tunnel_id)
+        if not adapter:
+            return {"process_running": False, "connection_state": "stopped"}
+        if hasattr(adapter, "health"):
+            try:
+                return adapter.health(tunnel_id)
+            except Exception as e:
+                return {"process_running": False, "connection_state": "unknown", "error": str(e)}
+        try:
+            st = adapter.status(tunnel_id)
+            running = bool(st.get("process_running", st.get("active", False)))
+            return {
+                "type": st.get("type"),
+                "process_running": running,
+                "connection_state": "connected" if running else "disconnected",
+                "recent_errors": 0,
+                "last_event": "",
+            }
+        except Exception as e:
+            return {"process_running": False, "connection_state": "unknown", "error": str(e)}
+
+    def get_all_health(self) -> Dict[str, Any]:
+        """Health for every active tunnel, keyed by tunnel_id."""
+        out: Dict[str, Any] = {}
+        for tid in list(self.active_tunnels.keys()):
+            h = self.get_tunnel_health(tid)
+            cfg = self.tunnel_configs.get(tid) or {}
+            if "core" not in h or not h.get("core"):
+                adapter = self.active_tunnels.get(tid)
+                h["core"] = cfg.get("core") or getattr(adapter, "name", None)
+            out[tid] = h
+        return out
+
+    def prune_to_desired(self, desired_ids) -> List[str]:
+        """Drop persisted tunnels the panel no longer assigns to this node.
+
+        Called on startup BEFORE restore so orphaned/mis-routed clients from a
+        previous run don't get re-applied and fight over the iran control port.
+        ``desired_ids is None`` means the panel didn't tell us (old panel) -> no-op.
+        """
+        if desired_ids is None:
+            return []
+        if not self.tunnel_configs:
+            self._load_tunnels()
+        desired = set(desired_ids)
+        removed: List[str] = []
+        for tid in list(self.tunnel_configs.keys()):
+            if tid in desired:
+                continue
+            cfg = self.tunnel_configs.get(tid) or {}
+            core = cfg.get("core")
+            try:
+                adapter = self.get_adapter(core) if core else None
+                if adapter:
+                    adapter.remove(tid)
+            except Exception as e:
+                logger.warning(f"[restore-guard] failed to stop orphan {tid}: {e}")
+            self.active_tunnels.pop(tid, None)
+            self.tunnel_configs.pop(tid, None)
+            removed.append(tid)
+        if removed:
+            self._save_tunnels()
+            logger.info(f"[restore-guard] pruned {len(removed)} tunnel(s) not assigned by panel: {removed}")
+        return removed
+
+    def supervise_once(self) -> List[str]:
+        """One watchdog pass: restart any desired tunnel whose process has died.
+
+        Uses per-tunnel exponential backoff so a tunnel that keeps failing to
+        start doesn't get hammered. Only restarts tunnels still present in
+        tunnel_configs (i.e. still desired), so it never resurrects pruned orphans.
+        """
+        restarted: List[str] = []
+        now = time.time()
+        if not hasattr(self, "_wd_state"):
+            self._wd_state: Dict[str, Dict[str, float]] = {}
+        backoffs = [0, 5, 15, 30, 60, 120, 300]
+        for tid in list(self.active_tunnels.keys()):
+            cfg = self.tunnel_configs.get(tid)
+            if not cfg:
+                continue
+            adapter = self.active_tunnels.get(tid)
+            alive = True
+            try:
+                procs = getattr(adapter, "processes", None)
+                if isinstance(procs, dict) and tid in procs:
+                    alive = procs[tid].poll() is None
+                else:
+                    # Process handle not tracked in memory; don't guess it's dead.
+                    alive = True
+            except Exception:
+                alive = True
+            if alive:
+                self._wd_state.pop(tid, None)
+                continue
+            st = self._wd_state.get(tid, {"fails": 0, "next_try": 0})
+            if now < st["next_try"]:
+                continue
+            try:
+                logger.warning(f"[watchdog] tunnel {tid} process is dead, restarting (attempt {int(st['fails'])+1})")
+                adapter.apply(tid, (cfg.get("spec") or {}))
+                restarted.append(tid)
+                self._wd_state.pop(tid, None)
+            except Exception as e:
+                st["fails"] = int(st["fails"]) + 1
+                idx = min(int(st["fails"]), len(backoffs) - 1)
+                st["next_try"] = now + backoffs[idx]
+                self._wd_state[tid] = st
+                logger.error(f"[watchdog] restart of {tid} failed: {e}; next try in {backoffs[idx]}s")
+        return restarted
+
     async def cleanup(self):
         """Cleanup all tunnels"""
         for tunnel_id in list(self.active_tunnels.keys()):

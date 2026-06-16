@@ -174,3 +174,53 @@ class NodeClient:
     async def apply_tunnel(self, node_id: str, tunnel_data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply tunnel to node"""
         return await self.send_to_node(node_id, "/api/agent/tunnels/apply", tunnel_data)
+
+    async def get_node_health(self, node_id: str, timeout_s: float = 5.0) -> Dict[str, Any]:
+        """Fetch bulk per-tunnel health from a node's /api/agent/health.
+
+        Returns the parsed JSON on success. On any failure returns
+        ``{"reachable": False, "message": ...}`` so the caller can tell a real
+        "node is down" from "node says it has no tunnels" and avoid destructive
+        reconciliation when the node is merely unreachable.
+
+        Falls back to /api/agent/status for nodes not yet updated (the result
+        then has ``running`` ids but per-tunnel health is unknown).
+        """
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(Node).where(Node.id == node_id))
+            node = result.scalar_one_or_none()
+            if not node:
+                return {"reachable": False, "message": f"Node {node_id} not found"}
+            node_address, using_frp = await self._get_node_address(node)
+            base = node_address.rstrip("/")
+            timeout = httpx.Timeout(timeout_s, connect=min(3.0, timeout_s))
+            attempts = 3 if using_frp else 1
+            last_err = None
+            for attempt in range(attempts):
+                if using_frp and attempt > 0:
+                    await asyncio.sleep(1.5)
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=timeout, verify=_verify_tls(),
+                        limits=httpx.Limits(max_keepalive_connections=0 if using_frp else 5),
+                    ) as client:
+                        resp = await client.get(f"{base}/api/agent/health", headers=_node_auth_headers())
+                        if resp.status_code == 404:
+                            # Old node without the bulk endpoint: fall back to status.
+                            sresp = await client.get(f"{base}/api/agent/status", headers=_node_auth_headers())
+                            sresp.raise_for_status()
+                            sdata = sresp.json()
+                            return {
+                                "reachable": True,
+                                "legacy": True,
+                                "running": sdata.get("tunnels", []),
+                                "tunnels": {},
+                            }
+                        resp.raise_for_status()
+                        data = resp.json()
+                        data["reachable"] = True
+                        return data
+                except Exception as e:
+                    last_err = e
+                    continue
+            return {"reachable": False, "message": f"{type(last_err).__name__}: {last_err}"}

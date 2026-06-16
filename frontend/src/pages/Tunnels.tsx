@@ -15,6 +15,9 @@ interface Tunnel {
   spec: Record<string, any>
   status: string
   error_message?: string | null
+  health?: string | null
+  health_detail?: string | null
+  health_checked_at?: string | null
   revision: number
   created_at: string
   updated_at: string
@@ -916,8 +919,20 @@ const Tunnels = () => {
       setShowAddModal(true)
       window.history.replaceState({}, '', '/tunnels')
     }
-    
+    // Live status: refresh the list periodically so the health badge reflects
+    // the monitor's real connection state without a manual reload.
+    const interval = setInterval(() => { refreshTunnels() }, 10000)
+    return () => clearInterval(interval)
   }, [])
+
+  const refreshTunnels = async () => {
+    try {
+      const res = await api.get('/tunnels')
+      setTunnels(res.data)
+    } catch (error) {
+      // silent: transient errors shouldn't disrupt the page
+    }
+  }
 
   const fetchData = async () => {
     try {
@@ -1239,18 +1254,43 @@ const Tunnels = () => {
                     onChange={() => toggleSelect(tunnel.id)}
                     className="w-4 h-4 mt-1.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
                   />
-                  {/* Status Badge */}
-                  <span
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap shrink-0 ${
-                      tunnel.status === 'active'
-                        ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200'
-                        : tunnel.status === 'error'
-                        ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200'
-                        : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
-                    }`}
-                  >
-                    {tunnel.status}
-                  </span>
+                  {/* Configured status + live health */}
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <span
+                      className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap ${
+                        tunnel.status === 'active'
+                          ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200'
+                          : tunnel.status === 'error'
+                          ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200'
+                          : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
+                      }`}
+                    >
+                      {tunnel.status}
+                    </span>
+                    {(() => {
+                      const h = tunnel.health || 'unknown'
+                      const styles: Record<string, string> = {
+                        healthy: 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200',
+                        connecting: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-200',
+                        degraded: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-200',
+                        disconnected: 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200',
+                        conflict: 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200',
+                        node_offline: 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200',
+                        stopped: 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200',
+                        unknown: 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300',
+                      }
+                      const labels: Record<string, string> = (t.tunnels as any).healthStates || {}
+                      const label = labels[h] || h
+                      return (
+                        <span
+                          title={tunnel.health_detail || ''}
+                          className={`px-2.5 py-1 rounded-full text-[10px] font-semibold whitespace-nowrap ${styles[h] || styles.unknown}`}
+                        >
+                          {'\u25CF'} {label}
+                        </span>
+                      )
+                    })()}
+                  </div>
 
                   <div className="flex-1 min-w-0">
                     {/* Name, Core Badge, Transmission Badge, and Ports in one line */}

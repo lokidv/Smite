@@ -51,6 +51,24 @@ async def registration_loop(panel_client: PanelClient):
             logger.debug(f"Periodic registration error (will retry): {e}")
 
 
+async def watchdog_loop(adapter_manager: AdapterManager, interval: int = 25):
+    """Local supervisor: restart any tunnel whose process has died.
+
+    This recovers fast from a crashed rathole/udp2raw process without waiting for
+    the panel, while the panel health monitor handles cross-node reconciliation.
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            restarted = await asyncio.to_thread(adapter_manager.supervise_once)
+            if restarted:
+                logger.info(f"[watchdog] restarted {len(restarted)} dead tunnel(s): {restarted}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Watchdog pass error (will retry): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
@@ -76,13 +94,32 @@ async def lifespan(app: FastAPI):
     
     adapter_manager = AdapterManager()
     app.state.adapter_manager = adapter_manager
-    
+
+    # Restore-guard: before re-applying persisted tunnels, prune any the panel no
+    # longer assigns to this node (closes the post-restart window where stale /
+    # mis-routed clients would otherwise come back and fight for the control port).
+    try:
+        desired = getattr(h2_client, "desired_tunnels", None) if h2_client else None
+        if desired is not None:
+            adapter_manager.prune_to_desired(desired)
+    except Exception as e:
+        logger.error(f"Restore-guard prune failed: {e}", exc_info=True)
+
     try:
         await adapter_manager.restore_tunnels()
     except Exception as e:
         logger.error(f"Failed to restore tunnels on startup: {e}", exc_info=True)
+
+    watchdog_task = asyncio.create_task(watchdog_loop(adapter_manager))
+    app.state.watchdog_task = watchdog_task
     
     yield
+    if hasattr(app.state, 'watchdog_task') and app.state.watchdog_task:
+        app.state.watchdog_task.cancel()
+        try:
+            await app.state.watchdog_task
+        except asyncio.CancelledError:
+            pass
     if hasattr(app.state, 'registration_task') and app.state.registration_task:
         app.state.registration_task.cancel()
         try:

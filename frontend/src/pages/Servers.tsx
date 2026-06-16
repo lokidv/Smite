@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Plus, Copy, Trash2, CheckCircle, XCircle, AlertCircle } from 'lucide-react'
 import api from '../api/client'
 import { useLanguage } from '../contexts/LanguageContext'
+import HealthPanel from '../components/HealthPanel'
 
 interface Server {
   id: string
@@ -145,6 +146,8 @@ const Servers = () => {
           </button>
         </div>
       </div>
+
+      <HealthPanel />
 
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm">
         <table className="w-full">

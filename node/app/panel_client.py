@@ -26,6 +26,9 @@ class PanelClient:
         self.using_frp = False
         self.frp_panel_url: Optional[str] = None
         self.blocked = False  # set when the panel revokes this node (HTTP 403)
+        # Set from the panel's registration response: the tunnel ids this node is
+        # assigned. None means the panel is old and didn't tell us (skip pruning).
+        self.desired_tunnels: Optional[list] = None
     
     async def start(self):
         """Start client and connect to panel"""
@@ -114,6 +117,11 @@ class PanelClient:
                     logger.info(f"[HTTP] Node registered successfully with ID: {self.node_id}")
                 
                 metadata = data.get("metadata", {})
+                # Capture the panel-assigned tunnel set (used by the startup
+                # restore-guard to prune orphans). Only trust it when the panel
+                # explicitly says it manages tunnels (updated panel).
+                if metadata.get("manages_tunnels"):
+                    self.desired_tunnels = list(metadata.get("desired_tunnels") or [])
                 frp_config = metadata.get("frp_config")
                 if frp_config and frp_config.get("enabled"):
                     # Check if FRP is already running with the same config

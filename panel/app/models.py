@@ -36,8 +36,13 @@ class Tunnel(Base):
     quota_mb = Column(Float, default=0)
     used_mb = Column(Float, default=0)
     expires_at = Column(DateTime, nullable=True)
-    status = Column(String, default="pending")
+    status = Column(String, default="pending")  # configured/desired state: pending|active|error
     error_message = Column(Text, nullable=True)
+    # Real-time, monitor-derived link state (separate from the configured status):
+    # healthy|connecting|disconnected|degraded|node_offline|conflict|stopped|unknown
+    health = Column(String, default="unknown")
+    health_detail = Column(Text, nullable=True)
+    health_checked_at = Column(DateTime, nullable=True)
     revision = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -97,4 +102,30 @@ class RevokedNode(Base):
     fingerprint = Column(String, primary_key=True)
     name = Column(String, nullable=True)
     revoked_at = Column(DateTime, default=datetime.utcnow)
+
+
+class NodeProblem(Base):
+    """A detected health problem for a node/tunnel, surfaced in the panel.
+
+    The health monitor records issues here (orphan/conflict/disconnected/
+    node_offline/process_dead/port_conflict/...) and what it did to auto-heal
+    them. Rows are deduplicated by (node_id, tunnel_id, kind): a recurring issue
+    bumps ``occurrences`` and ``last_seen`` instead of creating duplicates.
+    """
+    __tablename__ = "node_problems"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    node_id = Column(String, nullable=True)
+    tunnel_id = Column(String, nullable=True)
+    kind = Column(String, nullable=False)
+    severity = Column(String, default="warning")  # info|warning|critical
+    message = Column(Text, nullable=False)
+    detail = Column(JSON, nullable=True)
+    status = Column(String, default="open")  # open|auto_resolved|resolved
+    auto_heal_action = Column(String, nullable=True)
+    auto_heal_result = Column(String, nullable=True)
+    occurrences = Column(Integer, default=1)
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
 

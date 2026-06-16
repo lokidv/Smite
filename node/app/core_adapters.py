@@ -230,7 +230,7 @@ class RatholeAdapter:
             config = f"""[server]
 bind_addr = "{bind_host}:{bind_port}"
 default_token = "{token}"
-heartbeat_interval = 30
+heartbeat_interval = 10
 """
             
             if use_tls:
@@ -304,7 +304,7 @@ bind_addr = "0.0.0.0:{port_num}"
 remote_addr = "{remote_addr}"
 default_token = "{token}"
 retry_interval = 1
-heartbeat_timeout = 40
+heartbeat_timeout = 20
 """
             
             if use_tls:

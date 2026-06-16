@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, Edit2, RotateCw, Gauge } from 'lucide-react'
+import { Plus, Trash2, Edit2, RotateCw, Gauge, Power } from 'lucide-react'
 import api from '../api/client'
 import { parseAddressPort, formatAddressPort } from '../utils/addressUtils'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -969,6 +969,21 @@ const Tunnels = () => {
     }
   }
 
+  const restartTunnel = async (tunnel: Tunnel) => {
+    if (!confirm(t.tunnels.confirmRestart)) return
+    try {
+      const res = await api.post(`/tunnels/${tunnel.id}/restart`)
+      if ((res.data?.applied ?? 0) > 0) {
+        fetchData()
+      } else {
+        throw new Error(t.tunnels.restartFailed)
+      }
+    } catch (error: any) {
+      console.error('Failed to restart tunnel:', error)
+      alert(error.response?.data?.detail || error.message || t.tunnels.restartFailed)
+    }
+  }
+
   const setTunnelAutoRestart = async (tunnel: Tunnel, minutes: number) => {
     try {
       await api.put(`/tunnels/${tunnel.id}/auto-restart`, { minutes })
@@ -1374,6 +1389,13 @@ const Tunnels = () => {
                     <option value={60}>{'\u27F3 60m'}</option>
                     <option value={120}>{'\u27F3 120m'}</option>
                   </select>
+                  <button
+                    onClick={() => restartTunnel(tunnel)}
+                    className="p-2.5 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors"
+                    title={t.tunnels.restartService}
+                  >
+                    <Power size={18} />
+                  </button>
                   <button
                     onClick={() => reapplyTunnel(tunnel)}
                     className="p-2.5 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-lg transition-colors"

@@ -3494,15 +3494,23 @@ class AdapterManager:
         logger = logging.getLogger(__name__)
         logger.info(f"Applying tunnel {tunnel_id}: core={tunnel_core}")
         
-        if tunnel_id in self.active_tunnels:
-            logger.info(f"Tunnel {tunnel_id} already exists, removing it first")
-            await self.remove_tunnel(tunnel_id)
-        
         adapter = self.get_adapter(tunnel_core)
         if not adapter:
             error_msg = f"Unknown tunnel core: {tunnel_core}"
             logger.error(error_msg)
             raise ValueError(error_msg)
+        
+        # Always fully tear down any prior instance first - including an orphan
+        # whose in-memory handle was lost across an agent restart - so a reapply /
+        # restart is a clean stop+start that frees the control/listen port, exactly
+        # like delete+recreate. Without this, a reapply could leave the old process
+        # holding the port and the tunnel would never reconnect (only recreate,
+        # which derives a fresh port, worked).
+        try:
+            adapter.remove(tunnel_id)
+        except Exception as cleanup_error:
+            logger.warning(f"Pre-apply cleanup for {tunnel_id} failed: {cleanup_error}")
+        self.active_tunnels.pop(tunnel_id, None)
         
         logger.info(f"Using adapter: {adapter.name}, mode={spec.get('mode', 'N/A')}")
         adapter.apply(tunnel_id, spec)

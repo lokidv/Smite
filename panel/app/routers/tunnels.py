@@ -2976,7 +2976,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
     iran_node = None
     
     if is_reverse_tunnel:
-        iran_node_id = tunnel.node_id
+        iran_node_id = tunnel.iran_node_id or tunnel.node_id
         result = await db.execute(select(Node).where(Node.id == iran_node_id))
         iran_node = result.scalar_one_or_none()
         if not iran_node:
@@ -2984,10 +2984,18 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
         
         result = await db.execute(select(Node))
         all_nodes = result.scalars().all()
-        foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
-        if not foreign_nodes:
-            raise HTTPException(status_code=404, detail="No foreign node found. Please ensure at least one node has role='foreign' (set NODE_ROLE=foreign on the foreign node).")
-        foreign_node = foreign_nodes[0]
+        # Re-apply must target THIS tunnel's foreign node, not just the first one.
+        # Using foreign_nodes[0] re-routed the tunnel onto the wrong foreign node so
+        # multiple foreign nodes fought over the same rathole service and the
+        # tunnels kept dropping. Fall back to the first only for legacy tunnels.
+        foreign_node = None
+        if tunnel.foreign_node_id:
+            foreign_node = next((n for n in all_nodes if n.id == tunnel.foreign_node_id), None)
+        if not foreign_node:
+            foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
+            if not foreign_nodes:
+                raise HTTPException(status_code=404, detail="No foreign node found. Please ensure at least one node has role='foreign' (set NODE_ROLE=foreign on the foreign node).")
+            foreign_node = foreign_nodes[0]
         
         if iran_node.node_metadata.get("role") != "iran":
             raise HTTPException(status_code=400, detail=f"Node {iran_node.id} is not an iran node (role={iran_node.node_metadata.get('role')}). Set NODE_ROLE=iran on the Iran node.")

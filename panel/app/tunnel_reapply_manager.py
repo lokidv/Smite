@@ -140,10 +140,20 @@ class TunnelReapplyManager:
                         
                         result = await session.execute(select(Node))
                         all_nodes = result.scalars().all()
-                        foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
-                        if not foreign_nodes:
-                            continue
-                        foreign_node = foreign_nodes[0]
+                        # Route to THIS tunnel's foreign node, not just the first one.
+                        # Using foreign_nodes[0] re-pushed every tunnel's client to a
+                        # single node, so multiple foreign nodes fought over the same
+                        # rathole service ("Dropping previous control channel") and the
+                        # tunnels kept dropping. Fall back to the first only for legacy
+                        # tunnels that never recorded a foreign_node_id.
+                        foreign_node = None
+                        if tunnel.foreign_node_id:
+                            foreign_node = next((n for n in all_nodes if n.id == tunnel.foreign_node_id), None)
+                        if not foreign_node:
+                            foreign_nodes = [n for n in all_nodes if n.node_metadata and n.node_metadata.get("role") == "foreign"]
+                            if not foreign_nodes:
+                                continue
+                            foreign_node = foreign_nodes[0]
                         
                         spec = tunnel.spec.copy() if tunnel.spec else {}
                         

@@ -102,9 +102,21 @@ progress "Prerequisites present (python ${PYVER:-unknown})"
 # An existing /etc/smite-node/.env means this is a reinstall/update: preserve
 # the configuration (and CA) instead of prompting again.
 KEEP_ENV=0
+RECONFIGURE=0
 if [ -f "$CONFIG_DIR/.env" ]; then
     if [ "$NONINTERACTIVE" = "1" ]; then
-        KEEP_ENV=1
+        if [ -n "$PANEL_ADDRESS" ]; then
+            # Panel-driven (re)install: the panel passed fresh connection
+            # settings, so update them in place. This is what lets an admin fix
+            # a node that points at the wrong panel host/port (or carries a
+            # stale CA) by simply reinstalling it from the panel. Everything
+            # else in the .env (node name, custom API port, ...) is preserved.
+            RECONFIGURE=1
+        else
+            # Self-update path: the updater re-runs this script with no
+            # connection info, so keep the existing configuration untouched.
+            KEEP_ENV=1
+        fi
     else
         echo "Existing configuration found at $CONFIG_DIR/.env"
         read -p "Keep existing configuration? [Y/n]: " KEEP_CHOICE
@@ -121,6 +133,36 @@ if [ "$KEEP_ENV" = "1" ]; then
     NODE_API_PORT="$(grep -E '^NODE_API_PORT=' "$CONFIG_DIR/.env" | head -n1 | cut -d= -f2)"
     NODE_API_PORT=${NODE_API_PORT:-8888}
     mkdir -p "$INSTALL_DIR" "$CONFIG_DIR/certs" "$DATA_DIR"
+elif [ "$RECONFIGURE" = "1" ]; then
+    # Patch only the panel-connection settings (and CA) into the existing .env,
+    # so a misconfigured node is corrected by a panel reinstall while its node
+    # name / custom API port are preserved.
+    PANEL_API_PORT=${PANEL_API_PORT:-8000}
+    NODE_ROLE=${NODE_ROLE:-iran}
+    mkdir -p "$INSTALL_DIR" "$CONFIG_DIR/certs" "$DATA_DIR"
+
+    if [ -n "$PANEL_CA_FILE" ] && [ -f "$PANEL_CA_FILE" ]; then
+        cp "$PANEL_CA_FILE" "$CONFIG_DIR/certs/ca.crt"
+    elif [ -n "$PANEL_CA" ]; then
+        printf '%s\n' "$PANEL_CA" > "$CONFIG_DIR/certs/ca.crt"
+    fi
+
+    set_env_var() {
+        _k="$1"; _v="$2"
+        if grep -q "^${_k}=" "$CONFIG_DIR/.env"; then
+            sed -i "s|^${_k}=.*|${_k}=\"${_v}\"|" "$CONFIG_DIR/.env"
+        else
+            echo "${_k}=\"${_v}\"" >> "$CONFIG_DIR/.env"
+        fi
+    }
+    set_env_var PANEL_ADDRESS "$PANEL_ADDRESS"
+    set_env_var PANEL_API_PORT "$PANEL_API_PORT"
+    set_env_var NODE_ROLE "$NODE_ROLE"
+    set_env_var PANEL_CA_PATH "$CONFIG_DIR/certs/ca.crt"
+
+    NODE_API_PORT="$(grep -E '^NODE_API_PORT=' "$CONFIG_DIR/.env" | head -n1 | cut -d= -f2 | tr -d '"')"
+    NODE_API_PORT=${NODE_API_PORT:-8888}
+    progress "Updated panel connection in $CONFIG_DIR/.env (panel=$PANEL_ADDRESS:$PANEL_API_PORT role=$NODE_ROLE)"
 elif [ "$NONINTERACTIVE" = "1" ]; then
     # Fresh non-interactive install: everything comes from the environment.
     if [ -z "$PANEL_ADDRESS" ]; then
@@ -267,7 +309,9 @@ else
 fi
 
 # --- .env ---
-if [ "$KEEP_ENV" != "1" ]; then
+# Only a true fresh install writes the whole file. KEEP_ENV (self-update) leaves
+# it untouched and RECONFIGURE (panel reinstall) has already patched it in place.
+if [ "$KEEP_ENV" != "1" ] && [ "$RECONFIGURE" != "1" ]; then
     cat > "$CONFIG_DIR/.env" << EOF
 NODE_API_PORT="$NODE_API_PORT"
 NODE_NAME="$NODE_NAME"

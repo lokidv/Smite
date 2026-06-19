@@ -40,7 +40,12 @@ const InstallNode = () => {
   const [role, setRole] = useState<'iran' | 'foreign'>('iran')
   const [nodeName, setNodeName] = useState('node-1')
   const [panelHost, setPanelHost] = useState(window.location.hostname)
-  const [panelApiPort, setPanelApiPort] = useState('8000')
+  // Default to the port the panel is actually served on (e.g. 8080 when the
+  // admin moved the panel off 8000). The node registers via plain HTTP to this
+  // port, so hardcoding 8000 silently breaks installs whenever the panel runs
+  // on a different port. Fall back to 8000 only when the browser reports no
+  // explicit port (default 80/443 deployments behind a reverse proxy).
+  const [panelApiPort, setPanelApiPort] = useState(window.location.port || '8000')
   const [installNode, setInstallNode] = useState(true)
   const [installXui, setInstallXui] = useState(false)
   const [installWireguard, setInstallWireguard] = useState(false)

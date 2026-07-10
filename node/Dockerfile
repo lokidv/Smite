@@ -150,7 +150,7 @@ RUN set -eux; \
         *) RSTUN_ASSET="rstun-linux-x86_64.tar.gz" ;; \
     esac; \
     TMP_DIR="$(mktemp -d)"; \
-    curl -fsSL "https://github.com/neevek/rstun/releases/download/v${RSTUN_VERSION}/${RSTUN_ASSET}" -o "$TMP_DIR/rstun.tar.gz"; \
+    curl -fsSL "https://github.com/lokidv/Smite/releases/download/deps-rstun-${RSTUN_VERSION}/${RSTUN_ASSET}" -o "$TMP_DIR/rstun.tar.gz"; \
     tar -xzf "$TMP_DIR/rstun.tar.gz" -C "$TMP_DIR"; \
     RSTUND_BIN="$(find "$TMP_DIR" -type f -name 'rstund' | head -n1)"; \
     RSTUNC_BIN="$(find "$TMP_DIR" -type f -name 'rstunc' | head -n1)"; \

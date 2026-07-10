@@ -220,7 +220,9 @@ install -m 0755 "$NFQWS_BIN" "$STAGE/bin/nfqws"
 progress "zapret/nfqws ${ZAPRET_VERSION}"
 
 # rstun / TrustTunnel (rstund server + rstunc client, QUIC reverse tunnel)
-dl "https://github.com/neevek/rstun/releases/download/v${RSTUN_VERSION}/${RSTUN_ASSET}" "$DL/rstun.tar.gz"
+# Self-hosted mirror: upstream neevek/rstun was deleted, so the original v0.7.4
+# binaries are preserved as a release asset on this repo (deps-rstun-<ver>).
+dl "https://github.com/lokidv/Smite/releases/download/deps-rstun-${RSTUN_VERSION}/${RSTUN_ASSET}" "$DL/rstun.tar.gz"
 mkdir -p "$DL/rstun"
 tar -xzf "$DL/rstun.tar.gz" -C "$DL/rstun"
 RSTUND_BIN="$(find "$DL/rstun" -type f -name rstund | head -n1)"

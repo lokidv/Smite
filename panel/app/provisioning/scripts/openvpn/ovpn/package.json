@@ -1,0 +1,17 @@
+{
+  "name": "ovpn-panel",
+  "version": "1.0.0",
+  "description": "OpenVPN panel + API: auto-install, per-user volume/quota, auto expiry, enforce",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "init-config": "node scripts/init-config.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "shelljs": "^0.8.5",
+    "logger": "^0.0.1"
+  }
+}

@@ -34,7 +34,18 @@ REMOTE_SMITE_NODE = "/root/smite-node.sh"
 REMOTE_XUI_SCRIPT = "/root/smite-install-3xui.sh"
 REMOTE_XUI_TARBALL = "/root/smite-x-ui.tar.gz"
 REMOTE_WG_SCRIPT = "/root/smite-install-wireguard.sh"
+REMOTE_OVPN_SCRIPT = "/root/smite-install-openvpn.sh"
+REMOTE_OVPN_BUNDLE = "/root/smite-openvpn-bundle.tar.gz"
+REMOTE_WARP_SCRIPT = "/root/smite-install-warp.sh"
+REMOTE_WARP_BUNDLE = "/root/smite-warp-bundle.tar.gz"
+REMOTE_UPDATE_PROXY_SCRIPT = "/root/smite-update-proxy.sh"
 REMOTE_PREP_SCRIPT = "/tmp/smite-prepare.sh"
+
+# OpenVPN and WARP (wginstaller-proxy) are not published on GitHub like the base
+# wginstaller is, so the panel ships their installer trees under scripts/ and
+# uploads them as a tarball at install time (keeps them offline-capable too).
+OPENVPN_BUNDLE_DIR = SCRIPTS_DIR / "openvpn"
+WARP_BUNDLE_DIR = SCRIPTS_DIR / "warp"
 
 # Foreign nodes have internet, so when no offline bundle is uploaded they install
 # NATIVELY by downloading the matching release bundle from GitHub on the target.
@@ -60,6 +71,21 @@ class ProvisionParams:
     install_node: bool = False
     install_xui: bool = False
     install_wireguard: bool = False
+    install_openvpn: bool = False
+    install_warp: bool = False
+    # OpenVPN options
+    ovpn_vpn_port: int = 1194
+    ovpn_protocol: str = "udp"  # udp | tcp
+    ovpn_panel_port: int = 4000
+    ovpn_default_limit_gb: Optional[float] = None
+    # WARP (wginstaller-proxy) upstream-proxy egress options
+    warp_mode: str = "warp"  # warp | proxy
+    warp_panel_port: int = 4000
+    warp_proxy_ip: str = ""
+    warp_proxy_port: str = ""
+    warp_proxy_type: str = "socks5"  # socks5 | http-connect
+    warp_proxy_user: str = ""
+    warp_proxy_pass: str = ""
     xui_version: str = "v2.9.4"
     xui_port: Optional[int] = None
     xui_username: Optional[str] = None
@@ -115,6 +141,8 @@ class ProvisioningJob:
                     "install_node": self.params.install_node,
                     "install_xui": self.params.install_xui,
                     "install_wireguard": self.params.install_wireguard,
+                    "install_openvpn": self.params.install_openvpn,
+                    "install_warp": self.params.install_warp,
                 },
             }
 
@@ -168,6 +196,58 @@ async def run_job(job: ProvisioningJob) -> None:
     finally:
         job.finished_at = datetime.utcnow()
         job.log(f"Job finished with status: {job.status}", "step")
+        try:
+            await _persist_proxy_server(job)
+        except Exception as exc:  # noqa: BLE001
+            job.log(f"Could not persist proxy-server record: {exc}", "info")
+
+
+async def _persist_proxy_server(job: ProvisioningJob) -> None:
+    """After a successful WARP/proxy install, upsert a ProxyServer row so the
+    admin can later change the upstream proxy from the Servers page."""
+    p = job.params
+    warp = job.results.get("warp") if isinstance(job.results, dict) else None
+    if not p.install_warp or not warp or warp.get("status") != "success":
+        return
+
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models import ProxyServer
+    from app.provisioning.vault import encrypt
+
+    mode = warp.get("mode") or (p.warp_mode or "proxy")
+    if mode == "warp":
+        proxy_ip, proxy_port, proxy_type = "127.0.0.1", "40000", "socks5"
+        proxy_user, proxy_pass = "", ""
+    else:
+        proxy_ip, proxy_port = p.warp_proxy_ip.strip(), p.warp_proxy_port.strip()
+        proxy_type = p.warp_proxy_type or "socks5"
+        proxy_user, proxy_pass = p.warp_proxy_user or "", p.warp_proxy_pass or ""
+
+    async with AsyncSessionLocal() as s:
+        existing = (
+            await s.execute(select(ProxyServer).where(ProxyServer.host == p.host))
+        ).scalar_one_or_none()
+        row = existing or ProxyServer(host=p.host)
+        row.ssh_port = p.ssh_port
+        row.ssh_user = p.username
+        row.ssh_password_enc = encrypt(p.password)
+        row.mode = mode
+        row.wg_port = str(warp.get("wgPort") or "")
+        row.api_port = str(warp.get("apiPort") or "")
+        row.api_key = warp.get("apiKey") or ""
+        row.admin_path = warp.get("adminPath") or ""
+        row.server_public_key = warp.get("serverPublicKey") or ""
+        row.proxy_ip = proxy_ip
+        row.proxy_port = proxy_port
+        row.proxy_type = proxy_type
+        row.proxy_user = proxy_user
+        row.proxy_password_enc = encrypt(proxy_pass)
+        row.proxy_status = warp.get("proxyStatus") or "unknown"
+        if not existing:
+            s.add(row)
+        await s.commit()
+    job.log(f"Recorded proxy-server {p.host} ({mode} mode) for later management.", "info")
 
 
 # -- execution (runs in a worker thread) -----------------------------------
@@ -209,6 +289,10 @@ def _execute(job: ProvisioningJob) -> None:
             _step(job, "xui", "Install 3x-ui panel", lambda: _install_xui(ssh, job))
         if p.install_wireguard:
             _step(job, "wireguard", "Install WireGuard", lambda: _install_wireguard(ssh, job))
+        if p.install_openvpn:
+            _step(job, "openvpn", "Install OpenVPN", lambda: _install_openvpn(ssh, job))
+        if p.install_warp:
+            _step(job, "warp", "Install WARP (WireGuard + proxy egress)", lambda: _install_warp(ssh, job))
     finally:
         ssh.close()
         job.log("SSH connection closed.", "info")
@@ -362,6 +446,35 @@ def _select_bundle(
 def _read_script(name: str) -> str:
     path = SCRIPTS_DIR / name
     return path.read_text(encoding="utf-8")
+
+
+def _make_bundle(src_dir: Path) -> str:
+    """Tar+gzip a bundled installer tree into a temp file; return its path.
+
+    node_modules/.git are already absent from the shipped tree, but exclude
+    them defensively so a dev checkout never bloats the upload.
+    """
+    import tarfile
+    import tempfile
+
+    if not src_dir.is_dir():
+        raise ProvisioningError(f"Installer bundle directory missing: {src_dir}")
+    fd, tmp = tempfile.mkstemp(prefix="smite-bundle-", suffix=".tar.gz")
+    os.close(fd)
+
+    def _filter(ti: "tarfile.TarInfo"):
+        parts = set(ti.name.split("/"))
+        if parts & {"node_modules", ".git", "_ssh"}:
+            return None
+        if ti.name.endswith(".log"):
+            return None
+        return ti
+
+    with tarfile.open(tmp, "w:gz") as tf:
+        # arcname="." so the archive extracts the tree contents directly into
+        # the target dir (install.sh sits at the root of the extracted dir).
+        tf.add(str(src_dir), arcname=".", filter=_filter)
+    return tmp
 
 
 # -- step: node --------------------------------------------------------------
@@ -560,6 +673,235 @@ def _install_wireguard(ssh: SSHSession, job: ProvisioningJob) -> Dict[str, Any]:
         "defaultClientConfig": client_config,
         "note": "Open the WireGuard UDP port and the management API port in your firewall.",
     }
+
+
+# -- step: OpenVPN -----------------------------------------------------------
+def _install_openvpn(ssh: SSHSession, job: ProvisioningJob) -> Dict[str, Any]:
+    p = job.params
+    if p.role != "foreign":
+        raise ProvisioningError("OpenVPN installation is only supported on foreign servers.")
+
+    job.log("Packaging OpenVPN installer bundle ...", "info")
+    bundle = _make_bundle(OPENVPN_BUNDLE_DIR)
+    try:
+        job.log(f"Uploading OpenVPN installer bundle ({Path(bundle).name}) ...", "info")
+        size = ssh.put_file(bundle, REMOTE_OVPN_BUNDLE)
+        job.log(f"Bundle uploaded ({size} bytes).", "info")
+    finally:
+        try:
+            os.unlink(bundle)
+        except OSError:
+            pass
+
+    job.log("Uploading OpenVPN installer script ...", "info")
+    ssh.put_text(_read_script("install-openvpn.sh"), REMOTE_OVPN_SCRIPT, mode=0o755)
+
+    env_parts = [
+        f"OVPN_BUNDLE={REMOTE_OVPN_BUNDLE}",
+        f"OVPN_VPN_PORT={shlex.quote(str(p.ovpn_vpn_port))}",
+        f"OVPN_PROTOCOL={shlex.quote(p.ovpn_protocol)}",
+        f"OVPN_PORT={shlex.quote(str(p.ovpn_panel_port))}",
+    ]
+    if p.ovpn_default_limit_gb is not None:
+        env_parts.append(f"OVPN_DEFAULT_LIMIT_GB={shlex.quote(str(p.ovpn_default_limit_gb))}")
+
+    job.log("Running OpenVPN installer (this may take a few minutes) ...", "info")
+    _, out = _run(job, ssh, f"{' '.join(env_parts)} bash {REMOTE_OVPN_SCRIPT}", timeout=2400)
+
+    data = _parse_result_marker(out, "===SMITE_OVPN_RESULT===")
+    if not data:
+        raise ProvisioningError("OpenVPN installed but the result could not be parsed.")
+
+    vpn_port = data.get("vpnPort", "")
+    vpn_proto = data.get("vpnProto", "")
+    panel_port = data.get("panelPort", "4000")
+    return {
+        "serverIp": data.get("serverIp", p.host),
+        "vpnProto": vpn_proto,
+        "vpnPort": vpn_port,
+        "vpnEndpoint": f"{vpn_proto}://{p.host}:{vpn_port}" if vpn_port else "",
+        "panelPort": panel_port,
+        "panelUrl": data.get("panelUrl", ""),
+        "adminPath": data.get("adminPath", ""),
+        "adminPassword": data.get("adminPassword", ""),
+        "apiKey": data.get("apiKey", ""),
+        "apiBaseUrl": f"http://{p.host}:{panel_port}",
+        "apiEndpoints": "GET /create?name=&dataLimitGB=&expiresInDays=, /info, /update, /disable, /enable, /remove, /list (header X-API-Key)",
+        "apiKeyNote": (
+            "Send this key with every management API request (header X-API-Key or ?apiKey=). "
+            "Keep it secret and restrict the panel port with a firewall."
+            if data.get("apiKey")
+            else "Could not read the API key from /etc/ovpn/ovpn.json on the server. "
+                 "Check the server and restrict the panel port with a firewall."
+        ),
+        "note": "Open the OpenVPN port and the panel/API port in your firewall. "
+        "OpenVPN .ovpn configs are ~3KB (too large for a QR); use the .ovpn download in the panel.",
+    }
+
+
+# -- step: WARP (wginstaller-proxy) ------------------------------------------
+def _install_warp(ssh: SSHSession, job: ProvisioningJob) -> Dict[str, Any]:
+    p = job.params
+    if p.role != "foreign":
+        raise ProvisioningError("WARP installation is only supported on foreign servers.")
+
+    job.log("Packaging WARP (wginstaller-proxy) installer bundle ...", "info")
+    bundle = _make_bundle(WARP_BUNDLE_DIR)
+    try:
+        job.log(f"Uploading WARP installer bundle ({Path(bundle).name}) ...", "info")
+        size = ssh.put_file(bundle, REMOTE_WARP_BUNDLE)
+        job.log(f"Bundle uploaded ({size} bytes).", "info")
+    finally:
+        try:
+            os.unlink(bundle)
+        except OSError:
+            pass
+
+    job.log("Uploading WARP installer script ...", "info")
+    ssh.put_text(_read_script("install-warp.sh"), REMOTE_WARP_SCRIPT, mode=0o755)
+
+    mode = "warp" if p.warp_mode == "warp" else "proxy"
+    env_parts = [
+        f"WARP_BUNDLE={REMOTE_WARP_BUNDLE}",
+        f"WVPN_PORT={shlex.quote(str(p.warp_panel_port))}",
+        f"WARP_MODE={shlex.quote(mode)}",
+    ]
+    if mode == "warp":
+        job.log(
+            "WARP mode: Cloudflare WARP will be installed on the server and the client "
+            "egress IP will be a Cloudflare WARP IP.",
+            "info",
+        )
+    else:
+        proxy_configured = bool(p.warp_proxy_ip.strip() and p.warp_proxy_port.strip())
+        if not proxy_configured:
+            raise ProvisioningError(
+                "Proxy mode requires a proxy IP and port. Provide them or choose WARP mode."
+            )
+        env_parts.append(f"PROXY_IP={shlex.quote(p.warp_proxy_ip.strip())}")
+        env_parts.append(f"PROXY_PORT={shlex.quote(p.warp_proxy_port.strip())}")
+        env_parts.append(f"PROXY_TYPE={shlex.quote(p.warp_proxy_type or 'socks5')}")
+        if p.warp_proxy_user:
+            env_parts.append(f"PROXY_USER={shlex.quote(p.warp_proxy_user)}")
+        if p.warp_proxy_pass:
+            env_parts.append(f"PROXY_PASS={shlex.quote(p.warp_proxy_pass)}")
+        job.log("Proxy mode: the client egress IP will be the upstream proxy IP.", "info")
+
+    job.log("Running WARP installer (this may take a few minutes) ...", "info")
+    _, out = _run(job, ssh, f"{' '.join(env_parts)} bash {REMOTE_WARP_SCRIPT}", timeout=2400)
+
+    data = _parse_result_marker(out, "===SMITE_WARP_RESULT===")
+    if not data:
+        raise ProvisioningError("WARP installed but the result could not be parsed.")
+
+    wg_port = data.get("wgPort", "")
+    api_port = data.get("apiPort", "4000")
+    api_key = data.get("apiKey", "")
+    mode = data.get("mode", p.warp_mode or "proxy")
+    proxy_enabled = data.get("proxyEnabled", "false") == "true"
+    proxy_status = data.get("proxyStatus", "disabled")
+    proxy_endpoint = data.get("proxyEndpoint", "")
+    if mode == "warp":
+        proxy_note = (
+            "WARP mode: client TCP traffic exits through Cloudflare WARP. redsocks service is "
+            f"{proxy_status}."
+            if proxy_status == "active"
+            else "WARP mode configured but the redsocks egress service is not active; "
+                 "check `systemctl status wvpn-redsocks` and `warp-cli status` on the server."
+        )
+    elif proxy_enabled:
+        proxy_note = (
+            "Proxy mode: client TCP traffic exits from the upstream proxy IP. redsocks service is "
+            f"{proxy_status}."
+            if proxy_status == "active"
+            else "Upstream proxy is configured but the redsocks egress service is not active; "
+                 "check `systemctl status wvpn-redsocks` and the proxy credentials on the server."
+        )
+    else:
+        proxy_note = (
+            "No upstream proxy configured — plain WireGuard (client egress IP = server IP)."
+        )
+    return {
+        "mode": mode,
+        "wgPort": wg_port,
+        "serverPublicKey": data.get("serverPublicKey", ""),
+        "serverEndpoint": f"{p.host}:{wg_port}" if wg_port else "",
+        "apiPort": api_port,
+        "apiBaseUrl": f"http://{p.host}:{api_port}",
+        "apiEndpoints": "GET /create?publicKey=, /remove?publicKey=, /list, /check?publicKey=",
+        "apiKey": api_key,
+        "adminPath": data.get("adminPath", ""),
+        "apiKeyNote": (
+            "Send this key with every management API request (as required by wvpn). "
+            "Keep it secret and restrict the management port with a firewall."
+            if api_key
+            else "Could not read the wvpn API key from /etc/wvpn/wvpn.json on the server. "
+                 "Check the server's wvpn config and restrict the management port with a firewall."
+        ),
+        "proxyEnabled": proxy_enabled,
+        "proxyType": data.get("proxyType", ""),
+        "proxyEndpoint": proxy_endpoint if proxy_enabled else "",
+        "proxyStatus": proxy_status,
+        "proxyNote": proxy_note,
+        "note": "Open the WireGuard UDP port and the management API port in your firewall.",
+    }
+
+
+def apply_proxy_update(
+    host: str,
+    ssh_port: int,
+    username: str,
+    password: str,
+    mode: str,
+    proxy_ip: str = "",
+    proxy_port: str = "",
+    proxy_type: str = "socks5",
+    proxy_user: str = "",
+    proxy_pass: str = "",
+) -> Dict[str, Any]:
+    """Change the egress proxy on an already-installed WARP/proxy server.
+
+    Uploads update-proxy.sh, runs it (rewrites /etc/wvpn-proxy.env, re-applies
+    redsocks + iptables, restarts wvpn-redsocks). Blocking — call via
+    ``asyncio.to_thread``. Returns the parsed result dict.
+    """
+    log_lines: List[str] = []
+
+    def _sink(line: str) -> None:
+        log_lines.append(line)
+
+    ssh = SSHSession(host, username, password, ssh_port)
+    try:
+        ssh.connect()
+    except SSHError as exc:
+        raise ProvisioningError(str(exc)) from exc
+    try:
+        ssh.put_text(_read_script("update-proxy.sh"), REMOTE_UPDATE_PROXY_SCRIPT, mode=0o755)
+        env_parts = [f"WARP_MODE={shlex.quote('warp' if mode == 'warp' else 'proxy')}"]
+        if mode != "warp":
+            if not (proxy_ip.strip() and str(proxy_port).strip()):
+                raise ProvisioningError("Proxy mode requires a proxy IP and port.")
+            env_parts.append(f"PROXY_IP={shlex.quote(proxy_ip.strip())}")
+            env_parts.append(f"PROXY_PORT={shlex.quote(str(proxy_port).strip())}")
+            env_parts.append(f"PROXY_TYPE={shlex.quote(proxy_type or 'socks5')}")
+            if proxy_user:
+                env_parts.append(f"PROXY_USER={shlex.quote(proxy_user)}")
+            if proxy_pass:
+                env_parts.append(f"PROXY_PASS={shlex.quote(proxy_pass)}")
+        code, out = ssh.run(
+            f"{' '.join(env_parts)} bash {REMOTE_UPDATE_PROXY_SCRIPT}",
+            timeout=1200,
+            on_output=_sink,
+        )
+        if code != 0:
+            raise ProvisioningError(f"update-proxy exited with code {code}")
+        data = _parse_result_marker(out, "===SMITE_PROXY_UPDATE_RESULT===")
+        if not data:
+            raise ProvisioningError("Proxy updated but the result could not be parsed.")
+        data["logs"] = log_lines[-50:]
+        return data
+    finally:
+        ssh.close()
 
 
 def _parse_result_marker(output: str, marker: str) -> Optional[Dict[str, Any]]:

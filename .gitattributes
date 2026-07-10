@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings so they run on Linux servers and CI
+# (CRLF breaks the shebang / `set -` lines). The provisioning installers are
+# shipped inside the panel and executed on remote hosts, so this is load-bearing.
+*.sh text eol=lf

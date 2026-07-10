@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OVPN Admin</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --card: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+      --danger: #f87171;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --border: #374151;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Tahoma, Arial, sans-serif;
+      background: linear-gradient(180deg, #0b1220, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .hidden { display: none !important; }
+    .card {
+      background: rgba(31, 41, 55, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+    h1, h2 { margin: 0 0 12px; }
+    .muted { color: var(--muted); font-size: 14px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    input, select, button, textarea {
+      font: inherit;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0b1220;
+      color: var(--text);
+      padding: 10px 12px;
+    }
+    input, select, textarea { width: 100%; }
+    button {
+      cursor: pointer;
+      background: #0ea5e9;
+      border-color: #0284c7;
+      font-weight: 600;
+    }
+    button.secondary { background: #334155; border-color: #475569; }
+    button.danger { background: #b91c1c; border-color: #991b1b; }
+    button.ghost { background: transparent; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .stat { padding: 16px; border-radius: 12px; background: #0b1220; border: 1px solid var(--border); }
+    .stat .num { font-size: 28px; font-weight: 700; }
+    .toolbar { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: right; vertical-align: middle; }
+    th { color: var(--muted); font-weight: 600; }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; }
+    .badge.active { background: rgba(74,222,128,.15); color: var(--ok); }
+    .badge.disabled { background: rgba(248,113,113,.15); color: var(--danger); }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .actions button { padding: 6px 10px; font-size: 12px; }
+    .filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-bottom: 12px; }
+    .filters .wide { grid-column: span 2; min-width: 220px; }
+    .filter-meta { margin: 0 0 12px; font-size: 13px; }
+    .filter-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
+    .toast {
+      position: fixed; left: 24px; bottom: 24px; background: #111827; border: 1px solid var(--border);
+      padding: 12px 16px; border-radius: 10px; max-width: 420px; z-index: 20;
+    }
+    .login-box { max-width: 420px; margin: 80px auto; }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 10;
+    }
+    .modal { width: min(560px, 92vw); }
+    pre {
+      background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+      overflow: auto; max-height: 320px; white-space: pre-wrap; word-break: break-all;
+    }
+    .qr-wrap {
+      display: flex; justify-content: center; margin: 12px 0;
+      background: #fff; border-radius: 12px; padding: 12px;
+    }
+    .qr-wrap img { width: min(260px, 100%); height: auto; }
+    .conf-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    @media (max-width: 760px) {
+      .hide-sm { display: none; }
+      .toolbar { flex-direction: column; align-items: stretch; }
+    }
+  </style>
+</head>
+<body>
+  <div id="loginView" class="wrap login-box">
+    <div class="card">
+      <h1>ورود ادمین OVPN</h1>
+      <p class="muted">فقط مدیر سیستم به این پنل دسترسی دارد.</p>
+      <form id="loginForm">
+        <label for="password">رمز عبور</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <div style="margin-top:14px">
+          <button type="submit" style="width:100%">ورود</button>
+        </div>
+      </form>
+      <p id="loginError" class="muted" style="color:var(--danger);margin-top:12px"></p>
+    </div>
+  </div>
+
+  <div id="appView" class="wrap hidden">
+    <div class="toolbar">
+      <div>
+        <h1>پنل مدیریت OVPN</h1>
+        <p class="muted">مدیریت کاربران OpenVPN، حجم، تاریخ انقضا و وضعیت</p>
+      </div>
+      <div class="row">
+        <button id="refreshBtn" class="secondary">بروزرسانی</button>
+        <button id="enforceBtn" class="secondary">اجرای Enforce</button>
+        <button id="logoutBtn" class="ghost">خروج</button>
+      </div>
+    </div>
+
+    <div class="grid" style="margin-bottom:16px">
+      <div class="stat"><div class="muted">کل کاربران</div><div class="num" id="statTotal">0</div></div>
+      <div class="stat"><div class="muted">فعال</div><div class="num" id="statActive">0</div></div>
+      <div class="stat"><div class="muted">غیرفعال</div><div class="num" id="statDisabled">0</div></div>
+      <div class="stat"><div class="muted">مصرف کل (GB)</div><div class="num" id="statUsed">0</div></div>
+      <div class="stat"><div class="muted">حجم پیش‌فرض (GB)</div><div class="num" id="statDefaultLimit">-</div></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h2>تنظیمات پیش‌فرض کانفیگ کلاینت</h2>
+      <form id="settingsForm">
+        <div class="row">
+          <div style="flex:1;min-width:160px">
+            <label for="defaultLimit">حجم پیش‌فرض (GB)</label>
+            <input id="defaultLimit" type="number" min="0.1" step="0.1" required>
+          </div>
+          <div style="flex:1;min-width:160px">
+            <label for="clientDns1">DNS اول</label>
+            <input id="clientDns1" type="text" pattern="^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$" required>
+          </div>
+          <div style="flex:1;min-width:160px">
+            <label for="clientDns2">DNS دوم</label>
+            <input id="clientDns2" type="text" pattern="^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$" required>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div style="flex:1;min-width:220px">
+            <label for="clientEndpoint">Endpoint پیش‌فرض (خالی = سرور)</label>
+            <input id="clientEndpoint" type="text" placeholder="77.83.203.150:1194">
+            <div class="muted" id="serverEndpointHint" style="margin-top:6px;font-size:12px"></div>
+          </div>
+          <div style="flex:1;min-width:140px">
+            <label for="clientMtu">MTU پیش‌فرض (خالی = بدون MTU)</label>
+            <input id="clientMtu" type="number" min="576" max="1500" step="1" placeholder="1500">
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button type="submit" class="secondary">ذخیره تنظیمات</button>
+          </div>
+        </div>
+      </form>
+      <p class="muted" style="margin-top:10px">با ذخیره، کانفیگ <strong>همه کاربران موجود</strong> با Endpoint / MTU جدید بازسازی می‌شود و DNS جدید روی سرور اعمال و سرویس ری‌استارت می‌گردد.</p>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h2>ساخت کاربر جدید</h2>
+      <form id="createForm" class="row">
+        <div style="flex:1;min-width:160px">
+          <label for="newName">نام کاربر</label>
+          <input id="newName" pattern="[A-Za-z0-9_-]{1,15}" required placeholder="alice">
+        </div>
+        <div style="flex:1;min-width:140px">
+          <label for="newLimit">حجم (GB)</label>
+          <input id="newLimit" type="number" min="0.1" step="0.1" placeholder="پیش‌فرض">
+        </div>
+        <div style="flex:1;min-width:140px">
+          <label for="newDays">مدت (روز)</label>
+          <input id="newDays" type="number" min="1" step="1" placeholder="نامحدود">
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button type="submit">ایجاد</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <h2>لیست کاربران</h2>
+      </div>
+      <div class="filters">
+        <div class="wide">
+          <label for="searchInput">جستجو</label>
+          <input id="searchInput" placeholder="نام، IP، دلیل غیرفعال">
+        </div>
+        <div>
+          <label for="filterStatus">وضعیت</label>
+          <select id="filterStatus">
+            <option value="all">همه</option>
+            <option value="active">فعال</option>
+            <option value="disabled">غیرفعال</option>
+          </select>
+        </div>
+        <div>
+          <label for="filterReason">دلیل غیرفعال</label>
+          <select id="filterReason">
+            <option value="">همه</option>
+            <option value="expired">منقضی</option>
+            <option value="quota_exceeded">پر شدن حجم</option>
+            <option value="manual">دستی</option>
+          </select>
+        </div>
+        <div>
+          <label for="filterExpiry">انقضا</label>
+          <select id="filterExpiry">
+            <option value="all">همه</option>
+            <option value="unlimited">نامحدود</option>
+            <option value="expiring">به‌زودی منقضی</option>
+            <option value="expired">منقضی‌شده</option>
+            <option value="active">هنوز معتبر</option>
+          </select>
+        </div>
+        <div>
+          <label for="filterExpiresWithin">روز تا انقضا</label>
+          <input id="filterExpiresWithin" type="number" min="1" step="1" value="7" title="برای فیلتر «به‌زودی منقضی»">
+        </div>
+        <div>
+          <label for="filterSort">مرتب‌سازی</label>
+          <select id="filterSort">
+            <option value="name">نام</option>
+            <option value="createdAt">تاریخ ساخت</option>
+            <option value="expiresAt">تاریخ انقضا</option>
+            <option value="usedBytes">مصرف</option>
+            <option value="dataLimitBytes">سقف حجم</option>
+            <option value="status">وضعیت</option>
+            <option value="ipv4">IP</option>
+          </select>
+        </div>
+        <div>
+          <label for="filterOrder">ترتیب</label>
+          <select id="filterOrder">
+            <option value="asc">صعودی</option>
+            <option value="desc">نزولی</option>
+          </select>
+        </div>
+        <div>
+          <label for="filterUsedMin">حداقل مصرف (GB)</label>
+          <input id="filterUsedMin" type="number" min="0" step="0.1" placeholder="0">
+        </div>
+        <div>
+          <label for="filterUsedMax">حداکثر مصرف (GB)</label>
+          <input id="filterUsedMax" type="number" min="0" step="0.1" placeholder="">
+        </div>
+        <div>
+          <label for="filterLimitMin">حداقل سقف (GB)</label>
+          <input id="filterLimitMin" type="number" min="0" step="0.1" placeholder="">
+        </div>
+        <div>
+          <label for="filterLimitMax">حداکثر سقف (GB)</label>
+          <input id="filterLimitMax" type="number" min="0" step="0.1" placeholder="">
+        </div>
+        <div class="filter-actions">
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:0">
+            <input id="filterOverQuota" type="checkbox" style="width:auto">
+            <span>فقط پرمصرف</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:0">
+            <input id="filterUnlimitedData" type="checkbox" style="width:auto">
+            <span>حجم نامحدود</span>
+          </label>
+          <button id="filterApply" type="button">اعمال فیلتر</button>
+          <button id="filterReset" type="button" class="secondary">پاک کردن</button>
+        </div>
+      </div>
+      <p id="filterMeta" class="muted filter-meta"></p>
+      <div style="overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>نام</th>
+              <th class="hide-sm">IP</th>
+              <th>وضعیت</th>
+              <th>مصرف</th>
+              <th>سقف</th>
+              <th class="hide-sm">انقضا</th>
+              <th>عملیات</th>
+            </tr>
+          </thead>
+          <tbody id="clientsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="modalRoot" class="hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script>
+    let csrfToken = '';
+    const ADMIN_BASE = (window.OVPN_ADMIN_BASE || '').replace(/\/$/, '');
+
+    function adminUrl(path) {
+      const suffix = path.startsWith('/') ? path : '/' + path;
+      return ADMIN_BASE + '/api' + suffix;
+    }
+
+    function bytesToGb(bytes) {
+      if (bytes === null || bytes === undefined || bytes === 'null') return '∞';
+      return (Number(bytes) / (1024 ** 3)).toFixed(2);
+    }
+
+    function formatExpiry(ts) {
+      if (ts === null || ts === undefined || ts === 'null' || ts === '' || Number(ts) <= 0) return 'نامحدود';
+      const d = new Date(Number(ts) * 1000);
+      if (Number.isNaN(d.getTime())) return 'نامحدود';
+      return d.toLocaleString('fa-IR');
+    }
+
+    function expiryToDatetimeLocal(ts) {
+      if (!ts || ts === 'null') return '';
+      const d = new Date(Number(ts) * 1000);
+      if (Number.isNaN(d.getTime())) return '';
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function toast(msg, isError) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.style.borderColor = isError ? '#991b1b' : '#334155';
+      el.classList.remove('hidden');
+      clearTimeout(window.__toastTimer);
+      window.__toastTimer = setTimeout(() => el.classList.add('hidden'), 3500);
+    }
+
+    async function api(path, options = {}) {
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+      const res = await fetch(path, Object.assign({}, options, { headers }));
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        showLogin();
+        throw new Error('نشست منقضی شده است');
+      }
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || 'خطا در انجام عملیات');
+      }
+      return data;
+    }
+
+    function showLogin() {
+      document.getElementById('loginView').classList.remove('hidden');
+      document.getElementById('appView').classList.add('hidden');
+      csrfToken = '';
+    }
+
+    function showApp() {
+      document.getElementById('loginView').classList.add('hidden');
+      document.getElementById('appView').classList.remove('hidden');
+    }
+
+    async function loadSettings() {
+      const data = await api(adminUrl('/settings'));
+      const value = data.defaultDataLimitGB || '';
+      document.getElementById('defaultLimit').value = value;
+      document.getElementById('clientDns1').value = data.clientDns1 || '1.1.1.1';
+      document.getElementById('clientDns2').value = data.clientDns2 || '1.0.0.1';
+      document.getElementById('clientEndpoint').value = data.clientEndpoint || '';
+      document.getElementById('clientMtu').value = data.clientMtu || '';
+      document.getElementById('serverEndpointHint').textContent = data.serverEndpoint
+        ? `Endpoint سرور: ${data.serverEndpoint}`
+        : '';
+      document.getElementById('statDefaultLimit').textContent = value || '-';
+      if (!document.getElementById('newLimit').value) {
+        document.getElementById('newLimit').placeholder = value ? value + ' (پیش‌فرض)' : 'پیش‌فرض';
+      }
+    }
+
+    async function checkSession() {
+      try {
+        const data = await api(adminUrl('/session'));
+        csrfToken = data.csrfToken;
+        showApp();
+        await Promise.all([loadSettings(), loadClients()]);
+      } catch (e) {
+        showLogin();
+      }
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('password').value;
+      document.getElementById('loginError').textContent = '';
+      try {
+        const data = await api(adminUrl('/login'), {
+          method: 'POST',
+          body: JSON.stringify({ password })
+        });
+        csrfToken = data.csrfToken;
+        showApp();
+        await Promise.all([loadSettings(), loadClients()]);
+        toast('ورود موفق');
+      } catch (err) {
+        document.getElementById('loginError').textContent = err.message;
+      }
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      try {
+        await api(adminUrl('/logout'), { method: 'POST', body: '{}' });
+      } catch (e) {}
+      showLogin();
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', loadClients);
+    document.getElementById('enforceBtn').addEventListener('click', async () => {
+      try {
+        const data = await api(adminUrl('/enforce'), { method: 'POST', body: '{}' });
+        toast(`Enforce انجام شد. غیرفعال‌شده: ${(data.disabled || []).length}`);
+        await loadClients();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+
+    document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const data = await api(adminUrl('/settings'), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            defaultDataLimitGB: document.getElementById('defaultLimit').value,
+            clientDns1: document.getElementById('clientDns1').value.trim(),
+            clientDns2: document.getElementById('clientDns2').value.trim(),
+            clientEndpoint: document.getElementById('clientEndpoint').value.trim(),
+            clientMtu: document.getElementById('clientMtu').value.trim()
+          })
+        });
+        const refreshed = data.confRefresh && data.confRefresh.count;
+        toast(refreshed ? `تنظیمات ذخیره شد. ${refreshed} کانفیگ بروزرسانی شد` : 'تنظیمات ذخیره شد');
+        await loadSettings();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+
+    document.getElementById('createForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('newName').value.trim();
+      const dataLimitGB = document.getElementById('newLimit').value;
+      const expiresInDays = document.getElementById('newDays').value;
+      try {
+        await api(adminUrl('/clients'), {
+          method: 'POST',
+          body: JSON.stringify({ name, dataLimitGB, expiresInDays })
+        });
+        e.target.reset();
+        toast('کاربر ساخته شد');
+        await loadClients();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+
+    let filterDebounceTimer = null;
+
+    function getFilterParams() {
+      const params = new URLSearchParams();
+      const q = document.getElementById('searchInput').value.trim();
+      const status = document.getElementById('filterStatus').value;
+      const reason = document.getElementById('filterReason').value;
+      const expiry = document.getElementById('filterExpiry').value;
+      const sort = document.getElementById('filterSort').value;
+      const order = document.getElementById('filterOrder').value;
+      const expiresWithinDays = document.getElementById('filterExpiresWithin').value;
+      const usedMinGB = document.getElementById('filterUsedMin').value;
+      const usedMaxGB = document.getElementById('filterUsedMax').value;
+      const limitMinGB = document.getElementById('filterLimitMin').value;
+      const limitMaxGB = document.getElementById('filterLimitMax').value;
+
+      if (q) params.set('q', q);
+      if (status && status !== 'all') params.set('status', status);
+      if (reason) params.set('reason', reason);
+      if (expiry && expiry !== 'all') params.set('expiry', expiry);
+      if (expiry === 'expiring' && expiresWithinDays) params.set('expiresWithinDays', expiresWithinDays);
+      if (sort) params.set('sort', sort);
+      if (order) params.set('order', order);
+      if (usedMinGB) params.set('usedMinGB', usedMinGB);
+      if (usedMaxGB) params.set('usedMaxGB', usedMaxGB);
+      if (limitMinGB) params.set('limitMinGB', limitMinGB);
+      if (limitMaxGB) params.set('limitMaxGB', limitMaxGB);
+      if (document.getElementById('filterOverQuota').checked) params.set('overQuota', '1');
+      if (document.getElementById('filterUnlimitedData').checked) params.set('unlimitedData', '1');
+      return params;
+    }
+
+    function resetFilters() {
+      document.getElementById('searchInput').value = '';
+      document.getElementById('filterStatus').value = 'all';
+      document.getElementById('filterReason').value = '';
+      document.getElementById('filterExpiry').value = 'all';
+      document.getElementById('filterExpiresWithin').value = '7';
+      document.getElementById('filterSort').value = 'name';
+      document.getElementById('filterOrder').value = 'asc';
+      document.getElementById('filterUsedMin').value = '';
+      document.getElementById('filterUsedMax').value = '';
+      document.getElementById('filterLimitMin').value = '';
+      document.getElementById('filterLimitMax').value = '';
+      document.getElementById('filterOverQuota').checked = false;
+      document.getElementById('filterUnlimitedData').checked = false;
+      loadClients();
+    }
+
+    function scheduleFilterReload() {
+      clearTimeout(filterDebounceTimer);
+      filterDebounceTimer = setTimeout(loadClients, 350);
+    }
+
+    document.getElementById('searchInput').addEventListener('input', scheduleFilterReload);
+    document.getElementById('filterApply').addEventListener('click', loadClients);
+    document.getElementById('filterReset').addEventListener('click', resetFilters);
+    ['filterStatus', 'filterReason', 'filterExpiry', 'filterSort', 'filterOrder'].forEach(id => {
+      document.getElementById(id).addEventListener('change', loadClients);
+    });
+
+    function renderClients(clients, meta) {
+      window.__clients = clients;
+      const tbody = document.getElementById('clientsBody');
+      const entries = Object.values(clients);
+      const metaEl = document.getElementById('filterMeta');
+      if (meta) {
+        metaEl.textContent = `نمایش ${meta.returned || entries.length} از ${meta.filtered || entries.length} نتیجه (کل سرور: ${meta.total || entries.length})`;
+      } else {
+        metaEl.textContent = '';
+      }
+      tbody.innerHTML = entries.map(c => `
+        <tr>
+          <td><strong>${escapeHtml(c.name)}</strong><div class="muted hide-sm">${escapeHtml(c.disabledReason || '')}</div></td>
+          <td class="hide-sm">${escapeHtml(c.ipv4 || '-')}</td>
+          <td><span class="badge ${c.status === 'active' ? 'active' : 'disabled'}">${c.status === 'active' ? 'فعال' : 'غیرفعال'}</span></td>
+          <td>${bytesToGb(c.usedBytes)} GB</td>
+          <td>${bytesToGb(c.dataLimitBytes)} GB</td>
+          <td class="hide-sm">${formatExpiry(c.expiresAt)}</td>
+          <td>
+            <div class="actions">
+              <button data-act="conf" data-name="${escapeAttr(c.name)}">کانفیگ</button>
+              <button data-act="qrcode" data-name="${escapeAttr(c.name)}" class="secondary">QR</button>
+              <button data-act="download" data-name="${escapeAttr(c.name)}" class="secondary">دانلود</button>
+              <button data-act="update" data-name="${escapeAttr(c.name)}" class="secondary">ویرایش</button>
+              ${c.status === 'active'
+                ? `<button data-act="disable" data-name="${escapeAttr(c.name)}" class="secondary">غیرفعال</button>`
+                : `<button data-act="enable" data-name="${escapeAttr(c.name)}">فعال</button>`}
+              <button data-act="remove" data-name="${escapeAttr(c.name)}" class="danger">حذف</button>
+            </div>
+          </td>
+        </tr>
+      `).join('') || `<tr><td colspan="7" class="muted">کاربری یافت نشد</td></tr>`;
+
+      tbody.querySelectorAll('button[data-act]').forEach(btn => {
+        btn.addEventListener('click', () => handleAction(btn.dataset.act, btn.dataset.name));
+      });
+    }
+
+    async function loadClients() {
+      const params = getFilterParams();
+      const suffix = params.toString() ? '?' + params.toString() : '';
+      const data = await api(adminUrl('/clients' + suffix));
+      const clients = data.clients || {};
+      const meta = data.meta || {};
+      document.getElementById('statTotal').textContent = meta.total ?? Object.keys(clients).length;
+      document.getElementById('statActive').textContent = meta.active ?? 0;
+      document.getElementById('statDisabled').textContent = meta.disabled ?? 0;
+      document.getElementById('statUsed').textContent = ((meta.usedBytes || 0) / (1024 ** 3)).toFixed(2);
+      renderClients(clients, meta);
+    }
+
+    function openModal(title, bodyHtml, onSubmit) {
+      const root = document.getElementById('modalRoot');
+      root.className = 'modal-backdrop';
+      root.innerHTML = `
+        <div class="card modal">
+          <h2>${title}</h2>
+          ${bodyHtml}
+          <div class="row" style="margin-top:16px;justify-content:flex-end">
+            <button id="modalCancel" class="secondary">انصراف</button>
+            <button id="modalSubmit">تایید</button>
+          </div>
+        </div>`;
+      root.classList.remove('hidden');
+      document.getElementById('modalCancel').onclick = closeModal;
+      document.getElementById('modalSubmit').onclick = async () => {
+        try {
+          await onSubmit();
+          closeModal();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      };
+    }
+
+    function closeModal() {
+      const root = document.getElementById('modalRoot');
+      root.className = 'hidden';
+      root.innerHTML = '';
+    }
+
+    function clientConfUrl(name, suffix) {
+      return adminUrl('/clients/' + encodeURIComponent(name) + suffix);
+    }
+
+    function openConfModal(name, conf) {
+      const qrUrl = clientConfUrl(name, '/qrcode') + '?_=' + Date.now();
+      const downloadUrl = clientConfUrl(name, '/conf/download');
+      const qrFallback = '<div class="muted" style="padding:18px;text-align:center;line-height:2">'
+        + 'این کانفیگ برای QR Code بیش از حد بزرگ است (محدودیت ذاتی OpenVPN).<br>'
+        + 'از دکمه «دانلود فایل .ovpn» استفاده کنید و آن را در کلاینت OpenVPN ایمپورت کنید.'
+        + '</div>';
+      openModal('کانفیگ ' + name, `
+        <div class="conf-actions">
+          <button type="button" id="confDownloadBtn" class="secondary">دانلود فایل .ovpn</button>
+          <button type="button" id="confRefreshBtn" class="secondary">بروزرسانی کانفیگ</button>
+        </div>
+        <div class="qr-wrap" id="qrWrap">
+          <img src="${escapeAttr(qrUrl)}" alt="QR Code ${escapeAttr(name)}" onerror="document.getElementById('qrWrap').innerHTML=${escapeAttr(JSON.stringify(qrFallback))}">
+        </div>
+        <pre>${escapeHtml(conf || '')}</pre>`, closeModal);
+      document.getElementById('confDownloadBtn').onclick = () => {
+        window.location.href = downloadUrl;
+      };
+      document.getElementById('confRefreshBtn').onclick = async () => {
+        try {
+          await api(clientConfUrl(name, '/refresh-conf'), { method: 'POST', body: '{}' });
+          const data = await api(clientConfUrl(name, '/conf'));
+          closeModal();
+          openConfModal(name, data.conf || '');
+          toast('کانفیگ بروزرسانی شد');
+        } catch (e) {
+          toast(e.message, true);
+        }
+      };
+    }
+
+    async function handleAction(action, name) {
+      if (action === 'conf' || action === 'qrcode') {
+        try {
+          await api(clientConfUrl(name, '/refresh-conf'), { method: 'POST', body: '{}' });
+          const data = await api(clientConfUrl(name, '/conf'));
+          openConfModal(name, data.conf || '');
+        } catch (e) {
+          toast(e.message, true);
+        }
+        return;
+      }
+      if (action === 'download') {
+        try {
+          await api(clientConfUrl(name, '/refresh-conf'), { method: 'POST', body: '{}' });
+        } catch (e) {}
+        window.location.href = clientConfUrl(name, '/conf/download');
+        return;
+      }
+      if (action === 'disable') {
+        await api(adminUrl('/clients/' + encodeURIComponent(name) + '/disable'), { method: 'POST', body: '{}' });
+        toast('غیرفعال شد');
+        await loadClients();
+        return;
+      }
+      if (action === 'enable') {
+        await api(adminUrl('/clients/' + encodeURIComponent(name) + '/enable'), { method: 'POST', body: '{}' });
+        toast('فعال شد');
+        await loadClients();
+        return;
+      }
+      if (action === 'remove') {
+        openModal('حذف ' + name, `<p>آیا از حذف کامل <strong>${escapeHtml(name)}</strong> مطمئن هستید؟</p>`, async () => {
+          await api(adminUrl('/clients/' + encodeURIComponent(name)), { method: 'DELETE' });
+          toast('حذف شد');
+          await loadClients();
+        });
+        return;
+      }
+      if (action === 'update') {
+        const client = (window.__clients || {})[name];
+        const currentExpiry = client ? formatExpiry(client.expiresAt) : 'نامحدود';
+        openModal('ویرایش ' + name, `
+          <p class="muted" style="margin-bottom:12px">انقضای فعلی: <strong>${escapeHtml(currentExpiry)}</strong></p>
+          <div class="row">
+            <div style="flex:1">
+              <label>خرید/افزودن حجم (GB)</label>
+              <input id="updAddGb" type="number" min="0" step="0.1" placeholder="15 → به سقف فعلی اضافه می‌شود">
+            </div>
+            <div style="flex:1">
+              <label>تنظیم مطلق سقف (GB)</label>
+              <input id="updSetGb" type="number" min="0.1" step="0.1" placeholder="50 → جایگزین سقف فعلی">
+            </div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <div style="flex:1">
+              <label>تمدید (روز)</label>
+              <input id="updExtendDays" type="number" min="1" step="1" placeholder="30">
+            </div>
+            <div style="flex:1">
+              <label>تاریخ انقضا (دقیق)</label>
+              <input id="updExpiresAt" type="datetime-local" value="${escapeAttr(expiryToDatetimeLocal(client && client.expiresAt))}">
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+            <input id="updClearExpires" type="checkbox" style="width:auto">
+            <span>حذف انقضا (نامحدود)</span>
+          </label>`, async () => {
+          const addDataGB = document.getElementById('updAddGb').value;
+          const setDataLimitGB = document.getElementById('updSetGb').value;
+          const extendDays = document.getElementById('updExtendDays').value;
+          const expiresInput = document.getElementById('updExpiresAt').value;
+          const clearExpires = document.getElementById('updClearExpires').checked;
+          const payload = { addDataGB, setDataLimitGB, extendDays, clearExpires };
+          if (expiresInput && !clearExpires) {
+            payload.setExpiresAt = Math.floor(new Date(expiresInput).getTime() / 1000);
+          }
+          await api(adminUrl('/clients/' + encodeURIComponent(name)), {
+            method: 'PATCH',
+            body: JSON.stringify(payload)
+          });
+          toast('بروزرسانی انجام شد');
+          await loadClients();
+        });
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function escapeAttr(str) {
+      return escapeHtml(str).replace(/'/g, '&#39;');
+    }
+
+    checkSession();
+  </script>
+</body>
+</html>

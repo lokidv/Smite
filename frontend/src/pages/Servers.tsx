@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Copy, Trash2, CheckCircle, XCircle, AlertCircle } from 'lucide-react'
+import { Plus, Copy, Trash2, CheckCircle, XCircle, AlertCircle, Pencil, Loader2, Shield } from 'lucide-react'
 import api from '../api/client'
 import { useLanguage } from '../contexts/LanguageContext'
 import HealthPanel from '../components/HealthPanel'
@@ -14,6 +14,25 @@ interface Server {
   metadata: Record<string, any>
 }
 
+interface ProxyServerRow {
+  id: string
+  host: string
+  ssh_port: number
+  ssh_user: string
+  has_ssh_password: boolean
+  mode: string
+  wg_port: string
+  api_port: string
+  api_base_url: string
+  proxy_ip: string
+  proxy_port: string
+  proxy_type: string
+  proxy_user: string
+  proxy_endpoint: string
+  proxy_status: string
+  updated_at: string
+}
+
 const Servers = () => {
   const { t } = useLanguage()
   const [servers, setServers] = useState<Server[]>([])
@@ -23,15 +42,37 @@ const Servers = () => {
   const [certContent, setCertContent] = useState('')
   const [certLoading, setCertLoading] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [proxyServers, setProxyServers] = useState<ProxyServerRow[]>([])
+  const [editTarget, setEditTarget] = useState<ProxyServerRow | null>(null)
 
   useEffect(() => {
     fetchServers()
+    fetchProxyServers()
     const params = new URLSearchParams(window.location.search)
     if (params.get('add') === 'true') {
       setShowAddModal(true)
       window.history.replaceState({}, '', '/servers')
     }
   }, [])
+
+  const fetchProxyServers = async () => {
+    try {
+      const res = await api.get('/provisioning/proxy-servers')
+      setProxyServers(res.data)
+    } catch (error) {
+      console.error('Failed to fetch proxy servers:', error)
+    }
+  }
+
+  const forgetProxyServer = async (row: ProxyServerRow) => {
+    if (!confirm(t.servers.confirmForget)) return
+    try {
+      await api.delete(`/provisioning/proxy-servers/${row.id}`)
+      fetchProxyServers()
+    } catch (error) {
+      console.error('Failed to forget proxy server:', error)
+    }
+  }
 
   const fetchServers = async () => {
     try {
@@ -269,12 +310,96 @@ const Servers = () => {
         </table>
       </div>
 
+      {/* ---------- WARP / Proxy servers ---------- */}
+      <div className="mt-10">
+        <div className="mb-4">
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <Shield size={22} className="text-violet-500" />
+            {t.servers.proxyTitle}
+          </h2>
+          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">{t.servers.proxySubtitle}</p>
+        </div>
+
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm overflow-x-auto">
+          <table className="w-full min-w-[720px]">
+            <thead className="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-600">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Host</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">{t.servers.proxyColMode}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">{t.servers.proxyColEndpoint}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">{t.servers.proxyColStatus}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">{t.servers.proxyColApi}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+              {proxyServers.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
+                    {t.servers.proxyEmpty}
+                  </td>
+                </tr>
+              ) : (
+                proxyServers.map((row) => (
+                  <tr key={row.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900 dark:text-white" dir="ltr">{row.host}</td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${row.mode === 'warp' ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200' : 'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200'}`}>
+                        {row.mode === 'warp' ? 'WARP' : 'Proxy'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-600 dark:text-gray-300" dir="ltr">
+                      {row.mode === 'warp' ? 'Cloudflare WARP' : row.proxy_endpoint}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${row.proxy_status === 'active' ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200'}`}>
+                        {row.proxy_status === 'active' ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
+                        {row.proxy_status}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-500 dark:text-gray-400" dir="ltr">{row.api_base_url}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => setEditTarget(row)}
+                          className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300"
+                        >
+                          <Pencil size={15} /> {t.servers.proxyEdit}
+                        </button>
+                        <button
+                          onClick={() => forgetProxyServer(row)}
+                          className="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
+                          title={t.servers.proxyForget}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {showAddModal && (
         <AddServerModal
           onClose={() => setShowAddModal(false)}
           onSuccess={() => {
             setShowAddModal(false)
             fetchServers()
+          }}
+        />
+      )}
+
+      {editTarget && (
+        <EditProxyModal
+          server={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSuccess={() => {
+            setEditTarget(null)
+            fetchProxyServers()
           }}
         />
       )}
@@ -478,6 +603,156 @@ const CertModal = ({ certContent, loading, onClose, onCopy, copied }: CertModalP
             </div>
           </>
         )}
+      </div>
+    </div>
+  )
+}
+
+interface EditProxyModalProps {
+  server: ProxyServerRow
+  onClose: () => void
+  onSuccess: () => void
+}
+
+const EditProxyModal = ({ server, onClose, onSuccess }: EditProxyModalProps) => {
+  const { t } = useLanguage()
+  const [mode, setMode] = useState<'warp' | 'proxy'>(server.mode === 'warp' ? 'warp' : 'proxy')
+  const [proxyIp, setProxyIp] = useState(server.mode === 'proxy' ? server.proxy_ip || '' : '')
+  const [proxyPort, setProxyPort] = useState(server.mode === 'proxy' ? server.proxy_port || '' : '')
+  const [proxyType, setProxyType] = useState<'socks5' | 'http-connect'>((server.proxy_type as any) || 'socks5')
+  const [proxyUser, setProxyUser] = useState(server.mode === 'proxy' ? server.proxy_user || '' : '')
+  const [proxyPass, setProxyPass] = useState('')
+  const [sshPassword, setSshPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<any>(null)
+
+  const inputCls =
+    'w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+  const labelCls = 'block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
+
+  const submit = async () => {
+    setError('')
+    if (mode === 'proxy' && (!proxyIp.trim() || !proxyPort.trim())) {
+      setError(`${t.servers.fProxyIp} / ${t.servers.fProxyPort}`)
+      return
+    }
+    if (!server.has_ssh_password && !sshPassword.trim()) {
+      setError(t.servers.fSshPassword)
+      return
+    }
+    setSubmitting(true)
+    try {
+      const res = await api.post(
+        `/provisioning/proxy-servers/${server.id}/update-proxy`,
+        {
+          mode,
+          proxy_ip: mode === 'proxy' ? proxyIp.trim() : null,
+          proxy_port: mode === 'proxy' ? proxyPort.trim() : null,
+          proxy_type: proxyType,
+          proxy_user: mode === 'proxy' ? proxyUser || null : null,
+          proxy_pass: mode === 'proxy' && proxyPass ? proxyPass : null,
+          ssh_password: sshPassword || null,
+        },
+        { timeout: 200000 }
+      )
+      setResult(res.data.result)
+      setTimeout(onSuccess, 1200)
+    } catch (e: any) {
+      setError(e.response?.data?.detail || e.message || t.servers.updateFailed)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{t.servers.editProxyTitle}</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4 font-mono" dir="ltr">{server.host}</p>
+
+        <div className="space-y-4">
+          <div>
+            <label className={labelCls}>{t.servers.egressMode}</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setMode('warp')}
+                className={`px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${mode === 'warp' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400'}`}
+              >
+                {t.servers.modeWarp}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('proxy')}
+                className={`px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${mode === 'proxy' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400'}`}
+              >
+                {t.servers.modeProxy}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5" dir="auto">
+              {mode === 'warp' ? t.servers.modeWarpHint : t.servers.modeProxyHint}
+            </p>
+          </div>
+
+          {mode === 'proxy' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls}>{t.servers.fProxyIp}</label>
+                <input className={inputCls} value={proxyIp} onChange={(e) => setProxyIp(e.target.value)} placeholder="1.2.3.4" dir="ltr" />
+              </div>
+              <div>
+                <label className={labelCls}>{t.servers.fProxyPort}</label>
+                <input className={inputCls} value={proxyPort} onChange={(e) => setProxyPort(e.target.value)} dir="ltr" />
+              </div>
+              <div>
+                <label className={labelCls}>{t.servers.fProxyType}</label>
+                <select className={inputCls} value={proxyType} onChange={(e) => setProxyType(e.target.value as any)} dir="ltr">
+                  <option value="socks5">SOCKS5</option>
+                  <option value="http-connect">HTTP-CONNECT</option>
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>{t.servers.fProxyUser}</label>
+                <input className={inputCls} value={proxyUser} onChange={(e) => setProxyUser(e.target.value)} dir="ltr" />
+              </div>
+              <div className="sm:col-span-2">
+                <label className={labelCls}>{t.servers.fProxyPass}</label>
+                <input type="password" className={inputCls} value={proxyPass} onChange={(e) => setProxyPass(e.target.value)} dir="ltr" />
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className={labelCls}>{t.servers.fSshPassword}</label>
+            <input type="password" className={inputCls} value={sshPassword} onChange={(e) => setSshPassword(e.target.value)} dir="ltr" placeholder={server.has_ssh_password ? '••••••••' : ''} />
+            {server.has_ssh_password && <p className="text-xs text-gray-400 mt-1" dir="auto">{t.servers.sshPassStoredHint}</p>}
+          </div>
+
+          {error && (
+            <div className="px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-300" dir="auto">{error}</div>
+          )}
+          {result && (
+            <div className="px-3 py-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg text-sm text-green-700 dark:text-green-300" dir="auto">
+              {t.servers.updateSuccess} ({result.proxyEndpoint} — {result.proxyStatus})
+            </div>
+          )}
+
+          <div className="flex gap-3 justify-end pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600">
+              {t.servers.cancel}
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={submitting}
+              className="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all font-medium flex items-center gap-2 disabled:opacity-50"
+            >
+              {submitting ? <Loader2 size={18} className="animate-spin" /> : <Shield size={18} />}
+              {submitting ? t.servers.applying : t.servers.apply}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

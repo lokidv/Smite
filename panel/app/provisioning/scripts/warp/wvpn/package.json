@@ -1,0 +1,22 @@
+{
+  "name": "btronetvpn",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcrypt": "^5.0.1",
+    "fs": "^0.0.1-security",
+    "http": "0.0.1-security",
+    "logger": "0.0.1",
+    "os": "^0.1.2",
+    "shelljs": "^0.8.4",
+    "sleep-promise": "^9.1.0",
+    "sqlite3": "^5.1.6",
+    "tronweb": "^3.2.6"
+  }
+}

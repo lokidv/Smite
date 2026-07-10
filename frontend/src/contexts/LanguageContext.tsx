@@ -59,6 +59,34 @@ interface Translations {
     subtitle: string
     viewCACertificate: string
     downloadCA: string
+    proxyTitle: string
+    proxySubtitle: string
+    proxyEmpty: string
+    proxyEdit: string
+    proxyForget: string
+    proxyColMode: string
+    proxyColEndpoint: string
+    proxyColStatus: string
+    proxyColApi: string
+    editProxyTitle: string
+    egressMode: string
+    modeWarp: string
+    modeProxy: string
+    modeWarpHint: string
+    modeProxyHint: string
+    fProxyIp: string
+    fProxyPort: string
+    fProxyType: string
+    fProxyUser: string
+    fProxyPass: string
+    fSshPassword: string
+    sshPassStoredHint: string
+    apply: string
+    cancel: string
+    applying: string
+    updateSuccess: string
+    updateFailed: string
+    confirmForget: string
   }
   installNode: {
     title: string
@@ -86,6 +114,27 @@ interface Translations {
     installWireguard: string
     installWireguardDesc: string
     wireguardForeignOnly: string
+    installOpenvpn: string
+    installOpenvpnDesc: string
+    openvpnForeignOnly: string
+    installWarp: string
+    installWarpDesc: string
+    warpForeignOnly: string
+    ovpnVpnPort: string
+    ovpnProtocol: string
+    ovpnPanelPort: string
+    ovpnDefaultLimitGb: string
+    warpProxyIp: string
+    warpProxyPort: string
+    warpProxyType: string
+    warpProxyUser: string
+    warpProxyPass: string
+    warpProxyHint: string
+    warpModeLabel: string
+    warpModeWarp: string
+    warpModeProxy: string
+    warpModeWarpHint: string
+    warpModeProxyHint: string
     xuiPort: string
     xuiUsername: string
     xuiPassword: string
@@ -111,6 +160,16 @@ interface Translations {
     nodeResult: string
     xuiResult: string
     wireguardResult: string
+    openvpnResult: string
+    warpResult: string
+    adminPath: string
+    adminPassword: string
+    vpnProto: string
+    vpnPort: string
+    vpnEndpoint: string
+    proxyStatusLabel: string
+    proxyEndpointLabel: string
+    proxyTypeLabel: string
     copy: string
     copied: string
     fieldHost: string
@@ -134,6 +193,7 @@ interface Translations {
     checkNodesPage: string
     nodeRegistered: string
     nodeWaitingRegistration: string
+    nodeRegisterTimeout: string
     startFailed: string
     uploadFailed: string
     deleteFailed: string
@@ -479,6 +539,34 @@ const translations: Record<Language, Translations> = {
       subtitle: 'Manage your Foreign servers',
       viewCACertificate: 'View CA Certificate',
       downloadCA: 'Download CA',
+      proxyTitle: 'WARP / Proxy Servers',
+      proxySubtitle: 'Foreign servers where WARP/proxy was installed. Change the egress proxy here if a proxy dies.',
+      proxyEmpty: 'No WARP/proxy servers yet. Install one from Install Node (WARP option).',
+      proxyEdit: 'Edit proxy',
+      proxyForget: 'Forget',
+      proxyColMode: 'Mode',
+      proxyColEndpoint: 'Upstream',
+      proxyColStatus: 'Egress',
+      proxyColApi: 'Management API',
+      editProxyTitle: 'Change egress proxy',
+      egressMode: 'Egress Mode',
+      modeWarp: 'WARP (auto)',
+      modeProxy: 'Custom Proxy',
+      modeWarpHint: 'Use Cloudflare WARP as the egress (installed on the server automatically).',
+      modeProxyHint: 'Route egress through your own upstream proxy (SOCKS5 / HTTP).',
+      fProxyIp: 'Proxy IP',
+      fProxyPort: 'Proxy Port',
+      fProxyType: 'Proxy Type',
+      fProxyUser: 'Proxy Username',
+      fProxyPass: 'Proxy Password (leave blank to keep current)',
+      fSshPassword: 'SSH Password',
+      sshPassStoredHint: 'Stored — leave blank to use it. Fill only to change it.',
+      apply: 'Apply & Restart',
+      cancel: 'Cancel',
+      applying: 'Applying...',
+      updateSuccess: 'Proxy updated and egress restarted.',
+      updateFailed: 'Failed to update proxy',
+      confirmForget: 'Forget this server from the panel? (It will NOT be uninstalled remotely.)',
     },
     installNode: {
       title: 'Install Node',
@@ -506,6 +594,27 @@ const translations: Record<Language, Translations> = {
       installWireguard: 'Install WireGuard (wginstaller)',
       installWireguardDesc: 'Installs WireGuard + wvpn management API (port 4000) and returns all details',
       wireguardForeignOnly: 'WireGuard is only available for foreign servers',
+      installOpenvpn: 'Install OpenVPN (ovpn-installer)',
+      installOpenvpnDesc: 'Installs OpenVPN + admin panel & API (volume + expiry management) and returns all details',
+      openvpnForeignOnly: 'OpenVPN is only available for foreign servers',
+      installWarp: 'Install WARP (wginstaller-proxy)',
+      installWarpDesc: 'WireGuard whose client TCP traffic exits through an upstream proxy (residential/SOCKS/HTTP). Fill in the proxy details, or leave empty for plain WireGuard.',
+      warpForeignOnly: 'WARP is only available for foreign servers',
+      ovpnVpnPort: 'OpenVPN Port',
+      ovpnProtocol: 'Protocol',
+      ovpnPanelPort: 'Panel/API Port',
+      ovpnDefaultLimitGb: 'Default data limit (GB, empty = unlimited)',
+      warpProxyIp: 'Proxy IP',
+      warpProxyPort: 'Proxy Port',
+      warpProxyType: 'Proxy Type',
+      warpProxyUser: 'Proxy Username',
+      warpProxyPass: 'Proxy Password',
+      warpProxyHint: 'Upstream proxy (leave empty to install plain WireGuard without egress proxy)',
+      warpModeLabel: 'Egress Mode',
+      warpModeWarp: 'WARP (auto)',
+      warpModeProxy: 'Custom Proxy',
+      warpModeWarpHint: 'Installs Cloudflare WARP on the server automatically; WireGuard client traffic egresses through WARP. No proxy details needed.',
+      warpModeProxyHint: 'Routes WireGuard client traffic through your own upstream proxy (SOCKS5 / HTTP). Enter the proxy details below.',
       xuiPort: '3x-ui Port',
       xuiUsername: '3x-ui Username',
       xuiPassword: '3x-ui Password',
@@ -531,6 +640,16 @@ const translations: Record<Language, Translations> = {
       nodeResult: 'Loki Node',
       xuiResult: '3x-ui Panel',
       wireguardResult: 'WireGuard',
+      openvpnResult: 'OpenVPN',
+      warpResult: 'WARP (WireGuard + Proxy)',
+      adminPath: 'Admin Panel Path',
+      adminPassword: 'Admin Password',
+      vpnProto: 'Protocol',
+      vpnPort: 'OpenVPN Port',
+      vpnEndpoint: 'OpenVPN Endpoint',
+      proxyStatusLabel: 'Proxy Egress Status',
+      proxyEndpointLabel: 'Upstream Proxy',
+      proxyTypeLabel: 'Proxy Type',
       copy: 'Copy',
       copied: 'Copied!',
       fieldHost: 'Host',
@@ -554,6 +673,7 @@ const translations: Record<Language, Translations> = {
       checkNodesPage: 'The node registers itself with the panel shortly after install — check the Nodes/Servers page',
       nodeRegistered: 'Node registered in the panel',
       nodeWaitingRegistration: 'Waiting for the node to register in the panel...',
+      nodeRegisterTimeout: "Couldn't auto-confirm registration — open the Nodes/Servers page to check (the node may already be registered under its existing name).",
       startFailed: 'Failed to start installation',
       uploadFailed: 'Upload failed',
       deleteFailed: 'Delete failed',
@@ -906,6 +1026,34 @@ const translations: Record<Language, Translations> = {
       subtitle: 'مدیریت سرورهای خارج',
       viewCACertificate: 'مشاهده گواهی CA',
       downloadCA: 'دانلود CA',
+      proxyTitle: 'سرورهای WARP / پروکسی',
+      proxySubtitle: 'سرورهای خارجی که روی آن‌ها WARP/پروکسی نصب شده. اگر پروکسی خراب شد، از اینجا پروکسی خروجی را عوض کن.',
+      proxyEmpty: 'هنوز سرور WARP/پروکسی نداری. از «نصب نود» (گزینه WARP) یکی نصب کن.',
+      proxyEdit: 'ویرایش پروکسی',
+      proxyForget: 'حذف از لیست',
+      proxyColMode: 'حالت',
+      proxyColEndpoint: 'پروکسی بالادست',
+      proxyColStatus: 'خروجی',
+      proxyColApi: 'API مدیریت',
+      editProxyTitle: 'تغییر پروکسی خروجی',
+      egressMode: 'حالت خروجی',
+      modeWarp: 'WARP (خودکار)',
+      modeProxy: 'پروکسی دلخواه',
+      modeWarpHint: 'از کلودفلر وارپ به‌عنوان خروجی استفاده کن (خودکار روی سرور نصب می‌شود).',
+      modeProxyHint: 'خروجی را از پروکسی بالادست خودت (SOCKS5 / HTTP) عبور بده.',
+      fProxyIp: 'آی‌پی پروکسی',
+      fProxyPort: 'پورت پروکسی',
+      fProxyType: 'نوع پروکسی',
+      fProxyUser: 'نام کاربری پروکسی',
+      fProxyPass: 'رمز پروکسی (برای حفظ رمز فعلی خالی بگذار)',
+      fSshPassword: 'رمز SSH',
+      sshPassStoredHint: 'ذخیره شده — برای استفاده خالی بگذار. فقط برای تغییر پر کن.',
+      apply: 'اعمال و ری‌استارت',
+      cancel: 'انصراف',
+      applying: 'در حال اعمال...',
+      updateSuccess: 'پروکسی به‌روزرسانی و خروجی ری‌استارت شد.',
+      updateFailed: 'به‌روزرسانی پروکسی ناموفق بود',
+      confirmForget: 'این سرور از پنل حذف شود؟ (روی سرور چیزی حذف نمی‌شود.)',
     },
     installNode: {
       title: 'نصب نود',
@@ -933,6 +1081,27 @@ const translations: Record<Language, Translations> = {
       installWireguard: 'نصب وایرگارد (wginstaller)',
       installWireguardDesc: 'وایرگارد + API مدیریتی wvpn (پورت 4000) را نصب و همه اطلاعات را برمی‌گرداند',
       wireguardForeignOnly: 'وایرگارد فقط برای سرورهای خارج قابل نصب است',
+      installOpenvpn: 'نصب OpenVPN (ovpn-installer)',
+      installOpenvpnDesc: 'OpenVPN + پنل ادمین و API (مدیریت حجم و تاریخ انقضا) را نصب و همه اطلاعات را برمی‌گرداند',
+      openvpnForeignOnly: 'OpenVPN فقط برای سرورهای خارج قابل نصب است',
+      installWarp: 'نصب WARP (wginstaller-proxy)',
+      installWarpDesc: 'وایرگاردی که ترافیک TCP کاربران را از یک پروکسی بالادست (residential/SOCKS/HTTP) خارج می‌کند. اطلاعات پروکسی را وارد کنید یا برای وایرگارد ساده خالی بگذارید.',
+      warpForeignOnly: 'WARP فقط برای سرورهای خارج قابل نصب است',
+      ovpnVpnPort: 'پورت OpenVPN',
+      ovpnProtocol: 'پروتکل',
+      ovpnPanelPort: 'پورت پنل/API',
+      ovpnDefaultLimitGb: 'حجم پیش‌فرض (گیگابایت، خالی = نامحدود)',
+      warpProxyIp: 'آی‌پی پروکسی',
+      warpProxyPort: 'پورت پروکسی',
+      warpProxyType: 'نوع پروکسی',
+      warpProxyUser: 'نام کاربری پروکسی',
+      warpProxyPass: 'رمز پروکسی',
+      warpProxyHint: 'پروکسی بالادست (برای نصب وایرگارد ساده بدون پروکسی، خالی بگذارید)',
+      warpModeLabel: 'حالت خروجی',
+      warpModeWarp: 'WARP (خودکار)',
+      warpModeProxy: 'پروکسی دلخواه',
+      warpModeWarpHint: 'کلودفلر وارپ را خودکار روی سرور نصب می‌کند؛ ترافیک کلاینت‌های وایرگارد از وارپ خارج می‌شود. نیازی به مشخصات پروکسی نیست.',
+      warpModeProxyHint: 'ترافیک کلاینت‌های وایرگارد را از پروکسی بالادست خودت (SOCKS5 / HTTP) خارج می‌کند. مشخصات پروکسی را پایین وارد کن.',
       xuiPort: 'پورت 3x-ui',
       xuiUsername: 'نام کاربری 3x-ui',
       xuiPassword: 'رمز عبور 3x-ui',
@@ -958,6 +1127,16 @@ const translations: Record<Language, Translations> = {
       nodeResult: 'نود Loki',
       xuiResult: 'پنل 3x-ui',
       wireguardResult: 'وایرگارد',
+      openvpnResult: 'OpenVPN',
+      warpResult: 'WARP (وایرگارد + پروکسی)',
+      adminPath: 'مسیر پنل ادمین',
+      adminPassword: 'رمز ادمین',
+      vpnProto: 'پروتکل',
+      vpnPort: 'پورت OpenVPN',
+      vpnEndpoint: 'اندپوینت OpenVPN',
+      proxyStatusLabel: 'وضعیت خروجی پروکسی',
+      proxyEndpointLabel: 'پروکسی بالادست',
+      proxyTypeLabel: 'نوع پروکسی',
       copy: 'کپی',
       copied: 'کپی شد!',
       fieldHost: 'هاست',
@@ -981,6 +1160,7 @@ const translations: Record<Language, Translations> = {
       checkNodesPage: 'نود کمی بعد از نصب خودش را در پنل ثبت می‌کند — صفحه نودها/سرورها را بررسی کنید',
       nodeRegistered: 'نود در پنل ثبت شد',
       nodeWaitingRegistration: 'در انتظار ثبت نود در پنل...',
+      nodeRegisterTimeout: 'ثبت خودکار تأیید نشد — صفحه‌ی نودها/سرورها را بررسی کن (ممکن است نود با نام قبلی‌اش از قبل ثبت شده باشد).',
       startFailed: 'شروع نصب ناموفق بود',
       uploadFailed: 'آپلود ناموفق بود',
       deleteFailed: 'حذف ناموفق بود',

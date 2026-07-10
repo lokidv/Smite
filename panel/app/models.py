@@ -104,6 +104,38 @@ class RevokedNode(Base):
     revoked_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ProxyServer(Base):
+    """A foreign server where the panel installed WARP/proxy (wginstaller-proxy).
+
+    Persisted so the admin can later change the upstream proxy (e.g. when a proxy
+    dies) from the Servers page. SSH credentials are stored so the panel can
+    re-apply the change over SSH; the SSH password + proxy password are Fernet-
+    encrypted with a key derived from the panel secret_key (never stored plain).
+    """
+    __tablename__ = "proxy_servers"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    host = Column(String, nullable=False)
+    ssh_port = Column(Integer, default=22)
+    ssh_user = Column(String, default="root")
+    ssh_password_enc = Column(Text, nullable=True)  # Fernet token
+    mode = Column(String, default="warp")  # warp | proxy
+    wg_port = Column(String, nullable=True)
+    api_port = Column(String, nullable=True)
+    api_key = Column(String, nullable=True)
+    admin_path = Column(String, nullable=True)
+    server_public_key = Column(String, nullable=True)
+    # Upstream proxy (proxy mode); for warp mode this is 127.0.0.1:40000.
+    proxy_ip = Column(String, nullable=True)
+    proxy_port = Column(String, nullable=True)
+    proxy_type = Column(String, default="socks5")  # socks5 | http-connect
+    proxy_user = Column(String, nullable=True)
+    proxy_password_enc = Column(Text, nullable=True)  # Fernet token
+    proxy_status = Column(String, default="unknown")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class NodeProblem(Base):
     """A detected health problem for a node/tunnel, surfaced in the panel.
 

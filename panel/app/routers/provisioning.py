@@ -15,11 +15,17 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import get_db
+from app.models import ProxyServer
 from app.routers.auth import get_current_user
+from app.provisioning.vault import encrypt, decrypt
 from app.provisioning.service import (
     ProvisionParams,
+    apply_proxy_update,
     create_job,
     get_job,
     list_jobs,
@@ -148,10 +154,25 @@ class ProvisionRequest(BaseModel):
     install_node: bool = False
     install_xui: bool = False
     install_wireguard: bool = False
+    install_openvpn: bool = False
+    install_warp: bool = False
     xui_version: str = "v2.9.4"
     xui_port: Optional[int] = None
     xui_username: Optional[str] = None
     xui_password: Optional[str] = None
+    # OpenVPN options
+    ovpn_vpn_port: int = 1194
+    ovpn_protocol: str = "udp"
+    ovpn_panel_port: int = 4000
+    ovpn_default_limit_gb: Optional[float] = None
+    # WARP (wginstaller-proxy) upstream-proxy egress options
+    warp_mode: str = "warp"  # warp | proxy
+    warp_panel_port: int = 4000
+    warp_proxy_ip: Optional[str] = None
+    warp_proxy_port: Optional[str] = None
+    warp_proxy_type: str = "socks5"
+    warp_proxy_user: Optional[str] = None
+    warp_proxy_pass: Optional[str] = None
     bundle_artifact: Optional[str] = None
     xui_artifact: Optional[str] = None
     system_upgrade: bool = True
@@ -162,10 +183,30 @@ async def start_install(req: ProvisionRequest, _user=Depends(get_current_user)):
     """Validate the request and start a background provisioning job."""
     if req.role not in ("iran", "foreign"):
         raise HTTPException(status_code=400, detail="role must be 'iran' or 'foreign'")
-    if not (req.install_node or req.install_xui or req.install_wireguard):
+    if not (
+        req.install_node
+        or req.install_xui
+        or req.install_wireguard
+        or req.install_openvpn
+        or req.install_warp
+    ):
         raise HTTPException(status_code=400, detail="Select at least one component to install")
     if req.install_wireguard and req.role != "foreign":
         raise HTTPException(status_code=400, detail="WireGuard can only be installed on a foreign server")
+    if req.install_openvpn and req.role != "foreign":
+        raise HTTPException(status_code=400, detail="OpenVPN can only be installed on a foreign server")
+    if req.install_warp and req.role != "foreign":
+        raise HTTPException(status_code=400, detail="WARP can only be installed on a foreign server")
+    if req.install_openvpn and req.ovpn_protocol not in ("udp", "tcp"):
+        raise HTTPException(status_code=400, detail="OpenVPN protocol must be 'udp' or 'tcp'")
+    if req.install_warp and (req.warp_mode or "warp") not in ("warp", "proxy"):
+        raise HTTPException(status_code=400, detail="WARP mode must be 'warp' or 'proxy'")
+    if req.install_warp and (req.warp_proxy_type or "socks5") not in ("socks5", "http-connect"):
+        raise HTTPException(status_code=400, detail="WARP proxy type must be 'socks5' or 'http-connect'")
+    if req.install_warp and (req.warp_mode or "warp") == "proxy" and not (
+        (req.warp_proxy_ip or "").strip() and (req.warp_proxy_port or "").strip()
+    ):
+        raise HTTPException(status_code=400, detail="Proxy mode requires a proxy IP and port")
     if not req.host or not req.username or not req.password:
         raise HTTPException(status_code=400, detail="host, username and password are required")
 
@@ -224,6 +265,19 @@ async def start_install(req: ProvisionRequest, _user=Depends(get_current_user)):
         install_node=req.install_node,
         install_xui=req.install_xui,
         install_wireguard=req.install_wireguard,
+        install_openvpn=req.install_openvpn,
+        install_warp=req.install_warp,
+        ovpn_vpn_port=req.ovpn_vpn_port,
+        ovpn_protocol=req.ovpn_protocol,
+        ovpn_panel_port=req.ovpn_panel_port,
+        ovpn_default_limit_gb=req.ovpn_default_limit_gb,
+        warp_mode=(req.warp_mode or "warp"),
+        warp_panel_port=req.warp_panel_port,
+        warp_proxy_ip=(req.warp_proxy_ip or ""),
+        warp_proxy_port=(req.warp_proxy_port or ""),
+        warp_proxy_type=(req.warp_proxy_type or "socks5"),
+        warp_proxy_user=(req.warp_proxy_user or ""),
+        warp_proxy_pass=(req.warp_proxy_pass or ""),
         xui_version=req.xui_version,
         xui_port=req.xui_port,
         xui_username=req.xui_username,
@@ -271,3 +325,133 @@ async def get_install(job_id: str, _user=Depends(get_current_user)):
 async def get_installs(_user=Depends(get_current_user)):
     """List recent provisioning jobs."""
     return list_jobs()
+
+
+# -- WARP / proxy server management ------------------------------------------
+def _serialize_proxy_server(row: ProxyServer) -> dict:
+    """Public view of a persisted proxy/WARP server (no secrets)."""
+    return {
+        "id": row.id,
+        "host": row.host,
+        "ssh_port": row.ssh_port,
+        "ssh_user": row.ssh_user,
+        "has_ssh_password": bool(row.ssh_password_enc),
+        "mode": row.mode,
+        "wg_port": row.wg_port,
+        "api_port": row.api_port,
+        "api_base_url": f"http://{row.host}:{row.api_port}" if row.api_port else "",
+        "proxy_ip": row.proxy_ip,
+        "proxy_port": row.proxy_port,
+        "proxy_type": row.proxy_type,
+        "proxy_user": row.proxy_user,
+        "proxy_endpoint": f"{row.proxy_ip}:{row.proxy_port}" if row.proxy_ip else "",
+        "proxy_status": row.proxy_status,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+class ProxyUpdateRequest(BaseModel):
+    mode: str = "proxy"  # warp | proxy
+    proxy_ip: Optional[str] = None
+    proxy_port: Optional[str] = None
+    proxy_type: str = "socks5"
+    proxy_user: Optional[str] = None
+    proxy_pass: Optional[str] = None
+    # Only needed if the stored SSH password is missing or the admin wants to
+    # update it. When provided it replaces the stored (encrypted) password.
+    ssh_password: Optional[str] = None
+
+
+@router.get("/proxy-servers")
+async def list_proxy_servers(
+    db: AsyncSession = Depends(get_db), _user=Depends(get_current_user)
+):
+    """List foreign servers where WARP/proxy was installed (for later editing)."""
+    rows = (await db.execute(select(ProxyServer))).scalars().all()
+    rows = sorted(rows, key=lambda r: r.updated_at or r.created_at, reverse=True)
+    return [_serialize_proxy_server(r) for r in rows]
+
+
+@router.post("/proxy-servers/{server_id}/update-proxy")
+async def update_proxy_server(
+    server_id: str,
+    req: ProxyUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(get_current_user),
+):
+    """Change the egress proxy (or switch WARP<->proxy) on an installed server,
+    re-applying it over SSH so the new upstream takes effect and the old is dropped."""
+    row = await db.get(ProxyServer, server_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Proxy server not found")
+
+    mode = req.mode or "proxy"
+    if mode not in ("warp", "proxy"):
+        raise HTTPException(status_code=400, detail="mode must be 'warp' or 'proxy'")
+    if req.proxy_type and req.proxy_type not in ("socks5", "http-connect"):
+        raise HTTPException(status_code=400, detail="proxy_type must be 'socks5' or 'http-connect'")
+
+    # SSH password: use the freshly provided one, else the stored (encrypted) one.
+    ssh_pw = (req.ssh_password or "").strip() or decrypt(row.ssh_password_enc)
+    if not ssh_pw:
+        raise HTTPException(
+            status_code=400,
+            detail="SSH password required (none stored for this server); provide ssh_password.",
+        )
+
+    if mode == "warp":
+        proxy_ip, proxy_port, proxy_type = "127.0.0.1", "40000", "socks5"
+        proxy_user, proxy_pass = "", ""
+    else:
+        proxy_ip = (req.proxy_ip or "").strip()
+        proxy_port = (req.proxy_port or "").strip()
+        if not (proxy_ip and proxy_port):
+            raise HTTPException(status_code=400, detail="Proxy mode requires proxy_ip and proxy_port")
+        proxy_type = req.proxy_type or "socks5"
+        proxy_user = req.proxy_user or ""
+        # Keep the stored proxy password unless a new one was supplied.
+        proxy_pass = req.proxy_pass if req.proxy_pass is not None else decrypt(row.proxy_password_enc)
+
+    try:
+        result = await asyncio.to_thread(
+            apply_proxy_update,
+            row.host,
+            row.ssh_port,
+            row.ssh_user,
+            ssh_pw,
+            mode,
+            proxy_ip,
+            proxy_port,
+            proxy_type,
+            proxy_user,
+            proxy_pass,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to apply proxy update: {exc}")
+
+    # Persist the new state (encrypt any updated secrets).
+    row.mode = mode
+    row.proxy_ip = proxy_ip
+    row.proxy_port = proxy_port
+    row.proxy_type = proxy_type
+    row.proxy_user = proxy_user
+    row.proxy_password_enc = encrypt(proxy_pass)
+    row.proxy_status = result.get("proxyStatus", "unknown")
+    if (req.ssh_password or "").strip():
+        row.ssh_password_enc = encrypt(req.ssh_password.strip())
+    await db.commit()
+
+    return {"status": "ok", "result": result, "server": _serialize_proxy_server(row)}
+
+
+@router.delete("/proxy-servers/{server_id}")
+async def delete_proxy_server(
+    server_id: str, db: AsyncSession = Depends(get_db), _user=Depends(get_current_user)
+):
+    """Forget a proxy/WARP server record (does NOT uninstall anything remotely)."""
+    row = await db.get(ProxyServer, server_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Proxy server not found")
+    await db.delete(row)
+    await db.commit()
+    return {"status": "deleted"}

@@ -20,6 +20,7 @@ interface JobSnapshot {
   error?: string | null
   logs: LogEntry[]
   results: Record<string, any>
+  request?: Record<string, any>
 }
 
 const formatSize = (bytes: number) => {
@@ -49,10 +50,25 @@ const InstallNode = () => {
   const [installNode, setInstallNode] = useState(true)
   const [installXui, setInstallXui] = useState(false)
   const [installWireguard, setInstallWireguard] = useState(false)
+  const [installOpenvpn, setInstallOpenvpn] = useState(false)
+  const [installWarp, setInstallWarp] = useState(false)
   const [systemUpgrade, setSystemUpgrade] = useState(true)
   const [xuiPort, setXuiPort] = useState('')
   const [xuiUsername, setXuiUsername] = useState('')
   const [xuiPassword, setXuiPassword] = useState('')
+  // OpenVPN options
+  const [ovpnVpnPort, setOvpnVpnPort] = useState('1194')
+  const [ovpnProtocol, setOvpnProtocol] = useState<'udp' | 'tcp'>('udp')
+  const [ovpnPanelPort, setOvpnPanelPort] = useState('4000')
+  const [ovpnLimitGb, setOvpnLimitGb] = useState('')
+  // WARP (wginstaller-proxy) upstream-proxy options
+  const [warpMode, setWarpMode] = useState<'warp' | 'proxy'>('warp')
+  const [warpPanelPort, setWarpPanelPort] = useState('4000')
+  const [warpProxyIp, setWarpProxyIp] = useState('')
+  const [warpProxyPort, setWarpProxyPort] = useState('')
+  const [warpProxyType, setWarpProxyType] = useState<'socks5' | 'http-connect'>('socks5')
+  const [warpProxyUser, setWarpProxyUser] = useState('')
+  const [warpProxyPass, setWarpProxyPass] = useState('')
 
   // --- artifacts ---
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
@@ -69,6 +85,7 @@ const InstallNode = () => {
   const [formError, setFormError] = useState('')
   const [copiedKey, setCopiedKey] = useState('')
   const [nodeRegistered, setNodeRegistered] = useState(false)
+  const [nodeRegisterTimedOut, setNodeRegisterTimedOut] = useState(false)
   const jobIdRef = useRef<string | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -96,21 +113,34 @@ const InstallNode = () => {
     return () => clearInterval(interval)
   }, [job?.id, job?.status])
 
-  // After a successful node install, confirm the node registered itself in the panel
+  // After a successful node install, confirm the node registered itself in the panel.
+  // Match by the target HOST/IP, not just the requested name: an existing node
+  // keeps its original name (install preserves identity), so the registered name
+  // can differ from what was requested — matching only by name would hang forever.
   const nodeInstallStatus = job?.results?.node?.status
   const installedNodeName = job?.results?.node?.node_name
+  const installedHost = job?.request?.host || host
   useEffect(() => {
-    if (nodeInstallStatus !== 'success' || !installedNodeName || nodeRegistered) return
+    if (nodeInstallStatus !== 'success' || nodeRegistered) return
+    const targetHost = (installedHost || '').trim()
     let attempts = 0
     const interval = setInterval(async () => {
       attempts += 1
       if (attempts > 40) {
         clearInterval(interval)
+        setNodeRegisterTimedOut(true)
         return
       }
       try {
         const res = await api.get('/nodes')
-        const found = (res.data as any[]).some((n) => n.name === installedNodeName)
+        const found = (res.data as any[]).some((n) => {
+          const meta = n.metadata || {}
+          return (
+            (installedNodeName && n.name === installedNodeName) ||
+            (targetHost && meta.ip_address === targetHost) ||
+            (targetHost && typeof meta.api_address === 'string' && meta.api_address.includes(targetHost))
+          )
+        })
         if (found) {
           setNodeRegistered(true)
           clearInterval(interval)
@@ -120,7 +150,7 @@ const InstallNode = () => {
       }
     }, 3000)
     return () => clearInterval(interval)
-  }, [nodeInstallStatus, installedNodeName, nodeRegistered])
+  }, [nodeInstallStatus, installedNodeName, installedHost, nodeRegistered])
 
   const fetchArtifacts = async () => {
     try {
@@ -178,13 +208,14 @@ const InstallNode = () => {
       setFormError(`${tr.sshHost} / ${tr.sshUsername} / ${tr.sshPassword}`)
       return
     }
-    if (!installNode && !installXui && !installWireguard) {
+    if (!installNode && !installXui && !installWireguard && !installOpenvpn && !installWarp) {
       setFormError(tr.selectComponent)
       return
     }
     setSubmitting(true)
     setJob(null)
     setNodeRegistered(false)
+    setNodeRegisterTimedOut(false)
     try {
       const res = await api.post('/provisioning/install', {
         host: host.trim(),
@@ -198,6 +229,19 @@ const InstallNode = () => {
         install_node: installNode,
         install_xui: installXui,
         install_wireguard: role === 'foreign' ? installWireguard : false,
+        install_openvpn: role === 'foreign' ? installOpenvpn : false,
+        install_warp: role === 'foreign' ? installWarp : false,
+        ovpn_vpn_port: parseInt(ovpnVpnPort) || 1194,
+        ovpn_protocol: ovpnProtocol,
+        ovpn_panel_port: parseInt(ovpnPanelPort) || 4000,
+        ovpn_default_limit_gb: ovpnLimitGb ? parseFloat(ovpnLimitGb) : null,
+        warp_mode: warpMode,
+        warp_panel_port: parseInt(warpPanelPort) || 4000,
+        warp_proxy_ip: warpProxyIp.trim() || null,
+        warp_proxy_port: warpProxyPort.trim() || null,
+        warp_proxy_type: warpProxyType,
+        warp_proxy_user: warpProxyUser || null,
+        warp_proxy_pass: warpProxyPass || null,
         system_upgrade: systemUpgrade,
         xui_version: 'v2.9.4',
         xui_port: xuiPort ? parseInt(xuiPort) : null,
@@ -272,6 +316,8 @@ const InstallNode = () => {
   const nodeRes = job?.results?.node
   const xuiRes = job?.results?.xui
   const wgRes = job?.results?.wireguard
+  const ovpnRes = job?.results?.openvpn
+  const warpRes = job?.results?.warp
   const jobActive = job && (job.status === 'pending' || job.status === 'running')
 
   return (
@@ -424,6 +470,132 @@ const InstallNode = () => {
                     <div className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
                       <AlertTriangle size={12} />
                       {tr.wireguardForeignOnly}
+                    </div>
+                  )}
+                </div>
+              </label>
+
+              {/* OpenVPN */}
+              <label className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${role !== 'foreign' ? 'opacity-50 cursor-not-allowed border-gray-200 dark:border-gray-700' : installOpenvpn ? 'cursor-pointer border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/10' : 'cursor-pointer border-gray-200 dark:border-gray-700'}`}>
+                <input
+                  type="checkbox"
+                  checked={role === 'foreign' && installOpenvpn}
+                  disabled={role !== 'foreign'}
+                  onChange={(e) => setInstallOpenvpn(e.target.checked)}
+                  className="mt-1 w-4 h-4 text-blue-600 rounded"
+                />
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-gray-900 dark:text-white">{tr.installOpenvpn}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{tr.installOpenvpnDesc}</div>
+                  {role !== 'foreign' && (
+                    <div className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
+                      <AlertTriangle size={12} />
+                      {tr.openvpnForeignOnly}
+                    </div>
+                  )}
+                  {role === 'foreign' && installOpenvpn && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                      <div>
+                        <label className={labelCls}>{tr.ovpnVpnPort}</label>
+                        <input className={inputCls} value={ovpnVpnPort} onChange={(e) => setOvpnVpnPort(e.target.value)} dir="ltr" />
+                      </div>
+                      <div>
+                        <label className={labelCls}>{tr.ovpnProtocol}</label>
+                        <select className={inputCls} value={ovpnProtocol} onChange={(e) => setOvpnProtocol(e.target.value as 'udp' | 'tcp')} dir="ltr">
+                          <option value="udp">UDP</option>
+                          <option value="tcp">TCP</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className={labelCls}>{tr.ovpnPanelPort}</label>
+                        <input className={inputCls} value={ovpnPanelPort} onChange={(e) => setOvpnPanelPort(e.target.value)} dir="ltr" />
+                      </div>
+                      <div>
+                        <label className={labelCls}>{tr.ovpnDefaultLimitGb}</label>
+                        <input className={inputCls} value={ovpnLimitGb} onChange={(e) => setOvpnLimitGb(e.target.value)} placeholder={tr.randomIfEmpty} dir="ltr" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </label>
+
+              {/* WARP (wginstaller-proxy) */}
+              <label className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${role !== 'foreign' ? 'opacity-50 cursor-not-allowed border-gray-200 dark:border-gray-700' : installWarp ? 'cursor-pointer border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/10' : 'cursor-pointer border-gray-200 dark:border-gray-700'}`}>
+                <input
+                  type="checkbox"
+                  checked={role === 'foreign' && installWarp}
+                  disabled={role !== 'foreign'}
+                  onChange={(e) => setInstallWarp(e.target.checked)}
+                  className="mt-1 w-4 h-4 text-blue-600 rounded"
+                />
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-gray-900 dark:text-white">{tr.installWarp}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{tr.installWarpDesc}</div>
+                  {role !== 'foreign' && (
+                    <div className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
+                      <AlertTriangle size={12} />
+                      {tr.warpForeignOnly}
+                    </div>
+                  )}
+                  {role === 'foreign' && installWarp && (
+                    <div className="mt-3 space-y-3">
+                      {/* mode toggle: WARP (auto) vs custom Proxy */}
+                      <div>
+                        <label className={labelCls}>{tr.warpModeLabel}</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setWarpMode('warp')}
+                            className={`px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${warpMode === 'warp' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400'}`}
+                          >
+                            {tr.warpModeWarp}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setWarpMode('proxy')}
+                            className={`px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${warpMode === 'proxy' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400'}`}
+                          >
+                            {tr.warpModeProxy}
+                          </button>
+                        </div>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5" dir="auto">
+                          {warpMode === 'warp' ? tr.warpModeWarpHint : tr.warpModeProxyHint}
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className={warpMode === 'warp' ? 'sm:col-span-2' : ''}>
+                          <label className={labelCls}>{tr.ovpnPanelPort}</label>
+                          <input className={inputCls} value={warpPanelPort} onChange={(e) => setWarpPanelPort(e.target.value)} dir="ltr" />
+                        </div>
+                        {warpMode === 'proxy' && (
+                          <>
+                            <div>
+                              <label className={labelCls}>{tr.warpProxyIp}</label>
+                              <input className={inputCls} value={warpProxyIp} onChange={(e) => setWarpProxyIp(e.target.value)} placeholder="1.2.3.4" dir="ltr" />
+                            </div>
+                            <div>
+                              <label className={labelCls}>{tr.warpProxyPort}</label>
+                              <input className={inputCls} value={warpProxyPort} onChange={(e) => setWarpProxyPort(e.target.value)} dir="ltr" />
+                            </div>
+                            <div>
+                              <label className={labelCls}>{tr.warpProxyType}</label>
+                              <select className={inputCls} value={warpProxyType} onChange={(e) => setWarpProxyType(e.target.value as 'socks5' | 'http-connect')} dir="ltr">
+                                <option value="socks5">SOCKS5</option>
+                                <option value="http-connect">HTTP-CONNECT</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className={labelCls}>{tr.warpProxyUser}</label>
+                              <input className={inputCls} value={warpProxyUser} onChange={(e) => setWarpProxyUser(e.target.value)} placeholder={tr.randomIfEmpty} dir="ltr" />
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label className={labelCls}>{tr.warpProxyPass}</label>
+                              <input className={inputCls} value={warpProxyPass} onChange={(e) => setWarpProxyPass(e.target.value)} placeholder={tr.randomIfEmpty} dir="ltr" />
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -592,7 +764,7 @@ const InstallNode = () => {
           </div>
 
           {/* Results */}
-          {(nodeRes || xuiRes || wgRes) && (
+          {(nodeRes || xuiRes || wgRes || ovpnRes || warpRes) && (
             <div className={sectionCls}>
               <h2 className={sectionTitleCls}>
                 <Shield size={20} className="text-violet-500" />
@@ -616,6 +788,11 @@ const InstallNode = () => {
                           <div className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
                             <Check size={14} />
                             {tr.nodeRegistered}
+                          </div>
+                        ) : nodeRegisterTimedOut ? (
+                          <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                            <AlertTriangle size={14} />
+                            {tr.nodeRegisterTimeout}
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
@@ -667,6 +844,64 @@ const InstallNode = () => {
                     )}
                     <ResultRow label={tr.clientConfig} value={wgRes.defaultClientConfig} multiline />
                     {wgRes.note && <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">{wgRes.note}</p>}
+                  </div>
+                )}
+
+                {ovpnRes && (
+                  <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{tr.openvpnResult}</h3>
+                      {statusBadge(ovpnRes.status)}
+                    </div>
+                    {ovpnRes.error && <div className="text-xs text-red-500 mb-2" dir="auto">{ovpnRes.error}</div>}
+                    <ResultRow label={tr.vpnEndpoint} value={ovpnRes.vpnEndpoint} />
+                    <ResultRow label={tr.vpnProto} value={ovpnRes.vpnProto} />
+                    <ResultRow label={tr.vpnPort} value={ovpnRes.vpnPort} />
+                    <ResultRow label={tr.panelUrl} value={ovpnRes.panelUrl} />
+                    <ResultRow label={tr.adminPassword} value={ovpnRes.adminPassword} />
+                    <ResultRow label={tr.apiBaseUrl} value={ovpnRes.apiBaseUrl} />
+                    <ResultRow label={tr.apiEndpoints} value={ovpnRes.apiEndpoints} />
+                    <ResultRow label={tr.apiKey} value={ovpnRes.apiKey} />
+                    {ovpnRes.apiKeyNote && (
+                      <div className="mt-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-300 flex items-start gap-1.5">
+                        <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                        <span>{ovpnRes.apiKeyNote}</span>
+                      </div>
+                    )}
+                    {ovpnRes.note && <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">{ovpnRes.note}</p>}
+                  </div>
+                )}
+
+                {warpRes && (
+                  <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{tr.warpResult}</h3>
+                      {statusBadge(warpRes.status)}
+                    </div>
+                    {warpRes.error && <div className="text-xs text-red-500 mb-2" dir="auto">{warpRes.error}</div>}
+                    <ResultRow label={tr.warpModeLabel} value={warpRes.mode} mono={false} />
+                    <ResultRow label={tr.wgPort} value={warpRes.wgPort} />
+                    <ResultRow label={tr.serverEndpoint} value={warpRes.serverEndpoint} />
+                    <ResultRow label={tr.serverPublicKey} value={warpRes.serverPublicKey} />
+                    <ResultRow label={tr.apiBaseUrl} value={warpRes.apiBaseUrl} />
+                    <ResultRow label={tr.apiEndpoints} value={warpRes.apiEndpoints} />
+                    <ResultRow label={tr.apiKey} value={warpRes.apiKey} />
+                    {warpRes.apiKeyNote && (
+                      <div className="mt-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-300 flex items-start gap-1.5">
+                        <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                        <span>{warpRes.apiKeyNote}</span>
+                      </div>
+                    )}
+                    <ResultRow label={tr.proxyStatusLabel} value={warpRes.proxyStatus} mono={false} />
+                    <ResultRow label={tr.proxyEndpointLabel} value={warpRes.proxyEndpoint} />
+                    <ResultRow label={tr.proxyTypeLabel} value={warpRes.proxyType} />
+                    {warpRes.proxyNote && (
+                      <div className={`mt-2 px-3 py-2 rounded-lg text-xs flex items-start gap-1.5 ${warpRes.proxyEnabled && warpRes.proxyStatus === 'active' ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-300' : 'bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300'}`}>
+                        <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                        <span>{warpRes.proxyNote}</span>
+                      </div>
+                    )}
+                    {warpRes.note && <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">{warpRes.note}</p>}
                   </div>
                 )}
               </div>

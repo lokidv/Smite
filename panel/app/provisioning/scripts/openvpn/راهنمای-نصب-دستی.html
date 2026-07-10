@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>راهنمای نصب دستی OpenVPN</title>
+<style>
+  :root{
+    --accent:#059669; --accent2:#10b981; --accent-soft:#ecfdf5; --accent-border:#a7f3d0;
+    --bg:#f6f8fb; --card:#ffffff; --text:#0f172a; --muted:#64748b;
+    --border:#e2e8f0; --code-bg:#0f172a; --code-text:#e2e8f0;
+    --note:#eff6ff; --note-b:#bfdbfe; --note-t:#1e40af;
+    --warn:#fff7ed; --warn-b:#fed7aa; --warn-t:#9a3412;
+    --tip:#ecfdf5; --tip-b:#a7f3d0; --tip-t:#065f46;
+    --radius:14px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0b1220; --card:#111a2e; --text:#e6edf6; --muted:#94a3b8; --border:#1e293b;
+      --accent-soft:#052e21; --accent-border:#0f5132;
+      --note:#0c1c33; --note-b:#1e3a5f; --note-t:#93c5fd;
+      --warn:#2a1a0a; --warn-b:#7c3f12; --warn-t:#fdba74;
+      --tip:#052e21; --tip-b:#0f5132; --tip-t:#6ee7b7; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:"Vazirmatn","Segoe UI",Tahoma,system-ui,-apple-system,"Noto Sans Arabic",sans-serif;
+    line-height:2;font-size:16px}
+  .wrap{max-width:980px;margin:0 auto;padding:0 18px 80px}
+  header.hero{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;
+    padding:44px 26px;border-radius:0 0 26px 26px;box-shadow:0 12px 30px rgba(5,150,105,.25);margin-bottom:26px}
+  header.hero .badge{display:inline-block;background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.35);
+    padding:4px 14px;border-radius:999px;font-size:13px;margin-bottom:12px}
+  header.hero h1{margin:0 0 8px;font-size:30px}
+  header.hero p{margin:0;opacity:.95;font-size:16px}
+  .toc{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;margin-bottom:26px}
+  .toc h2{margin:0 0 10px;font-size:16px;color:var(--muted)}
+  .toc ol{margin:0;padding-inline-start:22px;columns:2;column-gap:26px}
+  .toc a{color:var(--accent);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  section{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+    padding:22px 26px;margin-bottom:22px;scroll-margin-top:16px}
+  section h2{margin:0 0 14px;font-size:22px;display:flex;align-items:center;gap:10px;
+    border-bottom:2px solid var(--accent-border);padding-bottom:10px}
+  section h3{margin:22px 0 8px;font-size:17px;color:var(--accent)}
+  p,li{font-size:15.5px}
+  code.inline{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-border);
+    padding:1px 7px;border-radius:6px;font-family:"Cascadia Code",Consolas,monospace;font-size:13.5px;direction:ltr;display:inline-block}
+  pre{position:relative;background:var(--code-bg);color:var(--code-text);padding:16px 16px;border-radius:12px;
+    overflow-x:auto;direction:ltr;text-align:left;margin:12px 0;font-size:13.5px;line-height:1.85}
+  pre code{font-family:"Cascadia Code",Consolas,"Courier New",monospace;white-space:pre}
+  .copy-btn{position:absolute;top:8px;left:8px;background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.25);
+    border-radius:8px;padding:3px 12px;font-size:12px;cursor:pointer;font-family:inherit}
+  .copy-btn:hover{background:rgba(255,255,255,.22)}
+  .callout{border-radius:12px;padding:12px 16px;margin:14px 0;border:1px solid;font-size:14.5px}
+  .callout .lbl{font-weight:700;margin-inline-end:6px}
+  .note{background:var(--note);border-color:var(--note-b);color:var(--note-t)}
+  .warn{background:var(--warn);border-color:var(--warn-b);color:var(--warn-t)}
+  .tip{background:var(--tip);border-color:var(--tip-b);color:var(--tip-t)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;overflow:hidden;border-radius:10px}
+  th,td{border:1px solid var(--border);padding:9px 12px;text-align:right}
+  th{background:var(--accent-soft);color:var(--accent);font-weight:700}
+  td code{direction:ltr;font-family:"Cascadia Code",Consolas,monospace;font-size:13px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .kv{background:var(--accent-soft);border:1px solid var(--accent-border);border-radius:10px;padding:10px 14px}
+  .kv b{color:var(--accent)}
+  footer{text-align:center;color:var(--muted);font-size:13px;margin-top:30px}
+  @media (max-width:720px){.toc ol{columns:1}.grid{grid-template-columns:1fr}header.hero h1{font-size:24px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <span class="badge">راهنمای نصب و استفاده — نسخهٔ دستی</span>
+    <h1>🔐 نصب دستی OpenVPN + پنل مدیریت</h1>
+    <p>نصب کامل OpenVPN به‌همراه پنل ادمین و API برای مدیریت کاربران، حجم و تاریخ انقضا — بدون نیاز به پنل Loki.</p>
+  </header>
+
+  <nav class="toc">
+    <h2>فهرست</h2>
+    <ol>
+      <li><a href="#intro">این پروژه چیست؟</a></li>
+      <li><a href="#prereq">پیش‌نیازها</a></li>
+      <li><a href="#install">نصب با یک دستور</a></li>
+      <li><a href="#env">تنظیمات نصب (متغیرها)</a></li>
+      <li><a href="#after">اطلاعات دسترسی بعد از نصب</a></li>
+      <li><a href="#panel">ورود به پنل ادمین</a></li>
+      <li><a href="#api">مدیریت با API</a></li>
+      <li><a href="#cli">مدیریت با خط فرمان</a></li>
+      <li><a href="#resetpw">فراموشی/ریست رمز ادمین</a></li>
+      <li><a href="#trouble">عیب‌یابی و نکات</a></li>
+    </ol>
+  </nav>
+
+  <section id="intro">
+    <h2>📌 این پروژه چیست؟</h2>
+    <p>این نصب‌کننده، معادلِ OpenVPN نسخهٔ WireGuard است: نصب خودکار <b>OpenVPN</b> + همهٔ پیش‌نیازها + یک
+      <b>پنل ادمین و API</b> برای مدیریت کاربران با <b>حجم (Data Limit)</b>، <b>تاریخ انقضای خودکار</b>،
+      فعال/غیرفعال‌سازی و دانلود فایل <code class="inline">.ovpn</code>.</p>
+    <div class="grid">
+      <div class="kv"><b>هستهٔ VPN:</b> OpenVPN (پایهٔ angristan)</div>
+      <div class="kv"><b>پنل و API:</b> Node.js روی پورت <code class="inline">4000</code></div>
+      <div class="kv"><b>پورت OpenVPN:</b> پیش‌فرض <code class="inline">1194/UDP</code></div>
+      <div class="kv"><b>مسیر فایل‌ها:</b> <code class="inline">/home/ovpn</code></div>
+    </div>
+  </section>
+
+  <section id="prereq">
+    <h2>🧩 پیش‌نیازها</h2>
+    <ul>
+      <li>یک سرور <b>Ubuntu یا Debian</b> تازه (حتی بدون Node.js و OpenVPN).</li>
+      <li>دسترسی <b>root</b> (یا <code class="inline">sudo</code>).</li>
+      <li>دسترسی به اینترنت (برای دریافت apt / openvpn / Node.js).</li>
+    </ul>
+    <div class="callout note"><span class="lbl">توجه:</span> همهٔ پیش‌نیازها (<code class="inline">openvpn، easy-rsa، qrencode، jq، socat، iptables، Node.js 20</code>) خودکار نصب می‌شوند؛ نیازی به نصب دستیِ آن‌ها نیست.</div>
+  </section>
+
+  <section id="install">
+    <h2>🚀 نصب با یک دستور</h2>
+    <p>پوشهٔ پروژه (<code class="inline">ovpn-installer</code>) را روی سرور کپی کنید و با root اجرا کنید:</p>
+    <pre><code>cd ovpn-installer
+sudo ./install.sh</code></pre>
+    <p>نصب <b>کاملاً خودکار و بدون پرسش</b> است. برای حالت تعاملی (پرسیدن سؤالات):</p>
+    <pre><code>sudo OVPN_NONINTERACTIVE=0 ./install.sh</code></pre>
+    <div class="callout tip"><span class="lbl">نمونهٔ سفارشی:</span> پورت 443 روی TCP، حجم پیش‌فرض ۳۰ گیگ، و یک کاربر تستی:
+      <pre><code>sudo OVPN_VPN_PORT=443 OVPN_PROTOCOL=tcp \
+     OVPN_DEFAULT_LIMIT_GB=30 OVPN_TEST_CLIENT=alice ./install.sh</code></pre>
+    </div>
+  </section>
+
+  <section id="env">
+    <h2>⚙️ تنظیمات نصب (متغیرهای محیطی)</h2>
+    <p>هر کدام را می‌توانید قبل از <code class="inline">./install.sh</code> ست کنید (اختیاری):</p>
+    <table>
+      <tr><th>متغیر</th><th>پیش‌فرض</th><th>توضیح</th></tr>
+      <tr><td><code>OVPN_PORT</code></td><td><code>4000</code></td><td>پورت پنل و API</td></tr>
+      <tr><td><code>OVPN_VPN_PORT</code></td><td><code>1194</code></td><td>پورت OpenVPN</td></tr>
+      <tr><td><code>OVPN_PROTOCOL</code></td><td><code>udp</code></td><td><code>udp</code> یا <code>tcp</code></td></tr>
+      <tr><td><code>OVPN_DNS1 / OVPN_DNS2</code></td><td><code>1.1.1.1 / 1.0.0.1</code></td><td>DNS کلاینت‌ها</td></tr>
+      <tr><td><code>OVPN_ENDPOINT</code></td><td>IP سرور</td><td>آدرس Remote کلاینت (برای NAT)</td></tr>
+      <tr><td><code>OVPN_DEFAULT_LIMIT_GB</code></td><td>نامحدود</td><td>حجم پیش‌فرض کاربران جدید (گیگ)</td></tr>
+      <tr><td><code>OVPN_TEST_CLIENT</code></td><td>—</td><td>ساخت یک کاربر تستی بعد از نصب</td></tr>
+      <tr><td><code>OVPN_NONINTERACTIVE</code></td><td><code>1</code></td><td><code>0</code> برای حالت تعاملی</td></tr>
+    </table>
+  </section>
+
+  <section id="after">
+    <h2>🔑 اطلاعات دسترسی بعد از نصب</h2>
+    <p>در پایانِ نصب، آدرس پنل، رمز ادمین و API Key چاپ و در فایل زیر ذخیره می‌شود:</p>
+    <pre><code>cat /root/ovpn-install-info.txt</code></pre>
+    <p>محتوای نمونه:</p>
+    <pre><code>Server IP    : 1.2.3.4
+OpenVPN      : udp 1.2.3.4:1194
+Panel URL    : http://1.2.3.4:4000/p-XXXXXXXX/
+Admin Pass   : &lt;رمز ادمین&gt;
+API Key      : &lt;کلید API&gt;</code></pre>
+    <div class="callout warn"><span class="lbl">مهم:</span> رمز ادمین فقط <b>یک‌بار در نصبِ اول</b> نمایش داده می‌شود (بعد از آن فقط hash ذخیره می‌شود). اگر روی سروری که از قبل نصب بوده دوباره نصب کنید، این خانه خالی می‌ماند — در این حالت از بخش <a href="#resetpw">ریست رمز</a> استفاده کنید.</div>
+  </section>
+
+  <section id="panel">
+    <h2>🖥️ ورود به پنل ادمین</h2>
+    <p>آدرس پنل به شکل زیر است (مسیرِ تصادفیِ امن دارد):</p>
+    <pre><code>http://SERVER_IP:4000/&lt;ADMIN_PATH&gt;/</code></pre>
+    <ul>
+      <li>با <b>رمز ادمین</b> (از فایل info) وارد شوید.</li>
+      <li>در پنل می‌توانید کاربر بسازید، حجم و انقضا تعیین کنید، فعال/غیرفعال کنید و فایل <code class="inline">.ovpn</code> را دانلود کنید.</li>
+    </ul>
+    <div class="callout note"><span class="lbl">فایروال:</span> مطمئن شوید پورت پنل (<code class="inline">4000/TCP</code>) و پورت OpenVPN (<code class="inline">1194/UDP</code> یا پورت انتخابیِ شما) در فایروال باز باشد.</div>
+  </section>
+
+  <section id="api">
+    <h2>🔌 مدیریت با API</h2>
+    <p>همهٔ روت‌ها با هدر <code class="inline">X-API-Key</code> یا پارامتر <code class="inline">?apiKey=</code> کار می‌کنند. مقدار
+      <code class="inline">KEY</code> را از فایل info بردارید.</p>
+    <table>
+      <tr><th>عملیات</th><th>روت</th></tr>
+      <tr><td>ساخت کاربر (خروجی=فایل ovpn.)</td><td><code>/create?apiKey=KEY&amp;name=alice&amp;dataLimitGB=30&amp;expiresInDays=60</code></td></tr>
+      <tr><td>اطلاعات کاربر</td><td><code>/info?apiKey=KEY&amp;name=alice</code></td></tr>
+      <tr><td>افزایش حجم و تمدید</td><td><code>/update?apiKey=KEY&amp;name=alice&amp;addDataGB=10&amp;extendDays=30</code></td></tr>
+      <tr><td>غیرفعال / فعال</td><td><code>/disable?...&amp;name=alice</code> · <code>/enable?...&amp;name=alice</code></td></tr>
+      <tr><td>حذف کاربر</td><td><code>/remove?apiKey=KEY&amp;name=alice</code></td></tr>
+      <tr><td>لیست کاربران (با فیلتر)</td><td><code>/list?apiKey=KEY&amp;status=active&amp;sort=usedBytes&amp;order=desc</code></td></tr>
+    </table>
+    <h3>نمونهٔ ساخت کاربر و ذخیرهٔ فایل کانفیگ:</h3>
+    <pre><code>KEY="کلید-از-فایل-info"
+curl -s "http://SERVER_IP:4000/create?apiKey=$KEY&name=alice&dataLimitGB=30&expiresInDays=60" -o alice.ovpn</code></pre>
+    <div class="callout tip"><span class="lbl">نکته:</span> پارامترهای حجم/انقضا چند نام را می‌پذیرند (مثل <code class="inline">volume، data_limit_gb، volumeBytes</code>).</div>
+  </section>
+
+  <section id="cli">
+    <h2>⌨️ مدیریت با خط فرمان</h2>
+    <pre><code>systemctl status ovpn.service                 # وضعیت پنل
+systemctl status openvpn-server@server        # وضعیت OpenVPN
+journalctl -u ovpn.service -f                 # لاگ زندهٔ پنل
+
+/home/ovpn/ovpn-manager.sh list               # لیست و وضعیت کاربران
+/home/ovpn/ovpn-manager.sh enforce            # اعمال دستیِ محدودیت‌ها</code></pre>
+    <p>لایهٔ <b>Enforce</b> هر ۳۰ ثانیه (پنل) و هر ۱ دقیقه (کرون پشتیبان) کاربرِ منقضی یا پُر-حجم را خودکار قطع می‌کند.</p>
+  </section>
+
+  <section id="resetpw">
+    <h2>🔁 فراموشی / ریست رمز ادمین</h2>
+    <p>اگر رمز را ندارید (مثلاً نصبِ مجدد بوده)، یک رمز جدید بسازید و جایگزین کنید:</p>
+    <pre><code>cd /home/ovpn
+sudo OVPN_CONFIG_DIR=/etc/ovpn node -e 'const c=require("./lib/config.js");const p=require("crypto").randomBytes(12).toString("base64url");c.rotateAdminPassword(p);console.log("رمز جدید ادمین:",p)'
+sudo systemctl restart ovpn.service</code></pre>
+    <p>رمزی که چاپ می‌شود، رمز جدیدِ ورود به پنل است (رمز قبلی باطل می‌شود).</p>
+  </section>
+
+  <section id="trouble">
+    <h2>🩺 عیب‌یابی و نکات</h2>
+    <ul>
+      <li><b>QR کد:</b> کانفیگ OpenVPN حدود ۳ کیلوبایت است و از ظرفیت QR بزرگ‌تر است؛ پس همیشه از <b>دانلود فایل <code class="inline">.ovpn</code></b> استفاده کنید.</li>
+      <li><b>تغییر DNS:</b> تغییر DNS در پنل یک‌بار OpenVPN را ری‌استارت می‌کند و اتصال کلاینت‌های فعلی موقتاً قطع می‌شود.</li>
+      <li><b>کاربر وصل نمی‌شود:</b> پورت OpenVPN را در فایروال/کلود بررسی کنید و مطمئن شوید <code class="inline">openvpn-server@server</code> فعال است.</li>
+      <li><b>اطلاعات دسترسی:</b> همیشه در <code class="inline">/root/ovpn-install-info.txt</code> است.</li>
+    </ul>
+  </section>
+
+  <footer>راهنمای نصب دستی OpenVPN — بخشی از پروژهٔ مدیریت تونل Loki/Smite</footer>
+</div>
+<script>
+  document.querySelectorAll('pre').forEach(function(pre){
+    var btn=document.createElement('button');
+    btn.className='copy-btn';btn.type='button';btn.textContent='کپی';
+    btn.addEventListener('click',function(){
+      var t=(pre.querySelector('code')||pre).innerText;
+      navigator.clipboard.writeText(t).then(function(){btn.textContent='کپی شد ✓';setTimeout(function(){btn.textContent='کپی';},1500);});
+    });
+    pre.appendChild(btn);
+  });
+</script>
+</body>
+</html>

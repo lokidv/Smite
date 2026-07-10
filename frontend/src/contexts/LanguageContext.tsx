@@ -164,6 +164,7 @@ interface Translations {
     warpResult: string
     adminPath: string
     adminPassword: string
+    adminPasswordResetNote: string
     vpnProto: string
     vpnPort: string
     vpnEndpoint: string
@@ -644,6 +645,7 @@ const translations: Record<Language, Translations> = {
       warpResult: 'WARP (WireGuard + Proxy)',
       adminPath: 'Admin Panel Path',
       adminPassword: 'Admin Password',
+      adminPasswordResetNote: 'The server already had OpenVPN installed, so the admin panel password was reset to this new value (the old one no longer works).',
       vpnProto: 'Protocol',
       vpnPort: 'OpenVPN Port',
       vpnEndpoint: 'OpenVPN Endpoint',
@@ -1131,6 +1133,7 @@ const translations: Record<Language, Translations> = {
       warpResult: 'WARP (وایرگارد + پروکسی)',
       adminPath: 'مسیر پنل ادمین',
       adminPassword: 'رمز ادمین',
+      adminPasswordResetNote: 'این سرور از قبل OpenVPN نصب داشت، برای همین رمز پنل ادمین به این مقدار جدید ریست شد (رمز قبلی دیگر کار نمی‌کند).',
       vpnProto: 'پروتکل',
       vpnPort: 'پورت OpenVPN',
       vpnEndpoint: 'اندپوینت OpenVPN',

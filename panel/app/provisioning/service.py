@@ -724,6 +724,13 @@ def _install_openvpn(ssh: SSHSession, job: ProvisioningJob) -> Dict[str, Any]:
         "panelUrl": data.get("panelUrl", ""),
         "adminPath": data.get("adminPath", ""),
         "adminPassword": data.get("adminPassword", ""),
+        "adminPasswordReset": data.get("adminPasswordReset", "false") == "true",
+        "adminPasswordNote": (
+            "The server already had OpenVPN installed, so the admin panel password was "
+            "reset to this new value (the old one no longer works)."
+            if data.get("adminPasswordReset") == "true"
+            else ""
+        ),
         "apiKey": data.get("apiKey", ""),
         "apiBaseUrl": f"http://{p.host}:{panel_port}",
         "apiEndpoints": "GET /create?name=&dataLimitGB=&expiresInDays=, /info, /update, /disable, /enable, /remove, /list (header X-API-Key)",

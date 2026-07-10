@@ -80,6 +80,27 @@ if [[ -f "$INFO_FILE" ]]; then
     [[ -z "$SERVER_IP" ]] && SERVER_IP="$(awk -F': *' '/^Server IP/{print $2; exit}' "$INFO_FILE" 2>/dev/null || true)"
 fi
 
+# On a RE-install the config already exists, so the installer never prints a
+# plaintext admin password (only a bcrypt hash is kept). Rotate it to a fresh
+# random value so the panel always returns a usable credential to the admin.
+ADMIN_RESET="false"
+OVPN_HOME="/home/ovpn"
+if [[ -z "$ADMIN_PASS" && -f "${OVPN_HOME}/lib/config.js" ]] && command -v node >/dev/null 2>&1; then
+    NEW_PASS="$(cd "$OVPN_HOME" && OVPN_CONFIG_DIR=/etc/ovpn node -e '
+        const cfg = require("./lib/config.js");
+        const crypto = require("crypto");
+        const pw = crypto.randomBytes(24).toString("base64url");
+        cfg.rotateAdminPassword(pw);
+        process.stdout.write(pw);
+    ' 2>/dev/null || true)"
+    if [[ -n "$NEW_PASS" ]]; then
+        ADMIN_PASS="$NEW_PASS"
+        ADMIN_RESET="true"
+        echo "Admin panel password was reset to a fresh value (server already had OpenVPN installed)."
+        systemctl restart ovpn.service 2>/dev/null || true
+    fi
+fi
+
 PANEL_URL=""
 if [[ -n "$SERVER_IP" && -n "$PANEL_PORT" && -n "$ADMIN_PATH" ]]; then
     PANEL_URL="http://${SERVER_IP}:${PANEL_PORT}/${ADMIN_PATH}/"
@@ -87,7 +108,7 @@ fi
 
 echo ""
 echo -e "${green}OpenVPN + panel installation finished.${plain}"
-printf '===SMITE_OVPN_RESULT=== {"serverIp":"%s","vpnProto":"%s","vpnPort":"%s","panelPort":"%s","panelUrl":"%s","adminPath":"%s","adminPassword":"%s","apiKey":"%s"}\n' \
+printf '===SMITE_OVPN_RESULT=== {"serverIp":"%s","vpnProto":"%s","vpnPort":"%s","panelPort":"%s","panelUrl":"%s","adminPath":"%s","adminPassword":"%s","adminPasswordReset":"%s","apiKey":"%s"}\n' \
     "$(json_escape "${SERVER_IP}")" "$(json_escape "${VPN_PROTO}")" "$(json_escape "${VPN_PORT}")" \
     "$(json_escape "${PANEL_PORT}")" "$(json_escape "${PANEL_URL}")" "$(json_escape "${ADMIN_PATH}")" \
-    "$(json_escape "${ADMIN_PASS}")" "$(json_escape "${API_KEY}")"
+    "$(json_escape "${ADMIN_PASS}")" "$(json_escape "${ADMIN_RESET}")" "$(json_escape "${API_KEY}")"

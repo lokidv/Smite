@@ -859,6 +859,12 @@ const InstallNode = () => {
                     <ResultRow label={tr.vpnPort} value={ovpnRes.vpnPort} />
                     <ResultRow label={tr.panelUrl} value={ovpnRes.panelUrl} />
                     <ResultRow label={tr.adminPassword} value={ovpnRes.adminPassword} />
+                    {ovpnRes.adminPasswordReset && (
+                      <div className="mb-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-300 flex items-start gap-1.5">
+                        <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                        <span>{tr.adminPasswordResetNote}</span>
+                      </div>
+                    )}
                     <ResultRow label={tr.apiBaseUrl} value={ovpnRes.apiBaseUrl} />
                     <ResultRow label={tr.apiEndpoints} value={ovpnRes.apiEndpoints} />
                     <ResultRow label={tr.apiKey} value={ovpnRes.apiKey} />

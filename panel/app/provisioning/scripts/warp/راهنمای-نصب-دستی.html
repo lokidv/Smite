@@ -3,16 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>راهنمای نصب دستی WireGuard + پروکسی/وارپ</title>
+<title>راهنمای گام‌به‌گام WireGuard + وارپ/پروکسی</title>
 <style>
   :root{
     --accent:#ea580c; --accent2:#f97316; --accent-soft:#fff7ed; --accent-border:#fed7aa;
-    --bg:#f6f8fb; --card:#ffffff; --text:#0f172a; --muted:#64748b;
-    --border:#e2e8f0; --code-bg:#0f172a; --code-text:#e2e8f0;
+    --bg:#f6f8fb; --card:#ffffff; --text:#0f172a; --muted:#64748b; --border:#e2e8f0;
     --note:#eff6ff; --note-b:#bfdbfe; --note-t:#1e40af;
     --warn:#fef2f2; --warn-b:#fecaca; --warn-t:#991b1b;
     --tip:#ecfdf5; --tip-b:#a7f3d0; --tip-t:#065f46;
-    --radius:14px;
   }
   @media (prefers-color-scheme: dark){
     :root{ --bg:#0b1220; --card:#111a2e; --text:#e6edf6; --muted:#94a3b8; --border:#1e293b;
@@ -25,259 +23,273 @@
   body{margin:0;background:var(--bg);color:var(--text);
     font-family:"Vazirmatn","Segoe UI",Tahoma,system-ui,-apple-system,"Noto Sans Arabic",sans-serif;
     line-height:2;font-size:16px}
-  .wrap{max-width:980px;margin:0 auto;padding:0 18px 80px}
+  .wrap{max-width:900px;margin:0 auto;padding:0 18px 80px}
   header.hero{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;
-    padding:44px 26px;border-radius:0 0 26px 26px;box-shadow:0 12px 30px rgba(234,88,12,.25);margin-bottom:26px}
+    padding:40px 26px;border-radius:0 0 26px 26px;box-shadow:0 12px 30px rgba(234,88,12,.25);margin-bottom:22px}
   header.hero .badge{display:inline-block;background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.35);
     padding:4px 14px;border-radius:999px;font-size:13px;margin-bottom:12px}
-  header.hero h1{margin:0 0 8px;font-size:30px}
-  header.hero p{margin:0;opacity:.95;font-size:16px}
-  .toc{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;margin-bottom:26px}
-  .toc h2{margin:0 0 10px;font-size:16px;color:var(--muted)}
-  .toc ol{margin:0;padding-inline-start:22px;columns:2;column-gap:26px}
-  .toc a{color:var(--accent);text-decoration:none}
-  .toc a:hover{text-decoration:underline}
-  section{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
-    padding:22px 26px;margin-bottom:22px;scroll-margin-top:16px}
-  section h2{margin:0 0 14px;font-size:22px;display:flex;align-items:center;gap:10px;
-    border-bottom:2px solid var(--accent-border);padding-bottom:10px}
-  section h3{margin:22px 0 8px;font-size:17px;color:var(--accent)}
-  p,li{font-size:15.5px}
+  header.hero h1{margin:0 0 8px;font-size:26px}
+  header.hero p{margin:0;opacity:.95;font-size:15.5px}
+  /* choose box */
+  .choose{background:var(--card);border:2px dashed var(--accent-border);border-radius:16px;padding:20px 24px;margin-bottom:26px}
+  .choose h2{margin:0 0 12px;font-size:19px;color:var(--accent)}
+  .choose .opts{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .choose .opt{border:1px solid var(--border);border-radius:12px;padding:16px 18px;background:var(--accent-soft)}
+  .choose .opt h3{margin:0 0 6px;font-size:16px}
+  .choose .opt a{display:inline-block;margin-top:8px;background:var(--accent);color:#fff;text-decoration:none;
+    padding:6px 16px;border-radius:999px;font-size:14px;font-weight:700}
+  .pathwrap{border:1px solid var(--border);border-radius:18px;overflow:hidden;margin-bottom:26px;background:var(--card)}
+  .pathwrap>.title{background:var(--accent);color:#fff;padding:14px 24px;font-size:19px;font-weight:800}
+  .pathwrap .inner{padding:14px 18px}
+  .step{border:1px solid var(--border);border-radius:14px;padding:16px 20px;margin:12px 0;position:relative}
+  .step-head{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+  .step-head .num{flex:0 0 auto;width:34px;height:34px;border-radius:50%;background:var(--accent);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;box-shadow:0 4px 10px rgba(234,88,12,.35)}
+  .step-head h3{margin:0;font-size:17.5px}
+  .where{display:inline-block;font-size:12.5px;font-weight:700;padding:2px 10px;border-radius:999px;margin-bottom:6px}
+  .where.local{background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe}
+  .where.server{background:#fef3c7;color:#92400e;border:1px solid #fde68a}
+  @media (prefers-color-scheme: dark){.where.local{background:#1e1b4b;color:#c7d2fe;border-color:#3730a3}.where.server{background:#3a2a08;color:#fde68a;border-color:#7c5a12}}
+  .term{background:#0d1117;border:1px solid #30363d;border-radius:12px;overflow:hidden;margin:10px 0}
+  .term .bar{display:flex;align-items:center;gap:7px;background:#161b22;padding:8px 14px;border-bottom:1px solid #30363d}
+  .term .bar .dot{width:11px;height:11px;border-radius:50%}
+  .term .bar .label{margin-inline-start:auto;color:#8b949e;font-size:12px}
+  .term pre{position:relative;margin:0;background:transparent;color:#e6edf6;padding:14px 16px;overflow-x:auto;
+    direction:ltr;text-align:left;font-size:13px;line-height:1.9}
+  .term pre code{font-family:"Cascadia Code",Consolas,"Courier New",monospace;white-space:pre}
+  .copy-btn{position:absolute;top:6px;left:8px;background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.22);
+    border-radius:8px;padding:2px 11px;font-size:12px;cursor:pointer;font-family:inherit}
+  .copy-btn:hover{background:rgba(255,255,255,.2)}
+  .expect{background:var(--tip);border:1px solid var(--tip-b);color:var(--tip-t);border-radius:10px;padding:8px 14px;margin-top:8px;font-size:14px}
   code.inline{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-border);
-    padding:1px 7px;border-radius:6px;font-family:"Cascadia Code",Consolas,monospace;font-size:13.5px;direction:ltr;display:inline-block}
-  pre{position:relative;background:var(--code-bg);color:var(--code-text);padding:16px 16px;border-radius:12px;
-    overflow-x:auto;direction:ltr;text-align:left;margin:12px 0;font-size:13.5px;line-height:1.85}
-  pre code{font-family:"Cascadia Code",Consolas,"Courier New",monospace;white-space:pre}
-  .copy-btn{position:absolute;top:8px;left:8px;background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.25);
-    border-radius:8px;padding:3px 12px;font-size:12px;cursor:pointer;font-family:inherit}
-  .copy-btn:hover{background:rgba(255,255,255,.22)}
-  .callout{border-radius:12px;padding:12px 16px;margin:14px 0;border:1px solid;font-size:14.5px}
+    padding:1px 7px;border-radius:6px;font-family:"Cascadia Code",Consolas,monospace;font-size:13px;direction:ltr;display:inline-block}
+  .callout{border-radius:12px;padding:12px 16px;margin:12px 0;border:1px solid;font-size:14.5px}
   .callout .lbl{font-weight:700;margin-inline-end:6px}
   .note{background:var(--note);border-color:var(--note-b);color:var(--note-t)}
   .warn{background:var(--warn);border-color:var(--warn-b);color:var(--warn-t)}
   .tip{background:var(--tip);border-color:var(--tip-b);color:var(--tip-t)}
-  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;overflow:hidden;border-radius:10px}
-  th,td{border:1px solid var(--border);padding:9px 12px;text-align:right}
-  th{background:var(--accent-soft);color:var(--accent);font-weight:700}
-  td code{direction:ltr;font-family:"Cascadia Code",Consolas,monospace;font-size:13px}
-  .modes{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0}
-  .mode{border:1px solid var(--border);border-radius:12px;padding:16px 18px;background:var(--accent-soft)}
-  .mode h4{margin:0 0 6px;color:var(--accent);font-size:16px}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .kv{background:var(--accent-soft);border:1px solid var(--accent-border);border-radius:10px;padding:10px 14px}
-  .kv b{color:var(--accent)}
-  .steps{counter-reset:s;list-style:none;padding:0}
-  .steps>li{counter-increment:s;position:relative;padding-inline-start:42px;margin-bottom:8px}
-  .steps>li::before{content:counter(s);position:absolute;inset-inline-start:0;top:2px;width:28px;height:28px;
-    background:var(--accent);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700}
-  footer{text-align:center;color:var(--muted);font-size:13px;margin-top:30px}
-  @media (max-width:720px){.toc ol{columns:1}.grid,.modes{grid-template-columns:1fr}header.hero h1{font-size:23px}}
+  section.ref{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:20px 24px;margin-bottom:18px}
+  section.ref h2{margin:0 0 12px;font-size:20px;border-bottom:2px solid var(--accent-border);padding-bottom:10px}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px;overflow:hidden;border-radius:10px}
+  th,td{border:1px solid var(--border);padding:8px 11px;text-align:right}
+  th{background:var(--accent-soft);color:var(--accent)}
+  td code{direction:ltr;font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px}
+  footer{text-align:center;color:var(--muted);font-size:13px;margin-top:28px}
+  @media (max-width:640px){.choose .opts{grid-template-columns:1fr}header.hero h1{font-size:21px}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header class="hero">
-    <span class="badge">راهنمای نصب و استفاده — نسخهٔ دستی</span>
-    <h1>🌐 نصب دستی WireGuard + خروجی از پروکسی / وارپ</h1>
-    <p>وایرگارد به‌همراه پنل مدیریت wvpn — که ترافیک TCP کاربران را از یک پروکسی بالادست یا از Cloudflare WARP خارج می‌کند تا IP خروجیِ کاربر عوض شود.</p>
+    <span class="badge">راهنمای گام‌به‌گام — نصب دستی</span>
+    <h1>🌐 نصب WireGuard با خروجی از وارپ یا پروکسی</h1>
+    <p>وایرگاردی که IP خروجیِ کاربر را عوض می‌کند: یا از Cloudflare WARP، یا از یک پروکسیِ دلخواه. یکی از دو مسیر را انتخاب کن و از بالا به پایین دنبال کن.</p>
   </header>
 
-  <nav class="toc">
-    <h2>فهرست</h2>
-    <ol>
-      <li><a href="#intro">این پروژه چیست؟</a></li>
-      <li><a href="#how">چطور کار می‌کند</a></li>
-      <li><a href="#prereq">پیش‌نیازها</a></li>
-      <li><a href="#base">گام ۱: نصب پایهٔ WireGuard</a></li>
-      <li><a href="#mode-proxy">حالت الف: پروکسی دلخواه</a></li>
-      <li><a href="#mode-warp">حالت ب: Cloudflare WARP</a></li>
-      <li><a href="#access">اطلاعات دسترسی</a></li>
-      <li><a href="#api">مدیریت کاربران با API</a></li>
-      <li><a href="#verify">تأیید خروجی</a></li>
-      <li><a href="#change">تغییر پروکسی بعداً</a></li>
-      <li><a href="#remove">حذف پروکسی / بازگردانی</a></li>
-      <li><a href="#trouble">دستورات مفید و عیب‌یابی</a></li>
-    </ol>
-  </nav>
-
-  <section id="intro">
-    <h2>📌 این پروژه چیست؟</h2>
-    <p>این نسخه یک کپیِ جداگانه از نصب‌کنندهٔ WireGuard است که بعد از نصبِ وایرگارد، <b>ترافیک TCPِ کلاینت‌ها را از یک
-      پروکسیِ بالادست خارج می‌کند</b> تا <b>IP خروجیِ کاربر = IP پروکسی</b> شود (نه IP سرور). این «پروکسی» می‌تواند یک
-      پروکسیِ residential/SOCKS/HTTP دلخواه باشد، یا <b>Cloudflare WARP</b> که روی همان سرور نصب می‌شود.</p>
-    <div class="grid">
-      <div class="kv"><b>هستهٔ VPN:</b> WireGuard</div>
-      <div class="kv"><b>پنل و API:</b> wvpn روی پورت <code class="inline">4000</code></div>
-      <div class="kv"><b>مکانیزم خروجی:</b> redsocks + iptables</div>
-      <div class="kv"><b>پورت WARP محلی:</b> <code class="inline">127.0.0.1:40000</code></div>
+  <div class="choose">
+    <h2>❓ اول انتخاب کن: کدام را می‌خواهی؟</h2>
+    <div class="opts">
+      <div class="opt">
+        <h3>🟠 مسیر A — وارپ (WARP)</h3>
+        خودِ سرور Cloudflare WARP را نصب می‌کند و خروجی از وارپ می‌رود. نیازی به پروکسیِ بیرونی نداری.
+        <br><a href="#pathA">شروع مسیر A ↓</a>
+      </div>
+      <div class="opt">
+        <h3>🔵 مسیر B — پروکسیِ خودت</h3>
+        اگر خودت یک پروکسیِ SOCKS5/HTTP داری، خروجی از آن می‌رود. IP، پورت، یوزر و پس لازم است.
+        <br><a href="#pathB">شروع مسیر B ↓</a>
+      </div>
     </div>
-  </section>
+  </div>
 
-  <section id="how">
-    <h2>🔧 چطور کار می‌کند</h2>
-    <ul>
-      <li>روی همین سرور یک <code class="inline">redsocks</code> (هدایت‌کنندهٔ شفاف) نصب می‌شود.</li>
-      <li>ترافیکِ TCP که از اینترفیس <code class="inline">wg0</code> فوروارد می‌شود، در <code class="inline">iptables</code> به redsocks محلی هدایت و از پروکسیِ بالادست خارج می‌شود.</li>
-      <li>برای جلوگیری از دورزدنِ پروکسی توسط QUIC، <code class="inline">UDP/443</code> بسته می‌شود تا مرورگر به TCP برگردد.</li>
-      <li>قوانین در <code class="inline">PostUp/PostDown</code> فایلِ <code class="inline">wg0.conf</code> درج می‌شوند → پس از ریبوت هم پایدارند.</li>
-    </ul>
-    <div class="callout note"><span class="lbl">توجه:</span> این روش برای ترافیکِ <b>TCP</b> (وب/HTTPS) است — دقیقاً همان چیزی که «IP پروکسی را نشان بده» به آن نیاز دارد. DNS از NAT سرور می‌رود ولی اتصالِ واقعی از پروکسی برقرار می‌شود.</div>
-  </section>
+  <!-- ========== PATH A: WARP ========== -->
+  <div class="pathwrap" id="pathA">
+    <div class="title">🟠 مسیر A — نصب با Cloudflare WARP</div>
+    <div class="inner">
 
-  <section id="prereq">
-    <h2>🧩 پیش‌نیازها</h2>
-    <ul>
-      <li>یک سرور <b>Ubuntu یا Debian</b> تازه، با دسترسی <b>root</b>.</li>
-      <li>دسترسی به اینترنت.</li>
-      <li>اگر می‌خواهید از پروکسیِ دلخواه استفاده کنید: <b>IP، پورت، نوع (socks5/http-connect)، یوزر و پسوردِ</b> آن پروکسی.</li>
-    </ul>
-  </section>
+      <div class="step">
+        <div class="step-head"><span class="num">1</span><h3>به سرور وصل شو</h3></div>
+        <span class="where local">💻 روی کامپیوترِ خودت</span>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">💻 ترمینال کامپیوتر شما</span></div>
+          <pre><code>ssh root@SERVER_IP</code></pre></div>
+        <div class="expect">✅ بعد از زدنِ رمز، وارد سرور می‌شوی. از این‌جا همه‌چیز در «ترمینالِ سرور» است.</div>
+      </div>
 
-  <section id="base">
-    <h2>🚀 گام ۱: نصب پایهٔ WireGuard</h2>
-    <p>پوشهٔ پروژه (<code class="inline">wginstaller-proxy</code>) را روی سرور کپی کنید و اجرا کنید:</p>
-    <pre><code>cd wginstaller-proxy
-sudo ./install.sh</code></pre>
-    <p>این کار WireGuard + پنل و API wvpn (پورت <code class="inline">4000</code>) را نصب می‌کند. برای عوض‌کردن پورت پنل:</p>
-    <pre><code>sudo WVPN_PORT=4001 ./install.sh</code></pre>
-    <div class="callout tip"><span class="lbl">نکته:</span> اگر <b>قبل از</b> اجرای <code class="inline">install.sh</code> فایلِ <code class="inline">/etc/wvpn-proxy.env</code> را ساخته باشید، نصب‌کننده در پایان <b>خودکار</b> خروجیِ پروکسی را هم راه می‌اندازد. در غیر این صورت، طبق حالت‌های زیر جدا اجرا کنید.</div>
+      <div class="step">
+        <div class="step-head"><span class="num">2</span><h3>پوشهٔ نصب‌کننده را روی سرور بیاور</h3></div>
+        <span class="where local">💻 روی کامپیوترت (ترمینال جدید) — اگر از قبل روی سرور هست رد کن</span>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">💻 ترمینال کامپیوتر شما</span></div>
+          <pre><code>scp -r wginstaller-proxy root@SERVER_IP:/root/</code></pre></div>
+      </div>
 
-    <h3>کدام حالت را می‌خواهید؟</h3>
-    <div class="modes">
-      <div class="mode"><h4>الف) پروکسی دلخواه</h4>خروجی از یک پروکسیِ SOCKS5/HTTP که خودتان دارید. <a href="#mode-proxy">برو ↓</a></div>
-      <div class="mode"><h4>ب) Cloudflare WARP</h4>نصب WARP روی همین سرور و خروجی از وارپ. <a href="#mode-warp">برو ↓</a></div>
-    </div>
-  </section>
+      <div class="step">
+        <div class="step-head"><span class="num">3</span><h3>وایرگارد را نصب کن</h3></div>
+        <span class="where server">🖥️ در ترمینالِ سرور</span>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH)</span></div>
+          <pre><code>cd /root/wginstaller-proxy
+sudo bash install.sh</code></pre></div>
+        <div class="expect">✅ WireGuard و پنل wvpn (پورت 4000) نصب می‌شود. چند دقیقه صبر کن.</div>
+      </div>
 
-  <section id="mode-proxy">
-    <h2>🅰️ حالت الف: خروجی از پروکسی دلخواه</h2>
-    <ol class="steps">
-      <li>فایل تنظیمات پروکسی را بسازید:
-        <pre><code>sudo tee /etc/wvpn-proxy.env >/dev/null &lt;&lt;'EOF'
-PROXY_IP=1.2.3.4
-PROXY_PORT=8080
-PROXY_TYPE=socks5          # یا http-connect
-PROXY_USER=username
-PROXY_PASS=password
-WG_NIC=wg0
-REDSOCKS_LOCAL_PORT=12345
-EOF
-sudo chmod 600 /etc/wvpn-proxy.env</code></pre>
-      </li>
-      <li>خروجیِ پروکسی را راه بیندازید:
-        <pre><code>sudo bash wvpn/proxy-egress.sh</code></pre>
-      </li>
-    </ol>
-    <p>یا بدون ساختِ فایل، همه‌چیز را در یک خط بدهید:</p>
-    <pre><code>sudo PROXY_IP=1.2.3.4 PROXY_PORT=8080 PROXY_TYPE=socks5 \
-     PROXY_USER=username PROXY_PASS=password \
-     bash wvpn/proxy-egress.sh</code></pre>
-    <p>اسکریپت در پایان، IP خروجیِ پروکسی را تست و چاپ می‌کند.</p>
-  </section>
-
-  <section id="mode-warp">
-    <h2>🅱️ حالت ب: خروجی از Cloudflare WARP</h2>
-    <p>ابتدا Cloudflare WARP را نصب و در حالت proxy (روی پورت <code class="inline">40000</code>) قرار دهید:</p>
-    <ol class="steps">
-      <li>افزودن مخزن و نصب:
-        <pre><code>curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+      <div class="step">
+        <div class="step-head"><span class="num">4</span><h3>Cloudflare WARP را نصب کن</h3></div>
+        <span class="where server">🖥️ در ترمینالِ سرور</span>
+        <p>این سه بلوک را به‌ترتیب بزن (اول افزودن مخزن و نصب):</p>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH) — نصب</span></div>
+          <pre><code>curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-sudo apt-get update && sudo apt-get install -y cloudflare-warp</code></pre>
-      </li>
-      <li>ثبت و حالت proxy:
-        <pre><code>sudo warp-cli --accept-tos registration new    # نسخهٔ قدیمی: register
-sudo warp-cli --accept-tos mode proxy          # قدیمی: set-mode proxy
-sudo warp-cli --accept-tos proxy port 40000    # قدیمی: set-proxy-port 40000
-sudo warp-cli --accept-tos connect</code></pre>
-      </li>
-      <li>حالا پروکسیِ بالادست را همان WARP محلی قرار دهید و خروجی را راه بیندازید:
-        <pre><code>sudo tee /etc/wvpn-proxy.env >/dev/null &lt;&lt;'EOF'
+sudo apt-get update && sudo apt-get install -y cloudflare-warp</code></pre></div>
+        <p>سپس ثبت و روشن‌کردنِ حالت proxy روی پورت 40000:</p>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH) — راه‌اندازی</span></div>
+          <pre><code>sudo warp-cli --accept-tos registration new
+sudo warp-cli --accept-tos mode proxy
+sudo warp-cli --accept-tos proxy port 40000
+sudo warp-cli --accept-tos connect</code></pre></div>
+        <div class="callout note"><span class="lbl">نسخهٔ قدیمی warp-cli؟</span> اگر خطا داد، این‌ها را امتحان کن: <code class="inline">register</code> به‌جای <code class="inline">registration new</code> و <code class="inline">set-mode proxy</code> / <code class="inline">set-proxy-port 40000</code>.</div>
+        <p><b>تست کن</b> که وارپ کار می‌کند (باید یک IP کلودفلر بدهد، نه IP سرور):</p>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH) — تست</span></div>
+          <pre><code>curl --socks5-hostname 127.0.0.1:40000 https://api.ipify.org</code></pre></div>
+        <div class="expect">✅ اگر یک IP نمایش داد (مثلاً 104.x.x.x)، وارپ آماده است. برو مرحلهٔ ۵.</div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><span class="num">5</span><h3>خروجیِ وایرگارد را به وارپ وصل کن</h3></div>
+        <span class="where server">🖥️ در ترمینالِ سرور</span>
+        <p>این دو بلوک را بزن: اول فایل تنظیمات را بساز (پروکسی = همان وارپِ محلی)، بعد اعمال کن:</p>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH) — ساخت فایل تنظیمات</span></div>
+          <pre><code>sudo tee /etc/wvpn-proxy.env >/dev/null &lt;&lt;'EOF'
 PROXY_IP=127.0.0.1
 PROXY_PORT=40000
 PROXY_TYPE=socks5
 WG_NIC=wg0
 REDSOCKS_LOCAL_PORT=12345
 EOF
-sudo chmod 600 /etc/wvpn-proxy.env
-sudo bash wvpn/proxy-egress.sh</code></pre>
-      </li>
-    </ol>
-    <div class="callout tip"><span class="lbl">تست سریع WARP:</span> قبل از راه‌اندازی خروجی، درستیِ پروکسیِ WARP را چک کنید — باید یک IP کلودفلر بدهد:
-      <pre><code>curl --socks5-hostname 127.0.0.1:40000 https://api.ipify.org</code></pre>
-    </div>
-  </section>
+sudo chmod 600 /etc/wvpn-proxy.env</code></pre></div>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH) — اعمال</span></div>
+          <pre><code>cd /root/wginstaller-proxy
+sudo bash wvpn/proxy-egress.sh</code></pre></div>
+        <div class="expect">🎉 تمام! حالا ترافیکِ کلاینت‌های وایرگارد از Cloudflare WARP خارج می‌شود. برای گرفتنِ اطلاعاتِ پنل و تست، برو بخش‌های پایین.</div>
+      </div>
 
-  <section id="access">
-    <h2>🔑 اطلاعات دسترسی</h2>
-    <p>پارامترهای WireGuard و پورت پنل:</p>
-    <pre><code>cat /etc/wireguard/params        # شامل SERVER_PORT، SERVER_PUB_KEY، WVPN_PORT
-cat /etc/wvpn/wvpn.json          # شامل apiKey و adminPath</code></pre>
-    <div class="grid">
-      <div class="kv"><b>پنل ادمین:</b> <code class="inline">http://IP:4000/&lt;adminPath&gt;/</code></div>
-      <div class="kv"><b>API Key:</b> از <code class="inline">/etc/wvpn/wvpn.json</code></div>
-      <div class="kv"><b>پورت WireGuard:</b> <code class="inline">SERVER_PORT</code> در params</div>
-      <div class="kv"><b>Public Key سرور:</b> <code class="inline">SERVER_PUB_KEY</code> در params</div>
     </div>
-    <div class="callout note"><span class="lbl">فایروال:</span> پورت WireGuard (UDP) و پورت پنل (<code class="inline">4000/TCP</code>) را باز کنید.</div>
-  </section>
+  </div>
 
-  <section id="api">
-    <h2>🔌 مدیریت کاربران با API</h2>
-    <p>روت‌های wvpn با <code class="inline">apiKey</code> کار می‌کنند و کلاینت با <code class="inline">name</code> (یا publicKey) شناخته می‌شود. خروجیِ <code class="inline">create</code> کانفیگِ آمادهٔ WireGuard است.</p>
+  <!-- ========== PATH B: PROXY ========== -->
+  <div class="pathwrap" id="pathB">
+    <div class="title">🔵 مسیر B — نصب با پروکسیِ خودت</div>
+    <div class="inner">
+
+      <div class="step">
+        <div class="step-head"><span class="num">1</span><h3>به سرور وصل شو</h3></div>
+        <span class="where local">💻 روی کامپیوترِ خودت</span>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">💻 ترمینال کامپیوتر شما</span></div>
+          <pre><code>ssh root@SERVER_IP</code></pre></div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><span class="num">2</span><h3>پوشهٔ نصب‌کننده را روی سرور بیاور</h3></div>
+        <span class="where local">💻 روی کامپیوترت — اگر از قبل روی سرور هست رد کن</span>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">💻 ترمینال کامپیوتر شما</span></div>
+          <pre><code>scp -r wginstaller-proxy root@SERVER_IP:/root/</code></pre></div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><span class="num">3</span><h3>وایرگارد را نصب کن</h3></div>
+        <span class="where server">🖥️ در ترمینالِ سرور</span>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH)</span></div>
+          <pre><code>cd /root/wginstaller-proxy
+sudo bash install.sh</code></pre></div>
+        <div class="expect">✅ WireGuard و پنل wvpn (پورت 4000) نصب می‌شود.</div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><span class="num">4</span><h3>مشخصاتِ پروکسیِ خودت را وارد کن</h3></div>
+        <span class="where server">🖥️ در ترمینالِ سرور</span>
+        <p>مقادیرِ <code class="inline">PROXY_*</code> را با مشخصاتِ پروکسیِ خودت جایگزین کن:</p>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH) — ساخت فایل تنظیمات</span></div>
+          <pre><code>sudo tee /etc/wvpn-proxy.env >/dev/null &lt;&lt;'EOF'
+PROXY_IP=1.2.3.4
+PROXY_PORT=8080
+PROXY_TYPE=socks5
+PROXY_USER=username
+PROXY_PASS=password
+WG_NIC=wg0
+REDSOCKS_LOCAL_PORT=12345
+EOF
+sudo chmod 600 /etc/wvpn-proxy.env</code></pre></div>
+        <div class="callout note"><span class="lbl">نوع پروکسی:</span> اگر SOCKS5 است <code class="inline">socks5</code> بگذار، اگر HTTP است <code class="inline">http-connect</code>. اگر پروکسی یوزر/پس ندارد، دو خطِ <code class="inline">PROXY_USER</code> و <code class="inline">PROXY_PASS</code> را حذف کن.</div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><span class="num">5</span><h3>خروجیِ پروکسی را اعمال کن</h3></div>
+        <span class="where server">🖥️ در ترمینالِ سرور</span>
+        <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH)</span></div>
+          <pre><code>cd /root/wginstaller-proxy
+sudo bash wvpn/proxy-egress.sh</code></pre></div>
+        <div class="expect">🎉 تمام! ترافیکِ کلاینت‌ها از پروکسیِ تو خارج می‌شود. اسکریپت در پایان، IP خروجیِ پروکسی را هم تست و چاپ می‌کند.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- REFERENCE: access -->
+  <section class="ref">
+    <h2>🔑 اطلاعات پنل و کاربران</h2>
+    <span class="where server">🖥️ در ترمینالِ سرور</span>
+    <p>برای دیدنِ آدرس پنل و کلید API:</p>
+    <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH)</span></div>
+      <pre><code>cat /etc/wvpn/wvpn.json          # apiKey و adminPath (آدرس پنل)
+cat /etc/wireguard/params        # پورت وایرگارد و کلید عمومی سرور</code></pre></div>
+    <p>آدرس پنل: <code class="inline">http://SERVER_IP:4000/&lt;adminPath&gt;/</code></p>
+    <p>ساخت کاربر با API (کلاینت با <code class="inline">name</code> شناخته می‌شود؛ خروجی = کانفیگِ آمادهٔ وایرگارد):</p>
+    <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH)</span></div>
+      <pre><code>curl -s "http://SERVER_IP:4000/create?apiKey=API_KEY&name=ali" -o ali.conf</code></pre></div>
     <table>
-      <tr><th>عملیات</th><th>روت</th></tr>
-      <tr><td>ساخت کاربر (خروجی=کانفیگ wg)</td><td><code>/create?apiKey=KEY&amp;name=alice</code></td></tr>
-      <tr><td>اطلاعات کاربر</td><td><code>/info?apiKey=KEY&amp;name=alice</code></td></tr>
-      <tr><td>افزایش حجم/تمدید</td><td><code>/update?apiKey=KEY&amp;name=alice&amp;addDataGB=10&amp;extendDays=30</code></td></tr>
-      <tr><td>غیرفعال / فعال</td><td><code>/disable?...&amp;name=alice</code> · <code>/enable?...&amp;name=alice</code></td></tr>
-      <tr><td>حذف</td><td><code>/remove?apiKey=KEY&amp;name=alice</code></td></tr>
-      <tr><td>لیست / بررسی</td><td><code>/list?apiKey=KEY</code> · <code>/check?apiKey=KEY&amp;name=alice</code></td></tr>
+      <tr><th>کار</th><th>روت</th></tr>
+      <tr><td>ساخت</td><td><code>/create?apiKey=KEY&amp;name=ali</code></td></tr>
+      <tr><td>اطلاعات / لیست</td><td><code>/info?...&amp;name=ali</code> · <code>/list?apiKey=KEY</code></td></tr>
+      <tr><td>حذف</td><td><code>/remove?apiKey=KEY&amp;name=ali</code></td></tr>
     </table>
-    <pre><code>KEY="کلید-از-wvpn.json"
-curl -s "http://SERVER_IP:4000/create?apiKey=$KEY&name=alice" -o alice.conf</code></pre>
   </section>
 
-  <section id="verify">
-    <h2>✅ تأیید خروجی</h2>
-    <p>روی سرور، وضعیت سرویس redsocks:</p>
-    <pre><code>systemctl status wvpn-redsocks</code></pre>
-    <p>از داخلِ یک کلاینتِ WireGuardِ متصل، IP خروجی را ببینید — باید <b>IP پروکسی/وارپ</b> باشد، نه IP سرور:</p>
-    <pre><code>curl https://api.ipify.org</code></pre>
+  <!-- REFERENCE: verify -->
+  <section class="ref">
+    <h2>✅ تست خروجی</h2>
+    <p>از داخلِ یک کلاینتِ وایرگاردِ متصل، این را بزن — باید <b>IP پروکسی/وارپ</b> را نشان دهد، نه IP سرور:</p>
+    <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">📱 روی دستگاهِ کلاینتِ متصل</span></div>
+      <pre><code>curl https://api.ipify.org</code></pre></div>
   </section>
 
-  <section id="change">
-    <h2>🔁 تغییر پروکسی بعداً</h2>
-    <p>اگر پروکسی خراب شد یا خواستید عوضش کنید: فایل env را ویرایش کنید، خروجی را دوباره اعمال و redsocks را ری‌استارت کنید (پروکسیِ قبلی خودکار جایگزین می‌شود):</p>
-    <pre><code>sudo nano /etc/wvpn-proxy.env          # مقادیر جدید را بگذارید
-sudo bash wvpn/proxy-egress.sh         # بازتولید کانفیگ redsocks + iptables
-sudo systemctl restart wvpn-redsocks   # اعمال پروکسیِ جدید</code></pre>
+  <!-- REFERENCE: change proxy -->
+  <section class="ref">
+    <h2>🔁 پروکسی خراب شد؟ عوضش کن</h2>
+    <span class="where server">🖥️ در ترمینالِ سرور</span>
+    <p>فایل تنظیمات را ویرایش کن، دوباره اعمال کن، و redsocks را ری‌استارت بزن (پروکسیِ قبلی خودکار جایگزین می‌شود):</p>
+    <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH)</span></div>
+      <pre><code>sudo nano /etc/wvpn-proxy.env          # مقادیر جدید را بگذار و ذخیره کن
+cd /root/wginstaller-proxy
+sudo bash wvpn/proxy-egress.sh
+sudo systemctl restart wvpn-redsocks</code></pre></div>
   </section>
 
-  <section id="remove">
-    <h2>🧹 حذف پروکسی / بازگردانی</h2>
-    <p>برای برداشتن خروجیِ پروکسی و بازگشت به حالت وایرگاردِ ساده:</p>
-    <pre><code>sudo /usr/local/bin/wvpn-proxy-rules.sh down
-sudo systemctl disable --now wvpn-redsocks
-# و خطوطِ PostUp/PostDown مربوط به wvpn-proxy-rules را از /etc/wireguard/wg0.conf بردارید</code></pre>
-  </section>
-
-  <section id="trouble">
-    <h2>🩺 دستورات مفید و عیب‌یابی</h2>
-    <pre><code>systemctl status wvpn-redsocks           # وضعیت خروجی پروکسی
-journalctl -u wvpn-redsocks -n 50        # لاگ redsocks
-warp-cli --accept-tos status             # وضعیت Cloudflare WARP (حالت ب)
-wg show                                   # وضعیت WireGuard</code></pre>
+  <!-- REFERENCE: troubleshooting -->
+  <section class="ref">
+    <h2>🩺 مشکل داری؟</h2>
+    <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="label">🖥️ ترمینال سرور (SSH)</span></div>
+      <pre><code>systemctl status wvpn-redsocks     # وضعیت خروجیِ پروکسی
+warp-cli --accept-tos status       # وضعیت وارپ (فقط مسیر A)
+wg show                            # وضعیت وایرگارد</code></pre></div>
     <ul>
-      <li><b>خروجی هنوز IP سرور را نشان می‌دهد؟</b> مطمئن شوید <code class="inline">wvpn-redsocks</code> فعال است و پروکسیِ بالادست واقعاً کار می‌کند (تستِ <code class="inline">curl --socks5-hostname ...</code>).</li>
-      <li><b>پورت/نوع/احرازِ پروکسی</b> را در <code class="inline">/etc/wvpn-proxy.env</code> دوباره بررسی کنید؛ residential proxy بدون پورتِ درست کار نمی‌کند.</li>
-      <li>بعد از هر تغییرِ env، حتماً <code class="inline">systemctl restart wvpn-redsocks</code> بزنید.</li>
+      <li><b>خروجی هنوز IP سرور را نشان می‌دهد؟</b> مطمئن شو <code class="inline">wvpn-redsocks</code> فعال است و پروکسی/وارپ واقعاً کار می‌کند.</li>
+      <li>بعد از هر تغییرِ فایلِ <code class="inline">/etc/wvpn-proxy.env</code>، حتماً <code class="inline">sudo systemctl restart wvpn-redsocks</code> بزن.</li>
+      <li>پورتِ وایرگارد (UDP) و پورت پنل (<code class="inline">4000/TCP</code>) باید در فایروال باز باشند.</li>
     </ul>
   </section>
 
-  <footer>راهنمای نصب دستی WireGuard + پروکسی/وارپ — بخشی از پروژهٔ مدیریت تونل Loki/Smite</footer>
+  <footer>راهنمای گام‌به‌گام WireGuard + وارپ/پروکسی — بخشی از پروژهٔ مدیریت تونل Loki/Smite</footer>
 </div>
 <script>
-  document.querySelectorAll('pre').forEach(function(pre){
+  document.querySelectorAll('.term pre').forEach(function(pre){
     var btn=document.createElement('button');
     btn.className='copy-btn';btn.type='button';btn.textContent='کپی';
     btn.addEventListener('click',function(){

@@ -1549,6 +1549,7 @@ class Udp2rawAdapter:
             "--cipher-mode", str(cipher_mode),
             "--auth-mode", str(auth_mode),
             "-a",  # auto add/remove the iptables rule needed by faketcp/icmp raw modes
+            "--fix-gro",
         ]
         if spec.get("seq_mode"):
             cmd.extend(["--seq-mode", str(spec.get("seq_mode"))])
@@ -1983,8 +1984,41 @@ class ZapretAdapter:
         queue: int,
         max_pkt: int,
         direction: str,
-        target_ip: str = ""
+        target_ip: str = "",
+        tunnel_id: str = "",
+        target_port: int = 0
     ):
+        # Relay DNAT forwarding: if target_ip is remote and filter_udp is specified, forward incoming UDP to target_ip:target_port
+        if target_ip and filter_udp and tunnel_id:
+            import ipaddress
+            try:
+                is_v4 = ipaddress.ip_address(target_ip).version == 4
+            except ValueError:
+                is_v4 = True
+            if is_v4 and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
+                subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                nat_comment = f"smite_zapret_nat_{tunnel_id[:8]}"
+                actual_tgt_port = target_port or int(filter_udp.split(",")[0].split("-")[0])
+                for p in filter_udp.split(","):
+                    p = p.strip()
+                    if p:
+                        cmd_dnat = [
+                            "iptables", "-t", "nat", "-A", "PREROUTING",
+                            "-p", "udp", "--dport", p,
+                            "-j", "DNAT", "--to-destination", f"{target_ip}:{actual_tgt_port}",
+                            "-m", "comment", "--comment", nat_comment
+                        ]
+                        logger.info(f"Applying zapret DNAT rule: {' '.join(cmd_dnat)}")
+                        self._run_ipt(cmd_dnat)
+                cmd_masq = [
+                    "iptables", "-t", "nat", "-A", "POSTROUTING",
+                    "-p", "udp", "-d", target_ip, "--dport", str(actual_tgt_port),
+                    "-j", "MASQUERADE",
+                    "-m", "comment", "--comment", nat_comment
+                ]
+                logger.info(f"Applying zapret MASQUERADE rule: {' '.join(cmd_masq)}")
+                self._run_ipt(cmd_masq)
+
         jnfq = ["-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass"]
         cb_orig = ["-m", "connbytes", "--connbytes-dir=original", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
         cb_reply = ["-m", "connbytes", "--connbytes-dir=reply", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
@@ -2042,7 +2076,7 @@ class ZapretAdapter:
                 else:
                     raise RuntimeError(f"Failed to set up iptables NFQUEUE rules for zapret: {detail}")
 
-    def _teardown_iptables(self, post_chain, pre_chain):
+    def _teardown_iptables(self, post_chain, pre_chain, tunnel_id: str = ""):
         for ipt in ("iptables", "ip6tables"):
             for hook, chain in (("POSTROUTING", post_chain), ("PREROUTING", pre_chain)):
                 for _ in range(8):
@@ -2051,6 +2085,17 @@ class ZapretAdapter:
                         break
                 self._run_ipt([ipt, "-t", "mangle", "-F", chain])
                 self._run_ipt([ipt, "-t", "mangle", "-X", chain])
+        if tunnel_id:
+            nat_comment = f"smite_zapret_nat_{tunnel_id[:8]}"
+            for table_chain in [("nat", "PREROUTING"), ("nat", "POSTROUTING")]:
+                try:
+                    out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
+                    for line in out.splitlines():
+                        if nat_comment in line and line.startswith("-A"):
+                            d_cmd = ["iptables", "-t", table_chain[0], "-D"] + line.split()[1:]
+                            subprocess.run(d_cmd, check=False)
+                except Exception:
+                    pass
 
     def _close_log(self, tunnel_id: str):
         handle = self.log_handles.pop(tunnel_id, None)
@@ -2139,6 +2184,17 @@ class ZapretAdapter:
             direction = "both"
 
         target_ip = (spec.get("target_ip") or "").strip()
+        target_port = 0
+        if spec.get("target_port"):
+            try:
+                target_port = int(spec.get("target_port"))
+            except (TypeError, ValueError):
+                pass
+        if not target_port and filter_udp:
+            try:
+                target_port = int(filter_udp.split(",")[0].split("-")[0].strip())
+            except (TypeError, ValueError):
+                pass
 
         try:
             max_pkt = int(spec.get("max_pkt") or 10)
@@ -2222,9 +2278,12 @@ class ZapretAdapter:
 
         post_chain, pre_chain = self._chain_names(tunnel_id)
         try:
-            self._setup_iptables(post_chain, pre_chain, filter_tcp, filter_udp, queue, max_pkt, direction, target_ip)
+            self._setup_iptables(
+                post_chain, pre_chain, filter_tcp, filter_udp, queue, max_pkt, direction,
+                target_ip=target_ip, tunnel_id=tunnel_id, target_port=target_port
+            )
         except Exception:
-            self._teardown_iptables(post_chain, pre_chain)
+            self._teardown_iptables(post_chain, pre_chain, tunnel_id=tunnel_id)
             try:
                 proc.terminate()
                 proc.wait(timeout=5)
@@ -2251,7 +2310,7 @@ class ZapretAdapter:
         else:
             post_chain, pre_chain = self._chain_names(tunnel_id)
         # Always attempt teardown (idempotent) so leftover rules never accumulate.
-        self._teardown_iptables(post_chain, pre_chain)
+        self._teardown_iptables(post_chain, pre_chain, tunnel_id=tunnel_id)
 
         proc = self.processes.pop(tunnel_id, None)
         if proc:
@@ -3536,9 +3595,12 @@ class Obfs4Adapter:
 class PortHoppingAdapter:
     """Dynamic Multi-Port Hopping adapter for WireGuard UDP.
     
-    Redirects a wide port range (e.g. 20000:40000) directly into the target
-    WireGuard listen port (e.g. 8581) in the Linux kernel (iptables PREROUTING REDIRECT).
-    Zero userspace CPU overhead, zero extra latency, and fully persistent across checks.
+    In dual-node setup (Iran -> Foreign):
+      - Iran node: DNAT forwards port_range and target_port directly to Foreign WireGuard with MASQUERADE.
+      - Foreign node: REDIRECTs port_range directly into target WireGuard listen port.
+    In single-node setup (Direct to Foreign):
+      - REDIRECTs port_range directly into target WireGuard listen port.
+    Zero userspace CPU overhead, zero extra latency, and wire-speed packet processing.
     """
     name = "mport_hop"
 
@@ -3551,19 +3613,58 @@ class PortHoppingAdapter:
         target_port = spec.get("target_port") or spec.get("listen_port") or (spec.get("ports", [8581])[0] if isinstance(spec.get("ports"), list) else 8581)
         raw_range = str(spec.get("port_range") or "20000:40000")
         port_range = raw_range.replace("-", ":")
+        target_ip = (spec.get("target_ip") or spec.get("foreign_ip") or spec.get("remote_host") or "").strip()
         
         comment = f"smite_hop_{tunnel_id[:8]}"
-        cmd = [
-            "iptables", "-t", "nat", "-A", "PREROUTING",
-            "-p", "udp", "--dport", port_range,
-            "-j", "REDIRECT", "--to-ports", str(target_port),
-            "-m", "comment", "--comment", comment
-        ]
-        logger.info(f"Applying PortHopping rule: {' '.join(cmd)}")
-        subprocess.run(cmd, check=False)
+        
+        if target_ip and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
+            # Relay / Iran node mode: enable forwarding and DNAT to foreign server
+            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # 1. DNAT port_range to target_ip:target_port
+            cmd_dnat_range = [
+                "iptables", "-t", "nat", "-A", "PREROUTING",
+                "-p", "udp", "--dport", port_range,
+                "-j", "DNAT", "--to-destination", f"{target_ip}:{target_port}",
+                "-m", "comment", "--comment", comment
+            ]
+            logger.info(f"Applying PortHopping range DNAT rule: {' '.join(cmd_dnat_range)}")
+            subprocess.run(cmd_dnat_range, check=False)
+            
+            # 2. DNAT target_port (e.g. 8863) to target_ip:target_port
+            cmd_dnat_target = [
+                "iptables", "-t", "nat", "-A", "PREROUTING",
+                "-p", "udp", "--dport", str(target_port),
+                "-j", "DNAT", "--to-destination", f"{target_ip}:{target_port}",
+                "-m", "comment", "--comment", comment
+            ]
+            logger.info(f"Applying PortHopping target DNAT rule: {' '.join(cmd_dnat_target)}")
+            subprocess.run(cmd_dnat_target, check=False)
+            
+            # 3. MASQUERADE outbound UDP to foreign server
+            cmd_masq = [
+                "iptables", "-t", "nat", "-A", "POSTROUTING",
+                "-p", "udp", "-d", target_ip, "--dport", str(target_port),
+                "-j", "MASQUERADE",
+                "-m", "comment", "--comment", comment
+            ]
+            logger.info(f"Applying PortHopping MASQUERADE rule: {' '.join(cmd_masq)}")
+            subprocess.run(cmd_masq, check=False)
+        else:
+            # Endpoint / Foreign node mode: REDIRECT port_range to local WireGuard port
+            cmd_redirect = [
+                "iptables", "-t", "nat", "-A", "PREROUTING",
+                "-p", "udp", "--dport", port_range,
+                "-j", "REDIRECT", "--to-ports", str(target_port),
+                "-m", "comment", "--comment", comment
+            ]
+            logger.info(f"Applying PortHopping REDIRECT rule: {' '.join(cmd_redirect)}")
+            subprocess.run(cmd_redirect, check=False)
+
         self.active_ranges[tunnel_id] = {
             "target_port": target_port,
             "port_range": port_range,
+            "target_ip": target_ip,
             "comment": comment,
             "applied_at": time.time()
         }
@@ -3572,17 +3673,18 @@ class PortHoppingAdapter:
     def remove(self, tunnel_id: str) -> bool:
         comment = f"smite_hop_{tunnel_id[:8]}"
         is_bench = tunnel_id.startswith("bench-")
-        try:
-            out = subprocess.check_output(["iptables", "-t", "nat", "-S", "PREROUTING"], stderr=subprocess.DEVNULL).decode("utf-8")
-            for line in out.splitlines():
-                matches_comment = comment in line
-                matches_bench = is_bench and ("smite_hop_bench" in line or f"{tunnel_id[:12]}" in line)
-                if (matches_comment or matches_bench) and line.startswith("-A"):
-                    d_cmd = ["iptables", "-t", "nat", "-D"] + line.split()[1:]
-                    logger.info(f"Removing PortHopping rule: {' '.join(d_cmd)}")
-                    subprocess.run(d_cmd, check=False)
-        except Exception as e:
-            logger.warning(f"Error checking/removing PortHopping rule for {tunnel_id}: {e}")
+        for table_chain in [("nat", "PREROUTING"), ("nat", "POSTROUTING")]:
+            try:
+                out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
+                for line in out.splitlines():
+                    matches_comment = comment in line
+                    matches_bench = is_bench and ("smite_hop_bench" in line or f"{tunnel_id[:12]}" in line)
+                    if (matches_comment or matches_bench) and line.startswith("-A"):
+                        d_cmd = ["iptables", "-t", table_chain[0], "-D"] + line.split()[1:]
+                        logger.info(f"Removing PortHopping rule: {' '.join(d_cmd)}")
+                        subprocess.run(d_cmd, check=False)
+            except Exception as e:
+                logger.warning(f"Error checking/removing PortHopping rule for {tunnel_id}: {e}")
         self.active_ranges.pop(tunnel_id, None)
         return True
 
@@ -3656,7 +3758,7 @@ class FecFakeTcpAdapter:
             cipher = "aes128cbc"
         fec_spec["cipher_mode"] = cipher
         fec_spec["auth_mode"] = fec_spec.get("auth_mode") or "md5"
-        fec_spec["seq_mode"] = 3
+        fec_spec["seq_mode"] = fec_spec.get("seq_mode") or 1
         return self._inner.apply(tunnel_id, fec_spec)
 
     def remove(self, tunnel_id: str) -> bool:

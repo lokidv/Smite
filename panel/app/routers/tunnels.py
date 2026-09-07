@@ -935,12 +935,92 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
     normalizer = SINGLE_NODE_NORMALIZERS.get(core, lambda s: dict(s or {}))
     spec_for_node = normalizer(db_tunnel.spec)
 
-    # If zapret target_ip was omitted but foreign_node_id is specified, auto-populate target_ip
-    if core == "zapret" and not spec_for_node.get("target_ip") and getattr(db_tunnel, "foreign_node_id", None):
+    # Dual-node Multi-Port Hopping: Iran relay DNAT + Foreign endpoint REDIRECT
+    if core == "mport_hop" and getattr(db_tunnel, "iran_node_id", None) and getattr(db_tunnel, "foreign_node_id", None):
+        i_res = await db.execute(select(Node).where(Node.id == db_tunnel.iran_node_id))
+        iran_node = i_res.scalar_one_or_none()
         f_res = await db.execute(select(Node).where(Node.id == db_tunnel.foreign_node_id))
-        f_node = f_res.scalar_one_or_none()
-        if f_node and f_node.node_metadata.get("ip_address"):
-            spec_for_node["target_ip"] = f_node.node_metadata.get("ip_address")
+        foreign_node = f_res.scalar_one_or_none()
+        if not iran_node or not foreign_node:
+            db_tunnel.status = "error"
+            db_tunnel.error_message = "Both Iran and Foreign nodes are required for dual-node Port Hopping"
+            await db.commit()
+            await db.refresh(db_tunnel)
+            return db_tunnel
+
+        foreign_ip = foreign_node.node_metadata.get("ip_address")
+        target_port = spec_for_node.get("target_port") or 8863
+        port_range = spec_for_node.get("port_range") or "20000:40000"
+
+        # 1. Apply on Foreign node (server mode: REDIRECT port_range -> target_port)
+        foreign_spec = {
+            "mode": "server",
+            "target_port": target_port,
+            "port_range": port_range,
+            "ports": [target_port]
+        }
+        client = NodeClient()
+        resp_f = await client.send_to_node(
+            node_id=foreign_node.id,
+            endpoint="/api/agent/tunnels/apply",
+            data={
+                "tunnel_id": db_tunnel.id,
+                "core": "mport_hop",
+                "type": db_tunnel.type or "udp",
+                "spec": foreign_spec,
+            }
+        )
+        if resp_f.get("status") != "success":
+            db_tunnel.status = "error"
+            db_tunnel.error_message = f"Foreign node error: {resp_f.get('message', 'Failed to apply on foreign node')}"
+            await db.commit()
+            await db.refresh(db_tunnel)
+            return db_tunnel
+
+        # 2. Apply on Iran node (relay mode: DNAT port_range + target_port -> foreign_ip:target_port)
+        iran_spec = {
+            "mode": "client",
+            "target_ip": foreign_ip,
+            "target_port": target_port,
+            "port_range": port_range,
+            "ports": [target_port]
+        }
+        resp_i = await client.send_to_node(
+            node_id=iran_node.id,
+            endpoint="/api/agent/tunnels/apply",
+            data={
+                "tunnel_id": db_tunnel.id,
+                "core": "mport_hop",
+                "type": db_tunnel.type or "udp",
+                "spec": iran_spec,
+            }
+        )
+        if resp_i.get("status") != "success":
+            db_tunnel.status = "error"
+            db_tunnel.error_message = f"Iran node error: {resp_i.get('message', 'Failed to apply on Iran node')}"
+            await db.commit()
+            await db.refresh(db_tunnel)
+            return db_tunnel
+
+        db_tunnel.status = "active"
+        db_tunnel.error_message = None
+        await db.commit()
+        await db.refresh(db_tunnel)
+        return db_tunnel
+
+    # If zapret target_ip was omitted, empty, or default, auto-populate from foreign_node_id
+    if core == "zapret" and getattr(db_tunnel, "foreign_node_id", None):
+        tgt = (spec_for_node.get("target_ip") or "").strip()
+        if not tgt or tgt == "104.19.229.21":
+            f_res = await db.execute(select(Node).where(Node.id == db_tunnel.foreign_node_id))
+            f_node = f_res.scalar_one_or_none()
+            if f_node and f_node.node_metadata.get("ip_address"):
+                spec_for_node["target_ip"] = f_node.node_metadata.get("ip_address")
+        if not spec_for_node.get("target_port") and spec_for_node.get("filter_udp"):
+            try:
+                spec_for_node["target_port"] = int(str(spec_for_node["filter_udp"]).split(",")[0].split("-")[0].strip())
+            except (TypeError, ValueError):
+                pass
 
     # Persist normalized fields (e.g. the auto-generated snispoof inbound_uuid)
     # so re-applies and the UI always see the same values.
@@ -1174,11 +1254,14 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
             node_id_to_check = tunnel.iran_node_id or tunnel.node_id
             result = await db.execute(select(Node).where(Node.id == node_id_to_check))
             node = result.scalar_one_or_none()
+        elif tunnel.foreign_node_id:
+            result = await db.execute(select(Node).where(Node.id == tunnel.foreign_node_id))
+            node = result.scalar_one_or_none()
     
-    tunnel_node_id = tunnel.iran_node_id or tunnel.node_id or ""
+    tunnel_node_id = tunnel.iran_node_id or tunnel.node_id or tunnel.foreign_node_id or ""
     
-    foreign_node_id_to_store = foreign_node.id if foreign_node else None
-    iran_node_id_to_store = iran_node.id if iran_node else None
+    foreign_node_id_to_store = (foreign_node.id if foreign_node else None) or tunnel.foreign_node_id or None
+    iran_node_id_to_store = (iran_node.id if iran_node else None) or tunnel.iran_node_id or None
     
     db_tunnel = Tunnel(
         name=tunnel.name,
@@ -2393,7 +2476,7 @@ async def update_tunnel(
                 await db.refresh(tunnel)
                 return tunnel
 
-            if tunnel.core in ("udp2raw", "trusttunnel", "obfs4"):
+            if tunnel.core in ("udp2raw", "trusttunnel", "obfs4", "fec_faketcp", "awg_ws", "hysteria2", "tuic"):
                 # udp2raw/trusttunnel/obfs4 run on both the iran and foreign nodes;
                 # delegate to apply_tunnel which rebuilds and pushes the split specs
                 # (obfs4 via its two-phase server-first + cert helper).
@@ -3782,7 +3865,7 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
                 import logging
                 logging.error(f"Failed to stop FRP server: {e}")
     
-    if tunnel.core in ("udp2raw", "zapret", "trusttunnel", "snispoof", "hysteria2", "tuic", "obfs4", "warp"):
+    if tunnel.core in ("udp2raw", "zapret", "trusttunnel", "snispoof", "hysteria2", "tuic", "obfs4", "warp", "mport_hop", "fec_faketcp", "awg_ws"):
         # udp2raw/trusttunnel/hysteria2/tuic/obfs4 run on both the iran and
         # foreign nodes; zapret/snispoof/warp run on one node but may have been
         # registered under node_id/iran/foreign. Remove from each so every

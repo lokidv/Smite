@@ -122,6 +122,17 @@ const UDP2RAW_RAW_MODES: Udp2rawRawMode[] = ['faketcp', 'icmp', 'udp']
 const UDP2RAW_CIPHER_MODES = ['aes128cbc', 'aes128cfb', 'xor', 'none']
 const UDP2RAW_AUTH_MODES = ['md5', 'crc32', 'simple', 'none']
 
+export interface UseConfigPayload {
+  core: string
+  type: string
+  iran_node_id?: string
+  foreign_node_id?: string
+  ports?: string
+  name?: string
+  preset?: string
+  spec?: Record<string, any>
+}
+
 interface Udp2rawFormState {
   raw_mode: Udp2rawRawMode
   listen_port: string
@@ -1008,16 +1019,7 @@ const Tunnels = () => {
   const [showBulkChange, setShowBulkChange] = useState(false)
   const [bulkResults, setBulkResults] = useState<any | null>(null)
   const [showBenchmark, setShowBenchmark] = useState(false)
-  const [addPrefill, setAddPrefill] = useState<{
-    core?: string
-    type?: string
-    iran_node_id?: string
-    foreign_node_id?: string
-    ports?: string
-    name?: string
-    preset?: string
-    spec?: Record<string, any>
-  } | null>(null)
+  const [addPrefill, setAddPrefill] = useState<UseConfigPayload | null>(null)
 
   useEffect(() => {
     fetchData()
@@ -1879,17 +1881,6 @@ export const detectWireGuardPort = (tunnels?: Tunnel[]): string => {
     return String(anyActive.spec.ports[0])
   }
   return '8863'
-}
-
-export interface UseConfigPayload {
-  core: string
-  type: string
-  iran_node_id?: string
-  foreign_node_id?: string
-  ports?: string
-  name?: string
-  preset?: string
-  spec?: Record<string, any>
 }
 
 interface BenchmarkModalProps {
@@ -3531,7 +3522,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
     const state = createDefaultHysteria2State()
     if (initial?.core === 'hysteria2' && initial.type && HYSTERIA2_TYPES.includes(initial.type as Hysteria2Type)) {
       state.type = initial.type as Hysteria2Type
-      if (initial.ports) state.port = initial.ports
+      if (initial.ports) state.ports = initial.ports
     }
     return state
   })
@@ -3539,7 +3530,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
     const state = createDefaultTuicState()
     if (initial?.core === 'tuic' && initial.type && TUIC_TYPES.includes(initial.type as TuicType)) {
       state.type = initial.type as TuicType
-      if (initial.ports) state.port = initial.ports
+      if (initial.ports) state.ports = initial.ports
     }
     return state
   })
@@ -3854,6 +3845,14 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
         spec.target_port = targetPort
         spec.port_range = (formData.mport_range || '20000:40000').trim()
         spec.ports = [targetPort]
+        if (formData.foreign_node_id) {
+          const selectedServer = servers.find((s) => s.id === formData.foreign_node_id)
+          const sIp = selectedServer?.node_metadata?.ip_address || selectedServer?.metadata?.ip_address || selectedServer?.ip_address || ''
+          if (sIp) {
+            spec.target_ip = sIp
+            spec.foreign_ip = sIp
+          }
+        }
         tunnelType = 'udp'
       }
 
@@ -3901,11 +3900,11 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
 
       if (formData.core === 'zapret') {
         if (!formData.node_id && !formData.iran_node_id) {
-          alert('zapret requires a node (the server running the proxy / outbound TLS)')
+          alert('zapret requires an Iran node (the server running the proxy / outbound TLS)')
           return
         }
         let currentZapretState = { ...zapretState }
-        if (!currentZapretState.target_ip && formData.foreign_node_id) {
+        if (formData.foreign_node_id) {
           const selectedServer = servers.find((s) => s.id === formData.foreign_node_id)
           const sIp = selectedServer?.node_metadata?.ip_address || selectedServer?.metadata?.ip_address || selectedServer?.ip_address || ''
           if (sIp) {
@@ -3916,6 +3915,11 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
           currentZapretState.filter_udp = portString || '8863'
         }
         spec = buildZapretSpec(currentZapretState)
+        if (currentZapretState.target_ip) {
+          spec.target_ip = currentZapretState.target_ip
+          spec.foreign_ip = currentZapretState.target_ip
+        }
+        spec.target_port = currentZapretState.filter_udp
         tunnelType = (currentZapretState.preset && currentZapretState.preset !== 'none') ? currentZapretState.preset : (currentZapretState.desync_mode || formData.type)
       }
 
@@ -4111,19 +4115,23 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
               required
             />
           </div>
-          {formData.core !== 'snispoof' && formData.core !== 'warp' && formData.core !== 'mport_hop' && (
+          {formData.core !== 'snispoof' && formData.core !== 'warp' && (
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {formData.core === 'zapret' ? (language === 'fa' ? 'سرور ایران (اجراکننده زپرت)' : 'Iran Node (Runs Zapret)') : t.tunnels.iranNode}
+                {formData.core === 'zapret'
+                  ? (language === 'fa' ? 'سرور ایران (اجراکننده زپرت)' : 'Iran Node (Runs Zapret)')
+                  : formData.core === 'mport_hop'
+                  ? (language === 'fa' ? 'سرور ایران (ورودی کلاینت‌ها / فوروارد پرش پورت)' : 'Iran Node (Client Entry / Port Hopping Forwarder)')
+                  : t.tunnels.iranNode}
               </label>
               <select
                 value={formData.iran_node_id || formData.node_id}
                 onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4' || formData.core === 'zapret'}
+                required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4' || formData.core === 'zapret' || formData.core === 'mport_hop'}
               >
-                <option value="">{formData.core === 'zapret' ? (language === 'fa' ? 'انتخاب سرور ایران...' : 'Select Iran node...') : t.tunnels.selectIranNode}</option>
+                <option value="">{formData.core === 'zapret' || formData.core === 'mport_hop' ? (language === 'fa' ? 'انتخاب سرور ایران...' : 'Select Iran node...') : t.tunnels.selectIranNode}</option>
                 {nodes.map((node) => {
                   const ip = node.node_metadata?.ip_address || node.metadata?.ip_address || node.ip_address || ''
                   return (
@@ -4136,15 +4144,29 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {formData.core === 'zapret' ? (language === 'fa' ? 'سرور خارج مقصد (آدرس IP هدف)' : 'Target Foreign Server') : t.tunnels.foreignServer}
+                {formData.core === 'zapret'
+                  ? (language === 'fa' ? 'سرور خارج مقصد (آدرس IP هدف)' : 'Target Foreign Server')
+                  : formData.core === 'mport_hop'
+                  ? (language === 'fa' ? 'سرور خارج مقصد (سرور وایرگارد)' : 'Target Foreign Server (WireGuard Server)')
+                  : t.tunnels.foreignServer}
               </label>
               <select
                 value={formData.foreign_node_id}
-                onChange={(e) => setFormData({ ...formData, foreign_node_id: e.target.value })}
+                onChange={(e) => {
+                  const fId = e.target.value
+                  setFormData((prev) => ({ ...prev, foreign_node_id: fId }))
+                  if (fId) {
+                    const s = servers.find((srv) => srv.id === fId)
+                    const ip = s?.node_metadata?.ip_address || s?.metadata?.ip_address || s?.ip_address || ''
+                    if (ip && formData.core === 'zapret') {
+                      setZapretState((prev) => ({ ...prev, target_ip: ip }))
+                    }
+                  }
+                }}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
+                required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4' || formData.core === 'zapret' || formData.core === 'mport_hop'}
               >
-                <option value="">{formData.core === 'zapret' ? (language === 'fa' ? 'انتخاب سرور خارج (هدف)...' : 'Select target foreign server...') : t.tunnels.selectForeignServer}</option>
+                <option value="">{formData.core === 'zapret' || formData.core === 'mport_hop' ? (language === 'fa' ? 'انتخاب سرور خارج (هدف)...' : 'Select target foreign server...') : t.tunnels.selectForeignServer}</option>
                 {servers.map((server) => {
                   const ip = server.node_metadata?.ip_address || server.metadata?.ip_address || server.ip_address || ''
                   return (
@@ -4156,33 +4178,6 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
               </select>
             </div>
           </div>
-          )}
-
-          {formData.core === 'mport_hop' && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {language === 'fa' ? 'سرور مقصد پرش پورت (سروری که وایرگارد روی آن نصب است)' : 'Target Server (Where WireGuard is running)'}
-              </label>
-              <select
-                value={formData.iran_node_id || formData.node_id || formData.foreign_node_id}
-                onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value, foreign_node_id: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required
-              >
-                <option value="">{language === 'fa' ? 'انتخاب سرور...' : 'Select server...'}</option>
-                {[...servers, ...nodes].map((node) => {
-                  const ip = node.node_metadata?.ip_address || node.metadata?.ip_address || node.ip_address || ''
-                  return (
-                    <option key={node.id} value={node.id}>
-                      {node.name || node.id.substring(0, 8)}{ip ? ` (${ip})` : ''} ({node.metadata?.role || node.node_metadata?.role || 'node'})
-                    </option>
-                  )
-                })}
-              </select>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                {language === 'fa' ? 'قوانین ریدایرکت PREROUTING در سطح هسته لینوکس روی این سرور اعمال خواهند شد.' : 'Linux kernel PREROUTING redirect rules will be applied on this server.'}
-              </p>
-            </div>
           )}
 
           {formData.core === 'snispoof' && (
@@ -4554,8 +4549,13 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
           {(formData.core === 'udp2raw' || formData.core === 'fec_faketcp') && (
             <div>
               {formData.core === 'fec_faketcp' && (
-                <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-100/50 dark:bg-amber-900/30 p-2.5 rounded border border-amber-200 dark:border-amber-800/40 mb-3">
-                  ⚡ <strong>{language === 'fa' ? 'حالت فوق امنیتی ضد پکت‌لاس (FEC + FakeTCP)' : 'Zero-Loss FEC + FakeTCP Mode'}</strong>: {language === 'fa' ? 'بسته‌های UDP وایرگارد درون هندشیک‌های واقعی TCP کرنل قرار گرفته و با کدهای تصحیح خطای رید-سالامون (Reed-Solomon) در برابر پکت‌لاس‌های شدید ایران بیمه می‌شوند.' : 'WireGuard UDP is wrapped in kernel TCP handshakes with Reed-Solomon FEC redundancy to survive >30% packet loss.'}
+                <div className="space-y-2 mb-3">
+                  <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-100/50 dark:bg-amber-900/30 p-2.5 rounded border border-amber-200 dark:border-amber-800/40">
+                    ⚡ <strong>{language === 'fa' ? 'حالت فوق امنیتی ضد پکت‌لاس (FEC + FakeTCP)' : 'Zero-Loss FEC + FakeTCP Mode'}</strong>: {language === 'fa' ? 'بسته‌های UDP وایرگارد درون هندشیک‌های واقعی TCP کرنل قرار گرفته و با کدهای تصحیح خطای رید-سالامون (Reed-Solomon) در برابر پکت‌لاس‌های شدید ایران بیمه می‌شوند.' : 'WireGuard UDP is wrapped in kernel TCP handshakes with Reed-Solomon FEC redundancy to survive >30% packet loss.'}
+                  </div>
+                  <div className="text-xs text-blue-800 dark:text-blue-300 bg-blue-100/50 dark:bg-blue-900/30 p-2.5 rounded border border-blue-200 dark:border-blue-800/40">
+                    💡 <strong>{language === 'fa' ? 'نکته اتصال گوشی' : 'Phone Connection Tip'}</strong>: {language === 'fa' ? 'در کانفیگ WireGuard گوشی، مقدار MTU را روی 1280 یا 1200 قرار دهید تا پکت‌های FakeTCP در اینترنت ایران دچار افت نشوند.' : 'In your phone WireGuard client, set MTU to 1280 or 1200 to prevent FakeTCP packet drops.'}
+                  </div>
                 </div>
               )}
               <Udp2rawForm
@@ -5013,7 +5013,7 @@ function Udp2rawForm({
   state: Udp2rawFormState
   onChange: (partial: Partial<Udp2rawFormState>) => void
 }) {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   return (
     <div className="space-y-4">
       <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">

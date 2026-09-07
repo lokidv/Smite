@@ -482,20 +482,64 @@ class TunnelReapplyManager:
                             else:
                                 failed += 1
                     else:
-                        node_id_to_check = tunnel.node_id or tunnel.foreign_node_id or tunnel.iran_node_id
+                        if tunnel.core == "mport_hop" and tunnel.iran_node_id and tunnel.foreign_node_id:
+                            i_res = await session.execute(select(Node).where(Node.id == tunnel.iran_node_id))
+                            iran_node = i_res.scalar_one_or_none()
+                            f_res = await session.execute(select(Node).where(Node.id == tunnel.foreign_node_id))
+                            foreign_node = f_res.scalar_one_or_none()
+                            if not iran_node or not foreign_node:
+                                failed += 1
+                                continue
+
+                            spec = tunnel.spec.copy() if tunnel.spec else {}
+                            target_port = spec.get("target_port") or 8863
+                            port_range = spec.get("port_range") or "20000:40000"
+                            foreign_ip = foreign_node.node_metadata.get("ip_address")
+
+                            f_spec = {"mode": "server", "target_port": target_port, "port_range": port_range, "ports": [target_port]}
+                            i_spec = {"mode": "client", "target_ip": foreign_ip, "target_port": target_port, "port_range": port_range, "ports": [target_port]}
+
+                            rf = await client.send_to_node(node_id=foreign_node.id, endpoint="/api/agent/tunnels/apply", data={"tunnel_id": tunnel.id, "core": "mport_hop", "type": tunnel.type or "udp", "spec": f_spec})
+                            ri = await client.send_to_node(node_id=iran_node.id, endpoint="/api/agent/tunnels/apply", data={"tunnel_id": tunnel.id, "core": "mport_hop", "type": tunnel.type or "udp", "spec": i_spec})
+                            if rf.get("status") == "success" and ri.get("status") == "success":
+                                applied += 1
+                                logger.info(f"Successfully reapplied dual-node mport_hop tunnel {tunnel.id}")
+                            else:
+                                failed += 1
+                            continue
+
+                        # zapret runs on Iran node; other single-node tunnels prefer node_id / foreign / iran
+                        if tunnel.core == "zapret":
+                            node_id_to_check = tunnel.iran_node_id or tunnel.node_id or tunnel.foreign_node_id
+                        else:
+                            node_id_to_check = tunnel.node_id or tunnel.foreign_node_id or tunnel.iran_node_id
+
                         result = await session.execute(select(Node).where(Node.id == node_id_to_check))
                         node = result.scalar_one_or_none()
                         if not node:
                             continue
-                        
+
                         spec = tunnel.spec.copy() if tunnel.spec else {}
-                        
+
+                        if tunnel.core == "zapret" and tunnel.foreign_node_id:
+                            tgt = (spec.get("target_ip") or "").strip()
+                            if not tgt or tgt == "104.19.229.21":
+                                f_res = await session.execute(select(Node).where(Node.id == tunnel.foreign_node_id))
+                                f_node = f_res.scalar_one_or_none()
+                                if f_node and f_node.node_metadata.get("ip_address"):
+                                    spec["target_ip"] = f_node.node_metadata.get("ip_address")
+                            if not spec.get("target_port") and spec.get("filter_udp"):
+                                try:
+                                    spec["target_port"] = int(str(spec["filter_udp"]).split(",")[0].split("-")[0].strip())
+                                except (TypeError, ValueError):
+                                    pass
+
                         if tunnel.core == "gost":
                             spec["type"] = tunnel.type
-                        
+
                         if tunnel.core == "frp":
                             spec = prepare_frp_spec_for_node(spec, node, fake_request)
-                        
+
                         response = await client.send_to_node(
                             node_id=node.id,
                             endpoint="/api/agent/tunnels/apply",
@@ -506,7 +550,7 @@ class TunnelReapplyManager:
                                 "spec": spec
                             }
                         )
-                        
+
                         if response.get("status") == "success":
                             applied += 1
                             logger.info(f"Successfully reapplied tunnel {tunnel.id} ({tunnel.core})")

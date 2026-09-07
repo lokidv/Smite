@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel
 import logging
 import time
+import asyncio
 
 from app.database import get_db
 from app.models import Tunnel, Node

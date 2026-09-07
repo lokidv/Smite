@@ -12,6 +12,7 @@ import Tunnels from './pages/Tunnels'
 import Logs from './pages/Logs'
 import CoreHealth from './pages/CoreHealth'
 import Settings from './pages/Settings'
+import ErrorBoundary from './components/ErrorBoundary'
 
 // Protected Route Component
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -150,7 +151,9 @@ function App() {
     <Router>
       <LanguageProvider>
         <AuthProvider>
-          <AppRoutes />
+          <ErrorBoundary>
+            <AppRoutes />
+          </ErrorBoundary>
         </AuthProvider>
       </LanguageProvider>
     </Router>

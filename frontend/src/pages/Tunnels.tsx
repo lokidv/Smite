@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState, Fragment } from 'react'
 import { Plus, Trash2, Edit2, RotateCw, Gauge, Power, ChevronUp, ChevronDown, CheckSquare, Square, Shield, ArrowUpDown } from 'lucide-react'
 import api from '../api/client'
 import { parseAddressPort, formatAddressPort } from '../utils/addressUtils'
 import { useLanguage } from '../contexts/LanguageContext'
+import ErrorBoundary from '../components/ErrorBoundary'
 
 interface Tunnel {
   id: string
@@ -1628,16 +1629,37 @@ const Tunnels = () => {
       )}
 
       {showBenchmark && (
-        <BenchmarkModal
-          nodes={nodes}
-          servers={servers}
-          onClose={() => setShowBenchmark(false)}
-          onUseConfig={(payload) => {
-            setShowBenchmark(false)
-            setAddPrefill(payload)
-            setShowAddModal(true)
-          }}
-        />
+        <ErrorBoundary fallback={
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+            <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl text-center border border-gray-200 dark:border-gray-700">
+              <div className="text-3xl mb-2">⚠️</div>
+              <h3 className="text-lg font-bold text-red-600 dark:text-red-400 mb-2">
+                {language === 'fa' ? 'خطا در بارگذاری پاپ‌آپ تست بین نودها' : 'Error loading benchmark modal'}
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                {language === 'fa' ? 'یک خطای غیرمنتظره رخ داد. پنجره را ببندید و مجدداً امتحان کنید.' : 'An unexpected error occurred. Please close and try again.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowBenchmark(false)}
+                className="px-5 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 text-gray-800 dark:text-gray-200 rounded-lg text-sm font-bold transition"
+              >
+                {t.tunnels.cancel || 'بستن'}
+              </button>
+            </div>
+          </div>
+        }>
+          <BenchmarkModal
+            nodes={nodes}
+            servers={servers}
+            onClose={() => setShowBenchmark(false)}
+            onUseConfig={(payload) => {
+              setShowBenchmark(false)
+              setAddPrefill(payload)
+              setShowAddModal(true)
+            }}
+          />
+        </ErrorBoundary>
       )}
     </div>
   )
@@ -2319,9 +2341,10 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
               </thead>
               <tbody>
                 {results.map((r, idx) => {
+                  if (!r || typeof r !== 'object') return null
                   const hasScenarios = r.core === 'zapret' && Array.isArray(r.scenarios) && r.scenarios.length > 0
                   return (
-                    <React.Fragment key={`${r.core}-${r.mode}`}>
+                    <Fragment key={`${r.core || 'core'}-${r.mode || idx}-${idx}`}>
                       <tr
                         className={`border-b border-gray-100 dark:border-gray-700/50 ${
                           r.ok ? '' : 'opacity-60'
@@ -2516,12 +2539,13 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                 </thead>
                                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700/30">
                                   {r.scenarios.map((sc: any, scIdx: number) => {
+                                    if (!sc) return null
                                     const isTop = scIdx === 0 && sc.ok
                                     return (
-                                      <tr key={sc.mode} className={sc.ok ? 'hover:bg-purple-50/50 dark:hover:bg-purple-900/20' : 'opacity-60'}>
+                                      <tr key={`${sc.mode || 'sc'}-${scIdx}`} className={sc.ok ? 'hover:bg-purple-50/50 dark:hover:bg-purple-900/20' : 'opacity-60'}>
                                         <td className="py-2 font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
                                           <span>{sc.icon || '📱'}</span>
-                                          <span>{language === 'fa' ? sc.name_fa : sc.name}</span>
+                                          <span>{language === 'fa' ? (sc.name_fa || sc.name) : (sc.name || sc.name_fa)}</span>
                                           {isTop && (
                                             <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 font-extrabold border border-amber-300 dark:border-amber-700">
                                               ⭐️ {t.tunnels.benchmarkTopPerformer || (language === 'fa' ? 'بهترین عملکرد' : 'Top')}
@@ -2529,7 +2553,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                           )}
                                         </td>
                                         <td className="py-2 text-gray-600 dark:text-gray-300 font-mono text-[11px]">
-                                          {sc.description || sc.mode}
+                                          {sc.description || sc.mode || ''}
                                         </td>
                                         <td className="py-2 text-center font-mono text-gray-700 dark:text-gray-300">
                                           {sc.ok && sc.latency_ms != null ? `${sc.latency_ms} ms` : '-'}
@@ -2559,12 +2583,12 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                                 onUseConfig({
                                                   core: 'zapret',
                                                   type: sc.mode,
-                                                  preset: sc.preset,
+                                                  preset: sc.preset || sc.mode,
                                                   iran_node_id: state?.iran_node_id || iranNodeId,
                                                   foreign_node_id: state?.foreign_node_id || foreignNodeId,
-                                                  name: language === 'fa' ? `زپرت (${sc.name_fa})` : `Zapret (${sc.name})`,
+                                                  name: language === 'fa' ? `زپرت (${sc.name_fa || sc.name})` : `Zapret (${sc.name || sc.mode})`,
                                                   ports: '51820',
-                                                  spec: sc.spec,
+                                                  spec: sc.spec || {},
                                                 })
                                               }
                                               className="px-2.5 py-1 text-xs bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-md hover:from-blue-700 hover:to-indigo-700 font-bold shadow-sm transition cursor-pointer"
@@ -2582,7 +2606,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                           </td>
                         </tr>
                       )}
-                    </React.Fragment>
+                    </Fragment>
                   )
                 })}
               </tbody>

@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 REVERSE_CORES = {
     "rathole", "backhaul", "chisel", "frp", "udp2raw",
     "trusttunnel", "hysteria2", "tuic", "obfs4",
+    "awg_ws", "fec_faketcp",
 }
 
 # Problem kinds the monitor owns (so it may auto-resolve them when they clear).
@@ -125,7 +126,7 @@ class HealthMonitor:
     # ---- helpers ----
     @staticmethod
     def _required_ends(t: Tunnel) -> List[str]:
-        if t.core in REVERSE_CORES:
+        if t.foreign_node_id or t.core in REVERSE_CORES:
             iran = t.iran_node_id or t.node_id
             foreign = t.foreign_node_id
             return [e for e in (iran, foreign) if e]
@@ -143,7 +144,7 @@ class HealthMonitor:
     def _control_port_of(t: Tunnel) -> Optional[int]:
         try:
             from app.port_allocator import _preferred_control_port
-            if t.core in ("rathole", "backhaul", "chisel", "trusttunnel"):
+            if t.core in ("rathole", "backhaul", "chisel", "trusttunnel", "awg_ws"):
                 return _preferred_control_port(t)
         except Exception:
             pass
@@ -261,7 +262,7 @@ class HealthMonitor:
                 unhealthy = health in ("disconnected", "stopped", "degraded")
                 if unhealthy:
                     self._bad_counts[t.id] = self._bad_counts.get(t.id, 0) + 1
-                    primary_node = (t.iran_node_id or t.node_id) if t.core in REVERSE_CORES else t.node_id
+                    primary_node = (t.iran_node_id or t.node_id) if (t.foreign_node_id or t.core in REVERSE_CORES) else t.node_id
                     key = (primary_node, t.id, health if health in MANAGED_KINDS else "disconnected")
                     current_problem_keys.add(key)
                     await self._record_problem(
@@ -377,7 +378,7 @@ class HealthMonitor:
     async def _diagnose_port_collisions(self, session, tunnels: List[Tunnel], current_keys: Set[tuple]):
         by_node_port: Dict[tuple, List[Tunnel]] = {}
         for t in tunnels:
-            if t.core not in ("rathole", "backhaul", "chisel", "trusttunnel"):
+            if t.core not in ("rathole", "backhaul", "chisel", "trusttunnel", "awg_ws"):
                 continue
             iran = t.iran_node_id or t.node_id
             port = self._control_port_of(t)

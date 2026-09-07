@@ -1516,13 +1516,25 @@ const Tunnels = () => {
                       {iranNode && (
                         <div className="flex items-center gap-1.5">
                           <span className="font-medium">Node:</span>
-                          <span className="text-gray-700 dark:text-gray-300">{iranNode.name || iranNode.id.substring(0, 8)}</span>
+                          <span className="text-gray-700 dark:text-gray-300">
+                            {iranNode.name || iranNode.id.substring(0, 8)}
+                            {(() => {
+                              const ip = iranNode.node_metadata?.ip_address || iranNode.metadata?.ip_address || iranNode.ip_address || ''
+                              return ip ? ` (${ip})` : ''
+                            })()}
+                          </span>
                         </div>
                       )}
                       {foreignServer && (
                         <div className="flex items-center gap-1.5">
                           <span className="font-medium">Server:</span>
-                          <span className="text-gray-700 dark:text-gray-300">{foreignServer.name || foreignServer.id.substring(0, 8)}</span>
+                          <span className="text-gray-700 dark:text-gray-300">
+                            {foreignServer.name || foreignServer.id.substring(0, 8)}
+                            {(() => {
+                              const ip = foreignServer.node_metadata?.ip_address || foreignServer.metadata?.ip_address || foreignServer.ip_address || ''
+                              return ip ? ` (${ip})` : ''
+                            })()}
+                          </span>
                         </div>
                       )}
                     </div>

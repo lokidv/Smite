@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Per-core preferred port windows (lo, hi inclusive) used for probing.
 _CONTROL_WINDOWS = {
     "rathole": (23333, 24332),
+    "awg_ws": (23333, 24332),
     "backhaul": (3080, 4079),
     "chisel": (20000, 29999),
     "trusttunnel": (6100, 6899),
@@ -62,7 +63,7 @@ def _preferred_control_port(tunnel: Tunnel) -> int:
         return int(cp)
     h = _hash(tunnel.id)
     core = tunnel.core
-    if core == "rathole":
+    if core in ("rathole", "awg_ws"):
         return (
             _parse_port(spec.get("remote_addr"))
             or _parse_port(spec.get("bind_addr"))

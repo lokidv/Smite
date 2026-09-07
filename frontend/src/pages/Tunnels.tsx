@@ -1602,6 +1602,7 @@ const Tunnels = () => {
         <AddTunnelModal
           nodes={nodes}
           servers={servers}
+          tunnels={tunnels}
           initial={addPrefill || undefined}
           onClose={() => {
             setShowAddModal(false)
@@ -1664,6 +1665,7 @@ const Tunnels = () => {
           <BenchmarkModal
             nodes={nodes}
             servers={servers}
+            tunnels={tunnels}
             onClose={() => setShowBenchmark(false)}
             onUseConfig={(payload) => {
               setShowBenchmark(false)
@@ -1823,6 +1825,45 @@ const BulkResultsModal = ({ results, onClose }: BulkResultsModalProps) => {
   )
 }
 
+export const detectWireGuardPort = (tunnels?: Tunnel[]): string => {
+  if (!tunnels || tunnels.length === 0) return '8863'
+  // 1) Active carrier/stealth tunnel
+  const carrierTunnel = tunnels.find(
+    (t) =>
+      t.status === 'active' &&
+      (['awg_ws', 'mport_hop', 'fec_faketcp', 'udp2raw'].includes(t.core) ||
+        (t.core === 'rathole' && t.type === 'tls') ||
+        t.core === 'zapret')
+  ) || tunnels.find(
+    (t) =>
+      ['awg_ws', 'mport_hop', 'fec_faketcp', 'udp2raw'].includes(t.core) ||
+      (t.core === 'rathole' && t.type === 'tls') ||
+      t.core === 'zapret'
+  )
+  if (carrierTunnel) {
+    if (carrierTunnel.spec?.ports && Array.isArray(carrierTunnel.spec.ports) && carrierTunnel.spec.ports[0]) {
+      return String(carrierTunnel.spec.ports[0])
+    }
+    if (carrierTunnel.spec?.listen_port) {
+      return String(carrierTunnel.spec.listen_port)
+    }
+    if (carrierTunnel.spec?.remote_port) {
+      return String(carrierTunnel.spec.remote_port)
+    }
+    if (carrierTunnel.spec?.filter_udp) {
+      return String(carrierTunnel.spec.filter_udp)
+    }
+    if (carrierTunnel.spec?.target_port) {
+      return String(carrierTunnel.spec.target_port)
+    }
+  }
+  const anyActive = tunnels.find((t) => t.status === 'active' && t.spec?.ports && Array.isArray(t.spec.ports) && t.spec.ports[0])
+  if (anyActive) {
+    return String(anyActive.spec.ports[0])
+  }
+  return '8863'
+}
+
 export interface UseConfigPayload {
   core: string
   type: string
@@ -1837,6 +1878,7 @@ export interface UseConfigPayload {
 interface BenchmarkModalProps {
   nodes: any[]
   servers: any[]
+  tunnels?: Tunnel[]
   onClose: () => void
   onUseConfig: (payload: UseConfigPayload) => void
 }
@@ -1858,8 +1900,9 @@ interface BenchmarkComboItem {
   badge?: string
 }
 
-const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModalProps) => {
+const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: BenchmarkModalProps) => {
   const { t, language } = useLanguage()
+  const detectedWgPort = useMemo(() => detectWireGuardPort(tunnels), [tunnels])
   const [iranNodeId, setIranNodeId] = useState('')
   const [foreignNodeId, setForeignNodeId] = useState('')
   const [state, setState] = useState<any | null>(null)
@@ -2358,9 +2401,14 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                   return (
                     <Fragment key={`${r.core || 'core'}-${r.mode || idx}-${idx}`}>
                       <tr
+                        onClick={() => {
+                          if (hasScenarios) {
+                            setExpandedZapret(!expandedZapret)
+                          }
+                        }}
                         className={`border-b border-gray-100 dark:border-gray-700/50 ${
                           r.ok ? '' : 'opacity-60'
-                        }`}
+                        } ${hasScenarios ? 'cursor-pointer hover:bg-purple-50/50 dark:hover:bg-purple-900/20' : ''}`}
                       >
                         <td className="py-2 pr-2 font-semibold text-gray-500 dark:text-gray-400">{idx + 1}</td>
                         <td className="py-2 pr-2">
@@ -2369,7 +2417,10 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                             {hasScenarios ? (
                               <button
                                 type="button"
-                                onClick={() => setExpandedZapret(!expandedZapret)}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setExpandedZapret(!expandedZapret)
+                                }}
                                 className="text-xs px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 hover:bg-purple-200 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 font-bold flex items-center gap-1 transition shadow-sm border border-purple-200 dark:border-purple-700 cursor-pointer"
                                 title={language === 'fa' ? 'مشاهده و انتخاب سناریوهای اپراتورها' : 'View and select ISP scenarios'}
                               >
@@ -2423,9 +2474,11 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                           {r.ok && (
                             <button
                               type="button"
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation()
                                 const iranId = state?.iran_node_id || iranNodeId
                                 const foreignId = state?.foreign_node_id || foreignNodeId
+                                const wgPort = detectedWgPort || '8863'
                                 if (r.core === 'zapret') {
                                   const best = (r.scenarios && r.scenarios.length > 0) ? r.scenarios[0] : r
                                   onUseConfig({
@@ -2435,8 +2488,8 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                     iran_node_id: iranId,
                                     foreign_node_id: foreignId,
                                     name: language === 'fa' ? `زپرت (${best.name_fa || 'ضد فیلتر DPI'})` : `Zapret (${best.name || 'Anti-DPI'})`,
-                                    ports: '51820',
-                                    spec: best.spec,
+                                    ports: wgPort,
+                                    spec: best.spec || {},
                                   })
                                   return
                                 }
@@ -2447,7 +2500,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                     iran_node_id: iranId,
                                     foreign_node_id: foreignId,
                                     name: language === 'fa' ? 'دیجی‌کالا TLS (AWG)' : 'AWG-over-WebSocket',
-                                    ports: '8581',
+                                    ports: wgPort,
                                   })
                                   return
                                 }
@@ -2458,7 +2511,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                     iran_node_id: iranId,
                                     foreign_node_id: foreignId,
                                     name: language === 'fa' ? 'پرش پورت پویا (وایرگارد)' : 'Multi-Port Hopping',
-                                    ports: '8581',
+                                    ports: wgPort,
                                   })
                                   return
                                 }
@@ -2469,7 +2522,14 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                     iran_node_id: iranId,
                                     foreign_node_id: foreignId,
                                     name: language === 'fa' ? 'ضد پکت‌لاس (FEC + FakeTCP)' : 'FEC + FakeTCP (Zero-Loss)',
-                                    ports: '8581',
+                                    ports: wgPort,
+                                    spec: {
+                                      raw_mode: 'faketcp',
+                                      cipher_mode: 'aes128cbc',
+                                      auth_mode: 'md5',
+                                      listen_port: wgPort,
+                                      target_port: wgPort,
+                                    },
                                   })
                                   return
                                 }
@@ -2480,7 +2540,14 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                     iran_node_id: iranId,
                                     foreign_node_id: foreignId,
                                     name: `udp2raw (${r.mode.toUpperCase()})`,
-                                    ports: '8581',
+                                    ports: wgPort,
+                                    spec: {
+                                      raw_mode: r.mode,
+                                      cipher_mode: 'aes128cbc',
+                                      auth_mode: 'md5',
+                                      listen_port: wgPort,
+                                      target_port: wgPort,
+                                    },
                                   })
                                   return
                                 }
@@ -2491,7 +2558,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                     iran_node_id: iranId,
                                     foreign_node_id: foreignId,
                                     name: `Rathole (${r.mode.toUpperCase()})`,
-                                    ports: r.mode === 'tls' ? '8581' : '8080',
+                                    ports: r.mode === 'tls' ? wgPort : '8080',
                                   })
                                   return
                                 }
@@ -2502,7 +2569,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                     iran_node_id: iranId,
                                     foreign_node_id: foreignId,
                                     name: `${r.core.toUpperCase()} (${r.mode.toUpperCase()})`,
-                                    ports: r.mode === 'udp' ? '8581' : '8080',
+                                    ports: r.mode === 'udp' ? wgPort : '8080',
                                   })
                                   return
                                 }
@@ -2512,10 +2579,10 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                   iran_node_id: iranId,
                                   foreign_node_id: foreignId,
                                   name: `${getCoreDisplayName(r.core, language)} (${r.mode})`,
-                                  ports: r.protocol === 'udp' ? '8581' : '8080',
+                                  ports: r.protocol === 'udp' ? wgPort : '8080',
                                 })
                               }}
-                              className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow transition"
+                              className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow transition cursor-pointer"
                             >
                               {t.tunnels.benchmarkUseConfig}
                             </button>
@@ -2591,7 +2658,9 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                           {sc.ok && (
                                             <button
                                               type="button"
-                                              onClick={() =>
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                const wgPort = detectedWgPort || '8863'
                                                 onUseConfig({
                                                   core: 'zapret',
                                                   type: sc.mode,
@@ -2599,10 +2668,10 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                                                   iran_node_id: state?.iran_node_id || iranNodeId,
                                                   foreign_node_id: state?.foreign_node_id || foreignNodeId,
                                                   name: language === 'fa' ? `زپرت (${sc.name_fa || sc.name})` : `Zapret (${sc.name || sc.mode})`,
-                                                  ports: '51820',
+                                                  ports: wgPort,
                                                   spec: sc.spec || {},
                                                 })
-                                              }
+                                              }}
                                               className="px-2.5 py-1 text-xs bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-md hover:from-blue-700 hover:to-indigo-700 font-bold shadow-sm transition cursor-pointer"
                                             >
                                               {t.tunnels.benchmarkUseConfig}
@@ -3307,13 +3376,15 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
 interface AddTunnelModalProps {
   nodes: any[]
   servers: any[]
+  tunnels?: Tunnel[]
   onClose: () => void
   onSuccess: () => void
   initial?: UseConfigPayload
 }
 
-const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunnelModalProps) => {
+const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }: AddTunnelModalProps) => {
   const { t, language } = useLanguage()
+  const detectedWgPort = detectWireGuardPort(tunnels)
   const [formData, setFormData] = useState({
     name: initial?.name || '',
     core: initial?.core || 'gost',
@@ -3321,7 +3392,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     node_id: initial?.iran_node_id || '',
     foreign_node_id: initial?.foreign_node_id || '',
     iran_node_id: initial?.iran_node_id || '',
-    ports: initial?.ports || (['awg_ws', 'mport_hop', 'fec_faketcp', 'udp2raw'].includes(initial?.core || '') || initial?.core === 'rathole' ? '8581' : (initial?.core === 'zapret' ? '51820' : '8080')),
+    ports: initial?.ports || (['awg_ws', 'mport_hop', 'fec_faketcp', 'udp2raw', 'zapret'].includes(initial?.core || '') || initial?.core === 'rathole' ? detectedWgPort : '8080'),
     remote_ip: '127.0.0.1',
     rathole_remote_addr: '23333',
     rathole_token: '',
@@ -3348,13 +3419,18 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
   const [showBackhaulAdvanced, setShowBackhaulAdvanced] = useState(false)
   const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(() => {
     const state = createDefaultUdp2rawState()
+    const defaultPort = initial?.ports || detectedWgPort
     if ((initial?.core === 'udp2raw' || initial?.core === 'fec_faketcp') && initial.type) {
       state.raw_mode = (initial.core === 'fec_faketcp' ? 'faketcp' : initial.type) as Udp2rawRawMode
       state.cipher_mode = 'aes128cbc'
-      if (initial.ports) {
-        state.listen_port = initial.ports
-        state.target_port = initial.ports
-      }
+      state.auth_mode = 'md5'
+      state.listen_port = defaultPort
+      state.target_port = initial.spec?.target_port ? String(initial.spec.target_port) : defaultPort
+    } else {
+      state.listen_port = defaultPort
+      state.target_port = defaultPort
+      state.cipher_mode = 'aes128cbc'
+      state.auth_mode = 'md5'
     }
     return state
   })
@@ -3382,36 +3458,22 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     return state
   })
   const [zapretState, setZapretState] = useState<ZapretFormState>(() => {
-    const state = createDefaultZapretState()
     if (initial?.core === 'zapret') {
-      const preset = initial.preset || (['mci', 'mtn', 'fixed'].includes(initial.type || '') ? initial.type : 'none')
-      if (preset === 'mci') {
-        state.preset = 'mci'
-        state.desync_mode = 'multisplit'
-        state.split_pos = '2'
-        state.desync_fooling = 'badseq,ts'
-        state.desync_ttl = '4'
-        state.repeats = '2'
-      } else if (preset === 'mtn') {
-        state.preset = 'mtn'
-        state.desync_mode = 'fakedsplit'
-        state.split_pos = '2'
-        state.desync_fooling = 'badsum,badseq'
-        state.desync_ttl = '3'
-        state.repeats = '2'
-      } else if (preset === 'fixed') {
-        state.preset = 'fixed'
-        state.desync_mode = 'disorder2'
-        state.split_pos = '2'
-        state.desync_fooling = 'badseq'
-        state.desync_ttl = '5'
-        state.repeats = '1'
-      } else {
-        state.preset = 'none'
-        state.desync_mode = initial.type || 'fake'
+      const parsed = parseZapretSpec(initial.spec, initial.type)
+      const preset = initial.preset || (['mci', 'mtn', 'fixed'].includes(initial.type || '') ? initial.type : parsed.preset || 'none')
+      if (preset && preset !== 'none') {
+        parsed.preset = preset
       }
-      state.filter_udp = '51820'
+      parsed.filter_udp = initial.ports || detectedWgPort
+      if (initial.foreign_node_id) {
+        const targetServer = servers.find((s) => s.id === initial.foreign_node_id)
+        const targetIp = targetServer?.node_metadata?.ip_address || targetServer?.metadata?.ip_address || targetServer?.ip_address || ''
+        if (targetIp) parsed.target_ip = targetIp
+      }
+      return parsed
     }
+    const state = createDefaultZapretState()
+    state.filter_udp = detectedWgPort
     return state
   })
   const [sniSpoofState, setSniSpoofState] = useState<SniSpoofFormState>(createDefaultSniSpoofState())
@@ -3427,7 +3489,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     const iranId = initial.iran_node_id || ''
     const foreignId = initial.foreign_node_id || ''
     const isCarrier = ['awg_ws', 'mport_hop', 'fec_faketcp', 'udp2raw'].includes(c) || (c === 'rathole' && t === 'tls') || (c === 'hysteria2' && t === 'udp') || (c === 'tuic' && t === 'udp')
-    const defaultPorts = isCarrier ? '8581' : (c === 'zapret' ? '51820' : '8080')
+    const defaultPorts = isCarrier ? detectedWgPort : (c === 'zapret' ? detectedWgPort : '8080')
     const finalPorts = initial.ports || defaultPorts
 
     setFormData((prev) => ({
@@ -3446,60 +3508,28 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     }))
 
     if (c === 'zapret') {
-      const preset = initial.preset || (['mci', 'mtn', 'fixed'].includes(t) ? t : 'none')
-      let desync_mode = t || 'fake'
-      let split_pos = '2'
-      let desync_fooling = 'badseq,ts'
-      let desync_ttl = '4'
-      let repeats = '2'
-      if (preset === 'mci') {
-        desync_mode = 'multisplit'
-        split_pos = '2'
-        desync_fooling = 'badseq,ts'
-        desync_ttl = '4'
-        repeats = '2'
-      } else if (preset === 'mtn') {
-        desync_mode = 'fakedsplit'
-        split_pos = '2'
-        desync_fooling = 'badsum,badseq'
-        desync_ttl = '3'
-        repeats = '2'
-      } else if (preset === 'fixed') {
-        desync_mode = 'disorder2'
-        split_pos = '2'
-        desync_fooling = 'badseq'
-        desync_ttl = '5'
-        repeats = '1'
+      const parsed = parseZapretSpec(initial.spec, t)
+      const preset = initial.preset || (['mci', 'mtn', 'fixed'].includes(t) ? t : parsed.preset || 'none')
+      if (preset && preset !== 'none') {
+        parsed.preset = preset
       }
+      parsed.filter_udp = finalPorts
       const targetServer = servers.find((s) => s.id === foreignId)
-      const targetIp = targetServer?.node_metadata?.ip_address || targetServer?.metadata?.ip_address || targetServer?.ip_address || ''
-      setZapretState({
-        preset: preset || 'none',
-        desync_mode,
-        split_pos,
-        desync_fooling,
-        desync_ttl,
-        repeats,
-        filter_udp: '51820',
-        filter_tcp: '443',
-        filter_l7: 'tls',
-        fake_tls_sni: 'hcaptcha.com',
-        direction: 'both',
-        queue_num: '',
-        extra_args: '',
-        target_ip: targetIp,
-      })
+      const targetIp = targetServer?.node_metadata?.ip_address || targetServer?.metadata?.ip_address || targetServer?.ip_address || parsed.target_ip || ''
+      parsed.target_ip = targetIp
+      setZapretState(parsed)
     }
 
     if (c === 'fec_faketcp' || c === 'udp2raw') {
       const mode = (c === 'fec_faketcp' ? 'faketcp' : t) as Udp2rawRawMode
+      const targetPort = initial.spec?.target_port ? String(initial.spec.target_port) : finalPorts
       setUdp2rawState((prev) => ({
         ...prev,
         raw_mode: UDP2RAW_RAW_MODES.includes(mode) ? mode : 'faketcp',
         cipher_mode: 'aes128cbc',
         auth_mode: 'md5',
         listen_port: finalPorts,
-        target_port: finalPorts,
+        target_port: targetPort,
       }))
     }
 
@@ -3513,7 +3543,21 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     if (c === 'tuic' && TUIC_TYPES.includes(t as TuicType)) {
       setTuicState((prev) => ({ ...prev, type: t as TuicType, port: finalPorts }))
     }
-  }, [initial, servers])
+  }, [initial, servers, detectedWgPort])
+
+  // Auto-populate target_ip for zapret when foreign server changes
+  useEffect(() => {
+    if (formData.core === 'zapret' && formData.foreign_node_id) {
+      const selectedServer = servers.find(s => s.id === formData.foreign_node_id)
+      const ip = selectedServer?.node_metadata?.ip_address || selectedServer?.metadata?.ip_address || selectedServer?.ip_address
+      if (ip) {
+        setZapretState(prev => ({
+          ...prev,
+          target_ip: ip
+        }))
+      }
+    }
+  }, [formData.foreign_node_id, formData.core, servers])
 
   // Auto-populate remote_ip with foreign server IP when GOST is selected
   useEffect(() => {
@@ -3531,6 +3575,20 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
+      const foreignId = formData.foreign_node_id
+      const iranId = formData.iran_node_id || formData.node_id
+      if (foreignId && iranId && foreignId === iranId) {
+        alert(language === 'fa' ? 'خطا: نود ایران و سرور خارج نمی‌توانند یک سرور یکسان باشند! لطفاً دو سرور مجزا انتخاب کنید.' : 'Error: Iran node and Foreign server cannot be the same server! Please select two distinct servers.')
+        return
+      }
+
+      let portString = formData.ports
+      if ((formData.core === 'udp2raw' || formData.core === 'fec_faketcp') && (!portString || !portString.trim())) {
+        portString = udp2rawState.listen_port || detectedWgPort
+      } else if (formData.core === 'zapret' && (!portString || !portString.trim())) {
+        portString = zapretState.filter_udp || detectedWgPort
+      }
+
       let spec = getSpecForType(formData.core, formData.type)
       let tunnelType = formData.type
       
@@ -3546,7 +3604,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
           .filter(p => !isNaN(p) && p > 0 && p <= 65535)
       }
       
-      const ports = parsePorts(formData.ports)
+      const ports = parsePorts(portString || '8863')
       if (ports.length === 0) {
         alert('Please enter at least one valid port')
         return
@@ -3680,12 +3738,18 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
           alert('udp2raw/fec_faketcp tunnels require an iran node')
           return
         }
-        const listenPort = parseInt(udp2rawState.listen_port, 10)
+        const listenPort = parseInt(udp2rawState.listen_port || portString || '8863', 10)
         if (Number.isNaN(listenPort) || listenPort <= 0) {
           alert('Please enter a valid listen port')
           return
         }
-        spec = buildUdp2rawSpec(udp2rawState)
+        const targetPort = parseInt(udp2rawState.target_port || udp2rawState.listen_port || portString || '8863', 10)
+        const updatedUdp2rawState = {
+          ...udp2rawState,
+          listen_port: String(listenPort),
+          target_port: String(targetPort),
+        }
+        spec = buildUdp2rawSpec(updatedUdp2rawState)
         if (formData.core === 'fec_faketcp') {
           spec.cipher_mode = 'aes128cbc'
           spec.auth_mode = 'md5'
@@ -3700,7 +3764,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
           alert('Dynamic Port Hopping requires a node')
           return
         }
-        const targetPort = parseInt(formData.ports || '8581', 10) || 8581
+        const targetPort = parseInt(formData.ports || portString || '8863', 10) || 8863
         spec.target_port = targetPort
         spec.port_range = (formData.mport_range || '20000:40000').trim()
         spec.ports = [targetPort]
@@ -3754,8 +3818,19 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
           alert('zapret requires a node (the server running the proxy / outbound TLS)')
           return
         }
-        spec = buildZapretSpec(zapretState)
-        tunnelType = (zapretState.preset && zapretState.preset !== 'none') ? zapretState.preset : (zapretState.desync_mode || formData.type)
+        let currentZapretState = { ...zapretState }
+        if (!currentZapretState.target_ip && formData.foreign_node_id) {
+          const selectedServer = servers.find((s) => s.id === formData.foreign_node_id)
+          const sIp = selectedServer?.node_metadata?.ip_address || selectedServer?.metadata?.ip_address || selectedServer?.ip_address || ''
+          if (sIp) {
+            currentZapretState.target_ip = sIp
+          }
+        }
+        if (!currentZapretState.filter_udp) {
+          currentZapretState.filter_udp = portString || '8863'
+        }
+        spec = buildZapretSpec(currentZapretState)
+        tunnelType = (currentZapretState.preset && currentZapretState.preset !== 'none') ? currentZapretState.preset : (currentZapretState.desync_mode || formData.type)
       }
 
       if (formData.core === 'snispoof') {
@@ -3950,19 +4025,19 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               required
             />
           </div>
-          {formData.core !== 'zapret' && formData.core !== 'snispoof' && formData.core !== 'warp' && formData.core !== 'mport_hop' && (
+          {formData.core !== 'snispoof' && formData.core !== 'warp' && formData.core !== 'mport_hop' && (
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {t.tunnels.iranNode}
+                {formData.core === 'zapret' ? (language === 'fa' ? 'سرور ایران (اجراکننده زپرت)' : 'Iran Node (Runs Zapret)') : t.tunnels.iranNode}
               </label>
               <select
                 value={formData.iran_node_id || formData.node_id}
                 onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
+                required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4' || formData.core === 'zapret'}
               >
-                <option value="">{t.tunnels.selectIranNode}</option>
+                <option value="">{formData.core === 'zapret' ? (language === 'fa' ? 'انتخاب سرور ایران...' : 'Select Iran node...') : t.tunnels.selectIranNode}</option>
                 {nodes.map((node) => {
                   const ip = node.node_metadata?.ip_address || node.metadata?.ip_address || node.ip_address || ''
                   return (
@@ -3975,7 +4050,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {t.tunnels.foreignServer}
+                {formData.core === 'zapret' ? (language === 'fa' ? 'سرور خارج مقصد (آدرس IP هدف)' : 'Target Foreign Server') : t.tunnels.foreignServer}
               </label>
               <select
                 value={formData.foreign_node_id}
@@ -3983,7 +4058,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
                 required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
               >
-                <option value="">{t.tunnels.selectForeignServer}</option>
+                <option value="">{formData.core === 'zapret' ? (language === 'fa' ? 'انتخاب سرور خارج (هدف)...' : 'Select target foreign server...') : t.tunnels.selectForeignServer}</option>
                 {servers.map((server) => {
                   const ip = server.node_metadata?.ip_address || server.metadata?.ip_address || server.ip_address || ''
                   return (
@@ -4024,7 +4099,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
             </div>
           )}
 
-          {(formData.core === 'zapret' || formData.core === 'snispoof') && (
+          {formData.core === 'snispoof' && (
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 {t.tunnels.zapretNode}
@@ -4400,7 +4475,16 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               <Udp2rawForm
                 state={udp2rawState}
                 onChange={(partial) => {
-                  setUdp2rawState((prev) => ({ ...prev, ...partial }))
+                  setUdp2rawState((prev) => {
+                    const next = { ...prev, ...partial }
+                    if (partial.listen_port !== undefined && (prev.target_port === prev.listen_port || !prev.target_port)) {
+                      next.target_port = partial.listen_port
+                    }
+                    return next
+                  })
+                  if (partial.listen_port !== undefined) {
+                    setFormData((prev) => ({ ...prev, ports: partial.listen_port! }))
+                  }
                   if (partial.raw_mode) {
                     setFormData((prev) => ({ ...prev, type: partial.raw_mode as string }))
                   }
@@ -4852,20 +4936,26 @@ function Udp2rawForm({
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Listen Port
+            {language === 'fa' ? 'پورت ورودی ایران (Listen Port)' : 'Listen Port (Iran Entry)'}
           </label>
           <input
             type="number"
             value={state.listen_port}
-            onChange={(e) => onChange({ listen_port: e.target.value })}
+            onChange={(e) => {
+              const val = e.target.value
+              onChange({
+                listen_port: val,
+                ...(state.target_port === state.listen_port || !state.target_port ? { target_port: val } : {})
+              })
+            }}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-            placeholder="4096"
+            placeholder="8863"
             min={1}
             max={65535}
             required
           />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Public UDP port on the iran node (users connect here)
+            {language === 'fa' ? 'پورت ورودی UDP در سرور ایران که کلاینت‌ها به آن متصل می‌شوند' : 'Public UDP port on the iran node (users connect here)'}
           </p>
         </div>
         <div>
@@ -4882,7 +4972,7 @@ function Udp2rawForm({
             max={65535}
           />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Raw faketcp/icmp/udp port on the foreign server (auto if empty)
+            {language === 'fa' ? 'پورت مبدل در سرور خارج (خالی = خودکار)' : 'Raw faketcp/icmp/udp port on the foreign server (auto if empty)'}
           </p>
         </div>
       </div>
@@ -4900,24 +4990,24 @@ function Udp2rawForm({
             placeholder="127.0.0.1"
           />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            UDP service host on the foreign server
+            {language === 'fa' ? 'آدرس هاست وایرگارد در سرور خارج (پیش‌فرض: 127.0.0.1)' : 'UDP service host on the foreign server'}
           </p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Target Port (Optional)
+            {language === 'fa' ? 'پورت سرویس خارج (Target Port)' : 'Target Port (Foreign WireGuard Port)'}
           </label>
           <input
             type="number"
             value={state.target_port}
             onChange={(e) => onChange({ target_port: e.target.value })}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-            placeholder="Same as listen port"
+            placeholder={state.listen_port || '8863'}
             min={1}
             max={65535}
           />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            UDP service port on the foreign server (defaults to listen port)
+            {language === 'fa' ? 'پورت سرویس وایرگارد در سرور خارج (پیش‌فرض: همان پورت ورودی)' : 'UDP service port on the foreign server (defaults to listen port)'}
           </p>
         </div>
       </div>

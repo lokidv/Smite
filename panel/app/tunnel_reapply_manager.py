@@ -365,7 +365,7 @@ class TunnelReapplyManager:
                                 raw_port = server_spec.get("raw_port") or (4096 + (port_hash % 1000))
                                 target_host = server_spec.get("target_host", "127.0.0.1")
                                 target_port = server_spec.get("target_port") or listen_port
-                                cipher_mode = server_spec.get("cipher_mode") or ("aes128cfb" if tunnel.core == "fec_faketcp" else "aes128cbc")
+                                cipher_mode = server_spec.get("cipher_mode") or "aes128cbc"
                                 auth_mode = server_spec.get("auth_mode") or "md5"
                                 seq_mode = 3 if tunnel.core == "fec_faketcp" else 1
                                 
@@ -433,39 +433,50 @@ class TunnelReapplyManager:
                                 client_spec["target_host"] = target_host
                                 client_spec["ports"] = ports
                             
-                            server_response = await client.send_to_node(
-                                node_id=iran_node.id,
+                            iran_is_server = (server_spec.get("mode") != "client")
+                            first_node = iran_node if iran_is_server else foreign_node
+                            first_spec = server_spec if iran_is_server else client_spec
+                            first_role = "iran" if iran_is_server else "foreign"
+                            second_node = foreign_node if iran_is_server else iran_node
+                            second_spec = client_spec if iran_is_server else server_spec
+                            second_role = "foreign" if iran_is_server else "iran"
+
+                            first_response = await client.send_to_node(
+                                node_id=first_node.id,
                                 endpoint="/api/agent/tunnels/apply",
                                 data={
                                     "tunnel_id": tunnel.id,
                                     "core": tunnel.core,
                                     "type": tunnel.type,
-                                    "spec": server_spec
+                                    "spec": first_spec
                                 }
                             )
-                            
-                            if server_response.get("status") == "error":
-                                logger.error(f"Failed to reapply tunnel {tunnel.id} to iran node: {server_response.get('message')}")
+
+                            if first_response.get("status") == "error":
+                                logger.error(f"Failed to reapply tunnel {tunnel.id} to {first_role} node: {first_response.get('message')}")
                                 failed += 1
                                 continue
-                            
-                            client_response = await client.send_to_node(
-                                node_id=foreign_node.id,
+
+                            import asyncio
+                            await asyncio.sleep(0.5)
+
+                            second_response = await client.send_to_node(
+                                node_id=second_node.id,
                                 endpoint="/api/agent/tunnels/apply",
                                 data={
                                     "tunnel_id": tunnel.id,
                                     "core": tunnel.core,
                                     "type": tunnel.type,
-                                    "spec": client_spec
+                                    "spec": second_spec
                                 }
                             )
-                            
-                            if client_response.get("status") == "error":
-                                logger.error(f"Failed to reapply tunnel {tunnel.id} to foreign node: {client_response.get('message')}")
+
+                            if second_response.get("status") == "error":
+                                logger.error(f"Failed to reapply tunnel {tunnel.id} to {second_role} node: {second_response.get('message')}")
                                 failed += 1
                                 continue
-                            
-                            if server_response.get("status") == "success" and client_response.get("status") == "success":
+
+                            if first_response.get("status") == "success" and second_response.get("status") == "success":
                                 applied += 1
                                 logger.info(f"Successfully reapplied tunnel {tunnel.id} ({tunnel.core})")
                             else:

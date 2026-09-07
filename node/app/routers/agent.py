@@ -115,15 +115,16 @@ async def get_tunnel_logs(request: Request, tunnel_id: str = "", tail: int = 50)
     if not effective_id:
         effective_id = request.query_params.get("tunnel_id", "")
     from pathlib import Path
-    base = Path("/var/lib/smite-node")
-    for sub in ["", "rathole", "udp2raw", "zapret", "hysteria2", "tuic"]:
-        f = (base / sub / f"{effective_id}.log") if sub else (base / f"{effective_id}.log")
-        if f.exists():
-            try:
-                lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
-                return {"status": "success", "lines": lines[-tail:]}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
+    for base_dir in ["/var/lib/smite-node", "/etc/smite-node"]:
+        base = Path(base_dir)
+        for sub in ["", "rathole", "udp2raw", "zapret", "hysteria2", "tuic"]:
+            f = (base / sub / f"{effective_id}.log") if sub else (base / f"{effective_id}.log")
+            if f.exists():
+                try:
+                    lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+                    return {"status": "success", "lines": lines[-tail:]}
+                except Exception as e:
+                    return {"status": "error", "message": str(e)}
     return {"status": "not_found", "lines": []}
 
 

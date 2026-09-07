@@ -736,7 +736,7 @@ def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: 
             "target_host": target_host,
             "target_port": int(primary.get("target_port") or primary["port"]),
             "ports": [primary["port"]],
-            "cipher_mode": "aes128cfb" if new_core == "fec_faketcp" else "aes128cbc",
+            "cipher_mode": "aes128cbc",
             "auth_mode": "md5",
             "seq_mode": 3 if new_core == "fec_faketcp" else 1,
         }
@@ -903,8 +903,8 @@ async def change_tunnel_core_type(
 async def resolve_single_node(db_tunnel: Tunnel, db: AsyncSession):
     """Resolve the single node a single-node tunnel runs on (any of node/iran/foreign)."""
     candidates = [
-        db_tunnel.node_id,
         getattr(db_tunnel, "iran_node_id", None),
+        db_tunnel.node_id,
         getattr(db_tunnel, "foreign_node_id", None),
     ]
     for nid in candidates:
@@ -933,6 +933,13 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
 
     normalizer = SINGLE_NODE_NORMALIZERS.get(core, lambda s: dict(s or {}))
     spec_for_node = normalizer(db_tunnel.spec)
+
+    # If zapret target_ip was omitted but foreign_node_id is specified, auto-populate target_ip
+    if core == "zapret" and not spec_for_node.get("target_ip") and getattr(db_tunnel, "foreign_node_id", None):
+        f_res = await db.execute(select(Node).where(Node.id == db_tunnel.foreign_node_id))
+        f_node = f_res.scalar_one_or_none()
+        if f_node and f_node.node_metadata.get("ip_address"):
+            spec_for_node["target_ip"] = f_node.node_metadata.get("ip_address")
 
     # Persist normalized fields (e.g. the auto-generated snispoof inbound_uuid)
     # so re-applies and the UI always see the same values.
@@ -1541,7 +1548,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 raw_port = server_spec.get("raw_port") or (4096 + (port_hash % 1000))
                 target_host = server_spec.get("target_host", "127.0.0.1")
                 target_port = server_spec.get("target_port") or listen_port
-                cipher_mode = server_spec.get("cipher_mode") or ("aes128cfb" if db_tunnel.core == "fec_faketcp" else "aes128cbc")
+                cipher_mode = server_spec.get("cipher_mode") or "aes128cbc"
                 auth_mode = server_spec.get("auth_mode") or "md5"
                 seq_mode = 3 if db_tunnel.core == "fec_faketcp" else 1
                 
@@ -1737,55 +1744,63 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 server_spec = tuic_iran
                 client_spec = tuic_foreign
 
-            if not iran_node.node_metadata.get("api_address"):
-                iran_node.node_metadata["api_address"] = f"http://{iran_node.node_metadata.get('ip_address', iran_node.fingerprint)}:{iran_node.node_metadata.get('api_port', 8888)}"
-                await db.commit()
-            
-            logger.info(f"Applying server config to iran node {iran_node.id} for tunnel {db_tunnel.id}")
-            server_response = await client.send_to_node(
-                node_id=iran_node.id,
+            iran_is_server = (server_spec.get("mode") != "client")
+            first_node = iran_node if iran_is_server else foreign_node
+            first_spec = server_spec if iran_is_server else client_spec
+            first_role = "iran" if iran_is_server else "foreign"
+            second_node = foreign_node if iran_is_server else iran_node
+            second_spec = client_spec if iran_is_server else server_spec
+            second_role = "foreign" if iran_is_server else "iran"
+
+            for n in (first_node, second_node):
+                if not n.node_metadata.get("api_address"):
+                    n.node_metadata["api_address"] = f"http://{n.node_metadata.get('ip_address', n.fingerprint)}:{n.node_metadata.get('api_port', 8888)}"
+            await db.commit()
+
+            logger.info(f"Applying server/listener config to {first_role} node {first_node.id} for tunnel {db_tunnel.id}")
+            first_resp = await client.send_to_node(
+                node_id=first_node.id,
                 endpoint="/api/agent/tunnels/apply",
                 data={
                     "tunnel_id": db_tunnel.id,
                     "core": db_tunnel.core,
                     "type": db_tunnel.type,
-                    "spec": server_spec
+                    "spec": first_spec
                 }
             )
-            
-            if server_response.get("status") == "error":
+
+            if first_resp.get("status") == "error":
                 db_tunnel.status = "error"
-                error_msg = server_response.get("message", "Unknown error from iran node")
-                db_tunnel.error_message = f"Iran node error: {error_msg}"
-                logger.error(f"Tunnel {db_tunnel.id}: Iran node error: {error_msg}")
+                error_msg = first_resp.get("message", f"Unknown error from {first_role} node")
+                db_tunnel.error_message = f"{first_role.capitalize()} node error: {error_msg}"
+                logger.error(f"Tunnel {db_tunnel.id}: {first_role} node error: {error_msg}")
                 await db.commit()
                 await db.refresh(db_tunnel)
                 return db_tunnel
-            
-            if not foreign_node.node_metadata.get("api_address"):
-                foreign_node.node_metadata["api_address"] = f"http://{foreign_node.node_metadata.get('ip_address', foreign_node.fingerprint)}:{foreign_node.node_metadata.get('api_port', 8888)}"
-                await db.commit()
-            
-            logger.info(f"Applying client config to foreign node {foreign_node.id} for tunnel {db_tunnel.id}")
-            client_response = await client.send_to_node(
-                node_id=foreign_node.id,
+
+            # Ensure listener is bound before client dials
+            await asyncio.sleep(0.5)
+
+            logger.info(f"Applying client/dialer config to {second_role} node {second_node.id} for tunnel {db_tunnel.id}")
+            second_resp = await client.send_to_node(
+                node_id=second_node.id,
                 endpoint="/api/agent/tunnels/apply",
                 data={
                     "tunnel_id": db_tunnel.id,
                     "core": db_tunnel.core,
                     "type": db_tunnel.type,
-                    "spec": client_spec
+                    "spec": second_spec
                 }
             )
-            
-            if client_response.get("status") == "error":
+
+            if second_resp.get("status") == "error":
                 db_tunnel.status = "error"
-                error_msg = client_response.get("message", "Unknown error from foreign node")
-                db_tunnel.error_message = f"Foreign node error: {error_msg}"
-                logger.error(f"Tunnel {db_tunnel.id}: Foreign node error: {error_msg}")
+                error_msg = second_resp.get("message", f"Unknown error from {second_role} node")
+                db_tunnel.error_message = f"{second_role.capitalize()} node error: {error_msg}"
+                logger.error(f"Tunnel {db_tunnel.id}: {second_role} node error: {error_msg}")
                 try:
                     await client.send_to_node(
-                        node_id=iran_node.id,
+                        node_id=first_node.id,
                         endpoint="/api/agent/tunnels/remove",
                         data={"tunnel_id": db_tunnel.id}
                     )
@@ -1794,8 +1809,8 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 await db.commit()
                 await db.refresh(db_tunnel)
                 return db_tunnel
-            
-            if server_response.get("status") == "success" and client_response.get("status") == "success":
+
+            if first_resp.get("status") == "success" and second_resp.get("status") == "success":
                 db_tunnel.status = "active"
                 logger.info(f"Tunnel {db_tunnel.id} successfully applied to both nodes")
             else:

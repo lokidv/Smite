@@ -1,4 +1,4 @@
-import React, { useEffect, useState, Fragment } from 'react'
+import React, { useEffect, useState, useMemo, Fragment } from 'react'
 import { Plus, Trash2, Edit2, RotateCw, Gauge, Power, ChevronUp, ChevronDown, CheckSquare, Square, Shield, ArrowUpDown } from 'lucide-react'
 import api from '../api/client'
 import { parseAddressPort, formatAddressPort } from '../utils/addressUtils'

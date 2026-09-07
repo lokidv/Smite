@@ -1550,6 +1550,8 @@ class Udp2rawAdapter:
             "--auth-mode", str(auth_mode),
             "-a",  # auto add/remove the iptables rule needed by faketcp/icmp raw modes
         ]
+        if spec.get("seq_mode"):
+            cmd.extend(["--seq-mode", str(spec.get("seq_mode"))])
 
         # Free the listen address if an orphaned udp2raw (e.g. left over after an
         # agent restart) is still bound to it - otherwise this one hits 'socket
@@ -3569,10 +3571,13 @@ class PortHoppingAdapter:
 
     def remove(self, tunnel_id: str) -> bool:
         comment = f"smite_hop_{tunnel_id[:8]}"
+        is_bench = tunnel_id.startswith("bench-")
         try:
             out = subprocess.check_output(["iptables", "-t", "nat", "-S", "PREROUTING"], stderr=subprocess.DEVNULL).decode("utf-8")
             for line in out.splitlines():
-                if comment in line and line.startswith("-A"):
+                matches_comment = comment in line
+                matches_bench = is_bench and ("smite_hop_bench" in line or f"{tunnel_id[:12]}" in line)
+                if (matches_comment or matches_bench) and line.startswith("-A"):
                     d_cmd = ["iptables", "-t", "nat", "-D"] + line.split()[1:]
                     logger.info(f"Removing PortHopping rule: {' '.join(d_cmd)}")
                     subprocess.run(d_cmd, check=False)
@@ -3605,6 +3610,10 @@ class AwgWsAdapter:
     def __init__(self):
         self._inner = RatholeAdapter()
 
+    @property
+    def processes(self):
+        return self._inner.processes
+
     def apply(self, tunnel_id: str, spec: Dict[str, Any]):
         ws_spec = dict(spec)
         ws_spec["transport"] = ws_spec.get("transport") or "tls"
@@ -3622,6 +3631,11 @@ class AwgWsAdapter:
         st["type"] = "awg_ws"
         return st
 
+    def health(self, tunnel_id: str) -> Dict[str, Any]:
+        h = self._inner.health(tunnel_id)
+        h["type"] = "awg_ws"
+        return h
+
 
 class FecFakeTcpAdapter:
     """Kernel FakeTCP with Forward Error Correction (FEC) anti-loss for WireGuard."""
@@ -3630,10 +3644,17 @@ class FecFakeTcpAdapter:
     def __init__(self):
         self._inner = Udp2rawAdapter()
 
+    @property
+    def processes(self):
+        return self._inner.processes
+
     def apply(self, tunnel_id: str, spec: Dict[str, Any]):
         fec_spec = dict(spec)
         fec_spec["raw_mode"] = fec_spec.get("raw_mode") or "faketcp"
-        fec_spec["cipher_mode"] = fec_spec.get("cipher_mode") or "aes128cfb"
+        cipher = fec_spec.get("cipher_mode") or "aes128cbc"
+        if cipher == "aes128cfb":
+            cipher = "aes128cbc"
+        fec_spec["cipher_mode"] = cipher
         fec_spec["auth_mode"] = fec_spec.get("auth_mode") or "md5"
         fec_spec["seq_mode"] = 3
         return self._inner.apply(tunnel_id, fec_spec)
@@ -3645,6 +3666,11 @@ class FecFakeTcpAdapter:
         st = self._inner.status(tunnel_id)
         st["type"] = "fec_faketcp"
         return st
+
+    def health(self, tunnel_id: str) -> Dict[str, Any]:
+        h = self._inner.health(tunnel_id)
+        h["type"] = "fec_faketcp"
+        return h
 
 
 class AdapterManager:

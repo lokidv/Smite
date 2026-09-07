@@ -1007,7 +1007,16 @@ const Tunnels = () => {
   const [showBulkChange, setShowBulkChange] = useState(false)
   const [bulkResults, setBulkResults] = useState<any | null>(null)
   const [showBenchmark, setShowBenchmark] = useState(false)
-  const [addPrefill, setAddPrefill] = useState<{ core?: string; type?: string; iran_node_id?: string; foreign_node_id?: string } | null>(null)
+  const [addPrefill, setAddPrefill] = useState<{
+    core?: string
+    type?: string
+    iran_node_id?: string
+    foreign_node_id?: string
+    ports?: string
+    name?: string
+    preset?: string
+    spec?: Record<string, any>
+  } | null>(null)
 
   useEffect(() => {
     fetchData()
@@ -1623,9 +1632,9 @@ const Tunnels = () => {
           nodes={nodes}
           servers={servers}
           onClose={() => setShowBenchmark(false)}
-          onUseConfig={(core, type, iranNodeId, foreignNodeId) => {
+          onUseConfig={(payload) => {
             setShowBenchmark(false)
-            setAddPrefill({ core, type, iran_node_id: iranNodeId, foreign_node_id: foreignNodeId })
+            setAddPrefill(payload)
             setShowAddModal(true)
           }}
         />
@@ -1780,11 +1789,22 @@ const BulkResultsModal = ({ results, onClose }: BulkResultsModalProps) => {
   )
 }
 
+export interface UseConfigPayload {
+  core: string
+  type: string
+  iran_node_id?: string
+  foreign_node_id?: string
+  ports?: string
+  name?: string
+  preset?: string
+  spec?: Record<string, any>
+}
+
 interface BenchmarkModalProps {
   nodes: any[]
   servers: any[]
   onClose: () => void
-  onUseConfig: (core: string, type: string, iranNodeId: string, foreignNodeId: string) => void
+  onUseConfig: (payload: UseConfigPayload) => void
 }
 
 interface BenchmarkComboItem {
@@ -1812,6 +1832,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
   const [starting, setStarting] = useState(false)
   const [combos, setCombos] = useState<BenchmarkComboItem[]>([])
   const [showConfig, setShowConfig] = useState(true)
+  const [expandedZapret, setExpandedZapret] = useState(true)
 
   const fetchState = async () => {
     try {
@@ -1827,6 +1848,15 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
     const interval = setInterval(fetchState, 3000)
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    if (!iranNodeId && nodes && nodes.length > 0) {
+      setIranNodeId(nodes[0].id)
+    }
+    if (!foreignNodeId && servers && servers.length > 0) {
+      setForeignNodeId(servers[0].id)
+    }
+  }, [nodes, servers])
 
   useEffect(() => {
     const fetchCombos = async () => {
@@ -1962,6 +1992,10 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
 
   const startBenchmark = async () => {
     if (!iranNodeId || !foreignNodeId) return
+    if (iranNodeId === foreignNodeId) {
+      alert(language === 'fa' ? 'نود ایران و سرور خارج نمی‌توانند یک سرور باشند! لطفاً دو سرور مجزا انتخاب کنید.' : 'Iran node and Foreign server cannot be the same server. Please select two distinct servers.')
+      return
+    }
     const activeCombos = combos.filter((c) => c.enabled)
     if (activeCombos.length === 0) {
       alert(language === 'fa' ? 'لطفاً حداقل یک تانل را برای تست انتخاب کنید' : 'Please select at least one tunnel')
@@ -2021,11 +2055,14 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm focus:ring-2 focus:ring-orange-500 font-medium"
             >
               <option value="">{t.tunnels.selectIranNode}</option>
-              {nodes.map((node) => (
-                <option key={node.id} value={node.id}>
-                  {node.name || node.id.substring(0, 8)}
-                </option>
-              ))}
+              {nodes.map((node) => {
+                const ip = node.node_metadata?.ip_address || node.ip_address || ''
+                return (
+                  <option key={node.id} value={node.id}>
+                    {node.name || node.id.substring(0, 8)}{ip ? ` (${ip})` : ''}
+                  </option>
+                )
+              })}
             </select>
           </div>
           <div>
@@ -2039,13 +2076,17 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm focus:ring-2 focus:ring-orange-500 font-medium"
             >
               <option value="">{t.tunnels.selectForeignServer}</option>
-              {servers.map((server) => (
-                <option key={server.id} value={server.id}>
-                  {server.name || server.id.substring(0, 8)}
-                </option>
-              ))}
+              {servers.map((server) => {
+                const ip = server.node_metadata?.ip_address || server.ip_address || ''
+                return (
+                  <option key={server.id} value={server.id}>
+                    {server.name || server.id.substring(0, 8)}{ip ? ` (${ip})` : ''}
+                  </option>
+                )
+              })}
             </select>
           </div>
+
           <div className="flex items-end">
             <button
               type="button"
@@ -2277,78 +2318,273 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                 </tr>
               </thead>
               <tbody>
-                {results.map((r, idx) => (
-                  <tr
-                    key={`${r.core}-${r.mode}`}
-                    className={`border-b border-gray-100 dark:border-gray-700/50 ${
-                      r.ok ? '' : 'opacity-60'
-                    }`}
-                  >
-                    <td className="py-2 pr-2 font-semibold text-gray-500 dark:text-gray-400">{idx + 1}</td>
-                    <td className="py-2 pr-2">
-                      <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5 flex-wrap">
-                        <span>{getCoreDisplayName(r.core, language)}</span>
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
-                          {r.mode}
-                        </span>
-                      </div>
-                      {!r.ok && r.error && (
-                        <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={r.error}>
-                          {r.error}
-                        </div>
+                {results.map((r, idx) => {
+                  const hasScenarios = r.core === 'zapret' && Array.isArray(r.scenarios) && r.scenarios.length > 0
+                  return (
+                    <React.Fragment key={`${r.core}-${r.mode}`}>
+                      <tr
+                        className={`border-b border-gray-100 dark:border-gray-700/50 ${
+                          r.ok ? '' : 'opacity-60'
+                        }`}
+                      >
+                        <td className="py-2 pr-2 font-semibold text-gray-500 dark:text-gray-400">{idx + 1}</td>
+                        <td className="py-2 pr-2">
+                          <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                            <span>{getCoreDisplayName(r.core, language)}</span>
+                            {hasScenarios ? (
+                              <button
+                                type="button"
+                                onClick={() => setExpandedZapret(!expandedZapret)}
+                                className="text-xs px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 hover:bg-purple-200 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 font-bold flex items-center gap-1 transition shadow-sm border border-purple-200 dark:border-purple-700 cursor-pointer"
+                                title={language === 'fa' ? 'مشاهده و انتخاب سناریوهای اپراتورها' : 'View and select ISP scenarios'}
+                              >
+                                <span>{expandedZapret ? '▲' : '▼'}</span>
+                                <span>{expandedZapret ? (t.tunnels.benchmarkHideScenarios || 'بستن سناریوها') : (language === 'fa' ? `${r.scenarios.length} سناریوی اپراتورها (کلیک)` : `${r.scenarios.length} ISP Scenarios (Click)`)}</span>
+                              </button>
+                            ) : (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                                {r.mode}
+                              </span>
+                            )}
+                          </div>
+                          {!r.ok && r.error && (
+                            <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={r.error}>
+                              {r.error}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2 pr-2">
+                          {r.protocol === 'udp' ? (
+                            <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300">
+                              UDP (WireGuard)
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
+                              TCP
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
+                          {r.ok && r.latency_ms != null ? `${r.latency_ms} ms` : '-'}
+                        </td>
+                        <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
+                          {r.ok && r.throughput_mbps != null ? `${r.throughput_mbps} Mbps` : '-'}
+                        </td>
+                        <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
+                          {r.ok && r.loss_percent != null ? `${r.loss_percent}%` : '-'}
+                        </td>
+                        <td className="py-2 pr-2">
+                          {r.ok ? (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200">
+                              {r.score}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200">
+                              {t.tunnels.benchmarkFailed}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 text-right">
+                          {r.ok && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const iranId = state?.iran_node_id || iranNodeId
+                                const foreignId = state?.foreign_node_id || foreignNodeId
+                                if (r.core === 'zapret') {
+                                  const best = (r.scenarios && r.scenarios.length > 0) ? r.scenarios[0] : r
+                                  onUseConfig({
+                                    core: 'zapret',
+                                    type: best.mode || r.mode || 'mci',
+                                    preset: best.preset || r.mode || 'mci',
+                                    iran_node_id: iranId,
+                                    foreign_node_id: foreignId,
+                                    name: language === 'fa' ? `زپرت (${best.name_fa || 'ضد فیلتر DPI'})` : `Zapret (${best.name || 'Anti-DPI'})`,
+                                    ports: '51820',
+                                    spec: best.spec,
+                                  })
+                                  return
+                                }
+                                if (r.core === 'awg_ws') {
+                                  onUseConfig({
+                                    core: 'awg_ws',
+                                    type: 'tls',
+                                    iran_node_id: iranId,
+                                    foreign_node_id: foreignId,
+                                    name: language === 'fa' ? 'دیجی‌کالا TLS (AWG)' : 'AWG-over-WebSocket',
+                                    ports: '8581',
+                                  })
+                                  return
+                                }
+                                if (r.core === 'mport_hop') {
+                                  onUseConfig({
+                                    core: 'mport_hop',
+                                    type: 'udp',
+                                    iran_node_id: iranId,
+                                    foreign_node_id: foreignId,
+                                    name: language === 'fa' ? 'پرش پورت پویا (وایرگارد)' : 'Multi-Port Hopping',
+                                    ports: '8581',
+                                  })
+                                  return
+                                }
+                                if (r.core === 'fec_faketcp') {
+                                  onUseConfig({
+                                    core: 'fec_faketcp',
+                                    type: 'faketcp',
+                                    iran_node_id: iranId,
+                                    foreign_node_id: foreignId,
+                                    name: language === 'fa' ? 'ضد پکت‌لاس (FEC + FakeTCP)' : 'FEC + FakeTCP (Zero-Loss)',
+                                    ports: '8581',
+                                  })
+                                  return
+                                }
+                                if (r.core === 'udp2raw') {
+                                  onUseConfig({
+                                    core: 'udp2raw',
+                                    type: r.mode,
+                                    iran_node_id: iranId,
+                                    foreign_node_id: foreignId,
+                                    name: `udp2raw (${r.mode.toUpperCase()})`,
+                                    ports: '8581',
+                                  })
+                                  return
+                                }
+                                if (r.core === 'rathole') {
+                                  onUseConfig({
+                                    core: 'rathole',
+                                    type: r.mode,
+                                    iran_node_id: iranId,
+                                    foreign_node_id: foreignId,
+                                    name: `Rathole (${r.mode.toUpperCase()})`,
+                                    ports: r.mode === 'tls' ? '8581' : '8080',
+                                  })
+                                  return
+                                }
+                                if (r.core === 'hysteria2' || r.core === 'tuic') {
+                                  onUseConfig({
+                                    core: r.core,
+                                    type: r.mode,
+                                    iran_node_id: iranId,
+                                    foreign_node_id: foreignId,
+                                    name: `${r.core.toUpperCase()} (${r.mode.toUpperCase()})`,
+                                    ports: r.mode === 'udp' ? '8581' : '8080',
+                                  })
+                                  return
+                                }
+                                onUseConfig({
+                                  core: r.core,
+                                  type: r.mode,
+                                  iran_node_id: iranId,
+                                  foreign_node_id: foreignId,
+                                  name: `${getCoreDisplayName(r.core, language)} (${r.mode})`,
+                                  ports: r.protocol === 'udp' ? '8581' : '8080',
+                                })
+                              }}
+                              className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow transition"
+                            >
+                              {t.tunnels.benchmarkUseConfig}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {hasScenarios && expandedZapret && (
+                        <tr className="bg-purple-50/50 dark:bg-purple-950/20 border-b border-purple-200 dark:border-purple-800">
+                          <td colSpan={8} className="p-3">
+                            <div className="rounded-xl border border-purple-200 dark:border-purple-800/60 bg-white/90 dark:bg-gray-800/90 p-3 shadow-inner">
+                              <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-purple-100 dark:border-purple-800/40">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-base">🔮</span>
+                                  <span className="font-bold text-xs text-purple-900 dark:text-purple-200">
+                                    {t.tunnels.benchmarkZapretScenarios || (language === 'fa' ? 'گزارش و رتبه‌بندی سناریوهای اپراتورها (Zapret DPI Desync)' : 'Iranian ISP DPI Desync Strategy Breakdown & Scores')}
+                                  </span>
+                                </div>
+                                <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                                  {language === 'fa' ? 'هر سناریویی که برای اینترنت شما مناسب‌تر است را انتخاب کنید' : 'Select the preset that fits your ISP'}
+                                </span>
+                              </div>
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700/40">
+                                    <th className="py-1 text-left">{language === 'fa' ? 'اپراتور / سناریو' : 'Scenario / ISP'}</th>
+                                    <th className="py-1 text-left">{language === 'fa' ? 'استراتژی بای‌پس' : 'Desync Strategy'}</th>
+                                    <th className="py-1 text-center">{t.tunnels.benchmarkLatency}</th>
+                                    <th className="py-1 text-center">{t.tunnels.benchmarkThroughput}</th>
+                                    <th className="py-1 text-center">{t.tunnels.benchmarkLoss}</th>
+                                    <th className="py-1 text-center">{t.tunnels.benchmarkScore}</th>
+                                    <th className="py-1 text-right">{language === 'fa' ? 'عملیات' : 'Action'}</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100 dark:divide-gray-700/30">
+                                  {r.scenarios.map((sc: any, scIdx: number) => {
+                                    const isTop = scIdx === 0 && sc.ok
+                                    return (
+                                      <tr key={sc.mode} className={sc.ok ? 'hover:bg-purple-50/50 dark:hover:bg-purple-900/20' : 'opacity-60'}>
+                                        <td className="py-2 font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
+                                          <span>{sc.icon || '📱'}</span>
+                                          <span>{language === 'fa' ? sc.name_fa : sc.name}</span>
+                                          {isTop && (
+                                            <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 font-extrabold border border-amber-300 dark:border-amber-700">
+                                              ⭐️ {t.tunnels.benchmarkTopPerformer || (language === 'fa' ? 'بهترین عملکرد' : 'Top')}
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td className="py-2 text-gray-600 dark:text-gray-300 font-mono text-[11px]">
+                                          {sc.description || sc.mode}
+                                        </td>
+                                        <td className="py-2 text-center font-mono text-gray-700 dark:text-gray-300">
+                                          {sc.ok && sc.latency_ms != null ? `${sc.latency_ms} ms` : '-'}
+                                        </td>
+                                        <td className="py-2 text-center font-mono text-gray-700 dark:text-gray-300">
+                                          {sc.ok && sc.throughput_mbps != null ? `${sc.throughput_mbps} Mbps` : '-'}
+                                        </td>
+                                        <td className="py-2 text-center font-mono text-gray-700 dark:text-gray-300">
+                                          {sc.ok && sc.loss_percent != null ? `${sc.loss_percent}%` : '-'}
+                                        </td>
+                                        <td className="py-2 text-center">
+                                          {sc.ok ? (
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200">
+                                              {sc.score}
+                                            </span>
+                                          ) : (
+                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300">
+                                              {t.tunnels.benchmarkFailed}
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td className="py-2 text-right">
+                                          {sc.ok && (
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                onUseConfig({
+                                                  core: 'zapret',
+                                                  type: sc.mode,
+                                                  preset: sc.preset,
+                                                  iran_node_id: state?.iran_node_id || iranNodeId,
+                                                  foreign_node_id: state?.foreign_node_id || foreignNodeId,
+                                                  name: language === 'fa' ? `زپرت (${sc.name_fa})` : `Zapret (${sc.name})`,
+                                                  ports: '51820',
+                                                  spec: sc.spec,
+                                                })
+                                              }
+                                              className="px-2.5 py-1 text-xs bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-md hover:from-blue-700 hover:to-indigo-700 font-bold shadow-sm transition cursor-pointer"
+                                            >
+                                              {t.tunnels.benchmarkUseConfig}
+                                            </button>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="py-2 pr-2">
-                      {r.protocol === 'udp' ? (
-                        <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300">
-                          UDP (WireGuard)
-                        </span>
-                      ) : (
-                        <span className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
-                          TCP
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
-                      {r.ok && r.latency_ms != null ? `${r.latency_ms} ms` : '-'}
-                    </td>
-                    <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
-                      {r.ok && r.throughput_mbps != null ? `${r.throughput_mbps} Mbps` : '-'}
-                    </td>
-                    <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
-                      {r.ok && r.loss_percent != null ? `${r.loss_percent}%` : '-'}
-                    </td>
-                    <td className="py-2 pr-2">
-                      {r.ok ? (
-                        <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200">
-                          {r.score}
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200">
-                          {t.tunnels.benchmarkFailed}
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 text-right">
-                      {r.ok && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onUseConfig(
-                              r.core,
-                              r.mode,
-                              state?.iran_node_id || iranNodeId,
-                              state?.foreign_node_id || foreignNodeId,
-                            )
-                          }
-                          className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow transition"
-                        >
-                          {t.tunnels.benchmarkUseConfig}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                    </React.Fragment>
+                  )
+                })}
               </tbody>
             </table>
           )}
@@ -3037,24 +3273,19 @@ interface AddTunnelModalProps {
   servers: any[]
   onClose: () => void
   onSuccess: () => void
-  initial?: {
-    core?: string
-    type?: string
-    iran_node_id?: string
-    foreign_node_id?: string
-  }
+  initial?: UseConfigPayload
 }
 
 const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunnelModalProps) => {
   const { t, language } = useLanguage()
   const [formData, setFormData] = useState({
-    name: '',
+    name: initial?.name || '',
     core: initial?.core || 'gost',
     type: initial?.type || (initial?.core === 'rathole' ? 'tls' : 'tcp'),
     node_id: initial?.iran_node_id || '',
     foreign_node_id: initial?.foreign_node_id || '',
     iran_node_id: initial?.iran_node_id || '',
-    ports: initial?.core === 'rathole' ? '8581' : '8080',  // Comma-separated ports
+    ports: initial?.ports || (['awg_ws', 'mport_hop', 'fec_faketcp', 'udp2raw'].includes(initial?.core || '') || initial?.core === 'rathole' ? '8581' : (initial?.core === 'zapret' ? '51820' : '8080')),
     remote_ip: '127.0.0.1',
     rathole_remote_addr: '23333',
     rathole_token: '',
@@ -3081,8 +3312,13 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
   const [showBackhaulAdvanced, setShowBackhaulAdvanced] = useState(false)
   const [udp2rawState, setUdp2rawState] = useState<Udp2rawFormState>(() => {
     const state = createDefaultUdp2rawState()
-    if (initial?.core === 'udp2raw' && initial.type && UDP2RAW_RAW_MODES.includes(initial.type as Udp2rawRawMode)) {
-      state.raw_mode = initial.type as Udp2rawRawMode
+    if ((initial?.core === 'udp2raw' || initial?.core === 'fec_faketcp') && initial.type) {
+      state.raw_mode = (initial.core === 'fec_faketcp' ? 'faketcp' : initial.type) as Udp2rawRawMode
+      state.cipher_mode = 'aes128cbc'
+      if (initial.ports) {
+        state.listen_port = initial.ports
+        state.target_port = initial.ports
+      }
     }
     return state
   })
@@ -3097,6 +3333,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     const state = createDefaultHysteria2State()
     if (initial?.core === 'hysteria2' && initial.type && HYSTERIA2_TYPES.includes(initial.type as Hysteria2Type)) {
       state.type = initial.type as Hysteria2Type
+      if (initial.ports) state.port = initial.ports
     }
     return state
   })
@@ -3104,13 +3341,143 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     const state = createDefaultTuicState()
     if (initial?.core === 'tuic' && initial.type && TUIC_TYPES.includes(initial.type as TuicType)) {
       state.type = initial.type as TuicType
+      if (initial.ports) state.port = initial.ports
     }
     return state
   })
-  const [zapretState, setZapretState] = useState<ZapretFormState>(createDefaultZapretState())
+  const [zapretState, setZapretState] = useState<ZapretFormState>(() => {
+    const state = createDefaultZapretState()
+    if (initial?.core === 'zapret') {
+      const preset = initial.preset || (['mci', 'mtn', 'fixed'].includes(initial.type || '') ? initial.type : 'none')
+      if (preset === 'mci') {
+        state.preset = 'mci'
+        state.desync_mode = 'multisplit'
+        state.split_pos = '2'
+        state.desync_fooling = 'badseq,ts'
+        state.desync_ttl = '4'
+        state.repeats = '2'
+      } else if (preset === 'mtn') {
+        state.preset = 'mtn'
+        state.desync_mode = 'fakedsplit'
+        state.split_pos = '2'
+        state.desync_fooling = 'badsum,badseq'
+        state.desync_ttl = '3'
+        state.repeats = '2'
+      } else if (preset === 'fixed') {
+        state.preset = 'fixed'
+        state.desync_mode = 'disorder2'
+        state.split_pos = '2'
+        state.desync_fooling = 'badseq'
+        state.desync_ttl = '5'
+        state.repeats = '1'
+      } else {
+        state.preset = 'none'
+        state.desync_mode = initial.type || 'fake'
+      }
+      state.filter_udp = '51820'
+    }
+    return state
+  })
   const [sniSpoofState, setSniSpoofState] = useState<SniSpoofFormState>(createDefaultSniSpoofState())
   const [warpState, setWarpState] = useState<WarpFormState>(createDefaultWarpState())
   const [obfs4State, setObfs4State] = useState<Obfs4FormState>(createDefaultObfs4State())
+
+  // Dynamic synchronization when initial prop changes
+  useEffect(() => {
+    if (!initial) return
+
+    const c = initial.core || 'gost'
+    const t = initial.type || 'tcp'
+    const iranId = initial.iran_node_id || ''
+    const foreignId = initial.foreign_node_id || ''
+    const isCarrier = ['awg_ws', 'mport_hop', 'fec_faketcp', 'udp2raw'].includes(c) || (c === 'rathole' && t === 'tls') || (c === 'hysteria2' && t === 'udp') || (c === 'tuic' && t === 'udp')
+    const defaultPorts = isCarrier ? '8581' : (c === 'zapret' ? '51820' : '8080')
+    const finalPorts = initial.ports || defaultPorts
+
+    setFormData((prev) => ({
+      ...prev,
+      name: initial.name || prev.name,
+      core: c,
+      type: t,
+      iran_node_id: iranId,
+      foreign_node_id: foreignId,
+      node_id: iranId,
+      ports: finalPorts,
+      rathole_transport: t === 'ws' ? 'ws' : (t === 'tcp' ? 'tcp' : 'tls'),
+      rathole_service_type: (t === 'tls' || c === 'awg_ws') ? 'udp' : 'tcp',
+      rathole_sni: (c === 'awg_ws' || t === 'tls') ? 'www.digikala.com' : prev.rathole_sni,
+      mport_range: c === 'mport_hop' ? '20000:40000' : prev.mport_range,
+    }))
+
+    if (c === 'zapret') {
+      const preset = initial.preset || (['mci', 'mtn', 'fixed'].includes(t) ? t : 'none')
+      let desync_mode = t || 'fake'
+      let split_pos = '2'
+      let desync_fooling = 'badseq,ts'
+      let desync_ttl = '4'
+      let repeats = '2'
+      if (preset === 'mci') {
+        desync_mode = 'multisplit'
+        split_pos = '2'
+        desync_fooling = 'badseq,ts'
+        desync_ttl = '4'
+        repeats = '2'
+      } else if (preset === 'mtn') {
+        desync_mode = 'fakedsplit'
+        split_pos = '2'
+        desync_fooling = 'badsum,badseq'
+        desync_ttl = '3'
+        repeats = '2'
+      } else if (preset === 'fixed') {
+        desync_mode = 'disorder2'
+        split_pos = '2'
+        desync_fooling = 'badseq'
+        desync_ttl = '5'
+        repeats = '1'
+      }
+      const targetServer = servers.find((s) => s.id === foreignId)
+      const targetIp = targetServer?.node_metadata?.ip_address || targetServer?.metadata?.ip_address || targetServer?.ip_address || ''
+      setZapretState({
+        preset: preset || 'none',
+        desync_mode,
+        split_pos,
+        desync_fooling,
+        desync_ttl,
+        repeats,
+        filter_udp: '51820',
+        filter_tcp: '443',
+        filter_l7: 'tls',
+        fake_tls_sni: 'hcaptcha.com',
+        direction: 'both',
+        queue_num: '',
+        extra_args: '',
+        target_ip: targetIp,
+      })
+    }
+
+    if (c === 'fec_faketcp' || c === 'udp2raw') {
+      const mode = (c === 'fec_faketcp' ? 'faketcp' : t) as Udp2rawRawMode
+      setUdp2rawState((prev) => ({
+        ...prev,
+        raw_mode: UDP2RAW_RAW_MODES.includes(mode) ? mode : 'faketcp',
+        cipher_mode: 'aes128cbc',
+        auth_mode: 'md5',
+        listen_port: finalPorts,
+        target_port: finalPorts,
+      }))
+    }
+
+    if (c === 'backhaul' && BACKHAUL_TRANSPORTS.includes(t as BackhaulTransport)) {
+      setBackhaulState((prev) => ({ ...prev, transport: t as BackhaulTransport }))
+    }
+
+    if (c === 'hysteria2' && HYSTERIA2_TYPES.includes(t as Hysteria2Type)) {
+      setHysteria2State((prev) => ({ ...prev, type: t as Hysteria2Type, port: finalPorts }))
+    }
+    if (c === 'tuic' && TUIC_TYPES.includes(t as TuicType)) {
+      setTuicState((prev) => ({ ...prev, type: t as TuicType, port: finalPorts }))
+    }
+  }, [initial, servers])
 
   // Auto-populate remote_ip with foreign server IP when GOST is selected
   useEffect(() => {
@@ -3284,7 +3651,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         }
         spec = buildUdp2rawSpec(udp2rawState)
         if (formData.core === 'fec_faketcp') {
-          spec.cipher_mode = 'aes128cfb'
+          spec.cipher_mode = 'aes128cbc'
           spec.auth_mode = 'md5'
           spec.seq_mode = 3
         }
@@ -3352,7 +3719,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
           return
         }
         spec = buildZapretSpec(zapretState)
-        tunnelType = zapretState.desync_mode
+        tunnelType = (zapretState.preset && zapretState.preset !== 'none') ? zapretState.preset : (zapretState.desync_mode || formData.type)
       }
 
       if (formData.core === 'snispoof') {
@@ -3560,11 +3927,14 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
               >
                 <option value="">{t.tunnels.selectIranNode}</option>
-                {nodes.map((node) => (
-                  <option key={node.id} value={node.id}>
-                    {node.name}
-                  </option>
-                ))}
+                {nodes.map((node) => {
+                  const ip = node.node_metadata?.ip_address || node.metadata?.ip_address || node.ip_address || ''
+                  return (
+                    <option key={node.id} value={node.id}>
+                      {node.name || node.id.substring(0, 8)}{ip ? ` (${ip})` : ''}
+                    </option>
+                  )
+                })}
               </select>
             </div>
             <div>
@@ -3578,11 +3948,14 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
               >
                 <option value="">{t.tunnels.selectForeignServer}</option>
-                {servers.map((server) => (
-                  <option key={server.id} value={server.id}>
-                    {server.name}
-                  </option>
-                ))}
+                {servers.map((server) => {
+                  const ip = server.node_metadata?.ip_address || server.metadata?.ip_address || server.ip_address || ''
+                  return (
+                    <option key={server.id} value={server.id}>
+                      {server.name || server.id.substring(0, 8)}{ip ? ` (${ip})` : ''}
+                    </option>
+                  )
+                })}
               </select>
             </div>
           </div>
@@ -3600,11 +3973,14 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 required
               >
                 <option value="">{language === 'fa' ? 'انتخاب سرور...' : 'Select server...'}</option>
-                {[...servers, ...nodes].map((node) => (
-                  <option key={node.id} value={node.id}>
-                    {node.name} ({node.metadata?.role || node.node_metadata?.role || 'node'})
-                  </option>
-                ))}
+                {[...servers, ...nodes].map((node) => {
+                  const ip = node.node_metadata?.ip_address || node.metadata?.ip_address || node.ip_address || ''
+                  return (
+                    <option key={node.id} value={node.id}>
+                      {node.name || node.id.substring(0, 8)}{ip ? ` (${ip})` : ''} ({node.metadata?.role || node.node_metadata?.role || 'node'})
+                    </option>
+                  )
+                })}
               </select>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 {language === 'fa' ? 'قوانین ریدایرکت PREROUTING در سطح هسته لینوکس روی این سرور اعمال خواهند شد.' : 'Linux kernel PREROUTING redirect rules will be applied on this server.'}
@@ -3624,11 +4000,14 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 required
               >
                 <option value="">{t.tunnels.selectZapretNode}</option>
-                {[...nodes, ...servers].map((node) => (
-                  <option key={node.id} value={node.id}>
-                    {node.name} ({node.metadata?.role || node.node_metadata?.role || 'node'})
-                  </option>
-                ))}
+                {[...nodes, ...servers].map((node) => {
+                  const ip = node.node_metadata?.ip_address || node.metadata?.ip_address || node.ip_address || ''
+                  return (
+                    <option key={node.id} value={node.id}>
+                      {node.name || node.id.substring(0, 8)}{ip ? ` (${ip})` : ''} ({node.metadata?.role || node.node_metadata?.role || 'node'})
+                    </option>
+                  )
+                })}
               </select>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 {t.tunnels.zapretNodeHint}
@@ -3648,11 +4027,14 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 required
               >
                 <option value="">{t.tunnels.warpSelectNode}</option>
-                {[...servers, ...nodes].map((node) => (
-                  <option key={node.id} value={node.id}>
-                    {node.name} ({node.metadata?.role || node.node_metadata?.role || 'node'})
-                  </option>
-                ))}
+                {[...servers, ...nodes].map((node) => {
+                  const ip = node.node_metadata?.ip_address || node.metadata?.ip_address || node.ip_address || ''
+                  return (
+                    <option key={node.id} value={node.id}>
+                      {node.name || node.id.substring(0, 8)}{ip ? ` (${ip})` : ''} ({node.metadata?.role || node.node_metadata?.role || 'node'})
+                    </option>
+                  )
+                })}
               </select>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 {t.tunnels.warpNodeHint}

@@ -77,9 +77,9 @@ COMBO_METADATA: List[Dict[str, Any]] = [
         "protocol": "udp",
         "label": "🔮 Zapret (Anti-DPI Bypass)",
         "label_fa": "🔮 Zapret (بای‌پس فیلترینگ DPI ایران)",
-        "mode_label": "Hamrah-e Avval (MCI Anti-DPI)",
-        "mode_label_fa": "حالت: همراه اول (MCI Anti-DPI)",
-        "description": "Kernel NFQUEUE packet fragmentation & SNI desynchronization for WireGuard and TLS",
+        "mode_label": "All Scenarios (MCI, MTN, Fixed)",
+        "mode_label_fa": "حالت: تست تمام سناریوهای اپراتورها",
+        "description": "Auto-tests MCI, Irancell, and Fixed-Line DPI evasion strategies with detailed breakdown",
         "stealth": True,
         "default_selected": True,
         "badge": "جدید",
@@ -372,6 +372,62 @@ BENCH_COMBOS: List[Tuple[str, str, str]] = [
 ]
 
 
+ZAPRET_SCENARIOS: List[Dict[str, Any]] = [
+    {
+        "preset": "mci",
+        "mode": "mci",
+        "name": "Hamrah-e Avval (MCI)",
+        "name_fa": "همراه اول (MCI)",
+        "icon": "📱",
+        "description": "Multisplit midsni + Badseq,TS + TTL 4",
+        "desync_mode": "multisplit",
+        "split_pos": "2",
+        "desync_fooling": "badseq,ts",
+        "desync_ttl": 4,
+        "repeats": 2,
+    },
+    {
+        "preset": "mtn",
+        "mode": "mtn",
+        "name": "Irancell (MTN)",
+        "name_fa": "ایرانسل (MTN)",
+        "icon": "📱",
+        "description": "Fakedsplit midsni + Badsum,Badseq + TTL 3",
+        "desync_mode": "fakedsplit",
+        "split_pos": "2",
+        "desync_fooling": "badsum,badseq",
+        "desync_ttl": 3,
+        "repeats": 2,
+    },
+    {
+        "preset": "fixed",
+        "mode": "fixed",
+        "name": "Fixed-Line (Mokhaberat)",
+        "name_fa": "اینترنت ثابت و مخابرات",
+        "icon": "🏠",
+        "description": "Disorder2 midsni + Badseq + TTL 5",
+        "desync_mode": "disorder2",
+        "split_pos": "2",
+        "desync_fooling": "badseq",
+        "desync_ttl": 5,
+        "repeats": 1,
+    },
+    {
+        "preset": "fake",
+        "mode": "fake",
+        "name": "Standard Fake Packet",
+        "name_fa": "پکت جعلی استاندارد (Fake)",
+        "icon": "🛡️",
+        "description": "Standard Fake ClientHello + TTL 4",
+        "desync_mode": "fake",
+        "split_pos": "2",
+        "desync_fooling": "badseq,ts",
+        "desync_ttl": 4,
+        "repeats": 1,
+    },
+]
+
+
 def get_available_combos() -> List[Dict[str, Any]]:
     """Return available combos with rich metadata for UI selection and ordering."""
     return [dict(c) for c in COMBO_METADATA]
@@ -392,6 +448,7 @@ def _build_specs(
     control_port: int,
     iran_ip: str,
     foreign_ip: str,
+    extra_spec: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Build (iran_spec, foreign_spec) for a test tunnel, mirroring create_tunnel."""
     token = generate_token()
@@ -484,7 +541,7 @@ def _build_specs(
     if core in ("udp2raw", "fec_faketcp"):
         # Inverted roles: iran runs the udp2raw client (public UDP entry),
         # foreign runs the udp2raw server (raw listener -> local sink).
-        cipher = "aes128cfb" if core == "fec_faketcp" else "aes128cbc"
+        cipher = "aes128cbc"
         server = {
             "mode": "client",
             "raw_mode": mode,
@@ -594,24 +651,25 @@ def _build_specs(
         return server, client
 
     if core == "zapret":
-        preset = mode or "mci"
-        server = {
+        preset = (extra_spec.get("preset") if extra_spec else None) or mode or "mci"
+        desync_mode = (extra_spec.get("desync_mode") if extra_spec else None) or ("multisplit" if preset == "mci" else ("fakedsplit" if preset == "mtn" else ("disorder2" if preset == "fixed" else preset)))
+        split_pos = str((extra_spec.get("split_pos") if extra_spec else None) or "2")
+        fooling = (extra_spec.get("desync_fooling") if extra_spec else None) or ("badseq,ts" if preset in ("mci", "fake") else ("badsum,badseq" if preset == "mtn" else "badseq"))
+        ttl = (extra_spec.get("desync_ttl") if extra_spec else None) or (4 if preset in ("mci", "fake") else (3 if preset == "mtn" else 5))
+        repeats = (extra_spec.get("repeats") if extra_spec else None) or (2 if preset in ("mci", "mtn") else 1)
+        spec_dict = {
             "mode": "server",
             "preset": preset,
-            "split_pos": "2",
+            "desync_mode": desync_mode,
+            "split_pos": split_pos,
+            "desync_fooling": fooling,
+            "desync_ttl": ttl,
+            "repeats": repeats,
             "filter_udp": str(test_port),
             "filter_tcp": str(test_port),
             "ports": [test_port],
         }
-        client = {
-            "mode": "client",
-            "preset": preset,
-            "split_pos": "2",
-            "filter_udp": str(test_port),
-            "filter_tcp": str(test_port),
-            "ports": [test_port],
-        }
-        return server, client
+        return dict(spec_dict), dict(spec_dict)
 
     raise ValueError(f"Unsupported benchmark core: {core}")
 
@@ -714,9 +772,20 @@ class BenchmarkManager:
         client = NodeClient()
         try:
             for index, (core, mode, protocol) in enumerate(combos):
+                test_port = TEST_PORT_BASE + (index * 20)
+                control_port = CONTROL_PORT_BASE + (index * 20)
+
+                if core == "zapret":
+                    result = await self._run_zapret_all(
+                        client, benchmark_id,
+                        test_port, control_port,
+                        iran_node_id, foreign_node_id, iran_ip, foreign_ip,
+                    )
+                    self.state["results"].append(result)
+                    self.state["completed"] = index + 1
+                    continue
+
                 self.state["current"] = {"core": core, "mode": mode}
-                test_port = TEST_PORT_BASE + index
-                control_port = CONTROL_PORT_BASE + index
                 tunnel_id = f"{benchmark_id}-{core}-{mode}"
                 result: Dict[str, Any] = {
                     "core": core,
@@ -759,6 +828,96 @@ class BenchmarkManager:
             self.state["current"] = None
             self.state["finished_at"] = time.time()
 
+    async def _run_zapret_all(
+        self,
+        client: NodeClient,
+        benchmark_id: str,
+        base_test_port: int,
+        base_control_port: int,
+        iran_node_id: str,
+        foreign_node_id: str,
+        iran_ip: str,
+        foreign_ip: str,
+    ) -> Dict[str, Any]:
+        scenarios_results: List[Dict[str, Any]] = []
+        for s_idx, sc in enumerate(ZAPRET_SCENARIOS):
+            sc_mode = sc["mode"]
+            self.state["current"] = {
+                "core": "zapret",
+                "mode": sc_mode,
+                "scenario_name": sc["name_fa"],
+            }
+            sc_port = base_test_port + (s_idx * 2)
+            sc_ctrl = base_control_port + (s_idx * 2)
+            sc_tunnel_id = f"{benchmark_id}-zapret-{sc_mode}"
+            try:
+                metrics = await self._run_combo(
+                    client, sc_tunnel_id, "zapret", sc_mode, "udp",
+                    sc_port, sc_ctrl,
+                    iran_node_id, foreign_node_id, iran_ip, foreign_ip,
+                    extra_spec=sc,
+                )
+                sc_score = _score(metrics)
+                scenarios_results.append({
+                    "preset": sc["preset"],
+                    "mode": sc["mode"],
+                    "name": sc["name"],
+                    "name_fa": sc["name_fa"],
+                    "icon": sc["icon"],
+                    "description": sc["description"],
+                    "ok": bool(metrics.get("ok")),
+                    "latency_ms": metrics.get("latency_ms"),
+                    "throughput_mbps": metrics.get("throughput_mbps"),
+                    "loss_percent": metrics.get("loss_percent"),
+                    "score": sc_score,
+                    "error": metrics.get("error"),
+                    "spec": {
+                        "preset": sc["preset"],
+                        "desync_mode": sc["desync_mode"],
+                        "split_pos": sc["split_pos"],
+                        "desync_fooling": sc["desync_fooling"],
+                        "desync_ttl": sc["desync_ttl"],
+                        "repeats": sc["repeats"],
+                    },
+                })
+            except Exception as e:
+                logger.warning(f"Zapret scenario {sc_mode} failed: {e}")
+                scenarios_results.append({
+                    "preset": sc["preset"],
+                    "mode": sc["mode"],
+                    "name": sc["name"],
+                    "name_fa": sc["name_fa"],
+                    "icon": sc["icon"],
+                    "description": sc["description"],
+                    "ok": False,
+                    "latency_ms": None,
+                    "throughput_mbps": None,
+                    "loss_percent": None,
+                    "score": 0.0,
+                    "error": str(e),
+                    "spec": {},
+                })
+
+        # Rank: successful by score desc, failures last
+        scenarios_results.sort(key=lambda s: (not s["ok"], -(s["score"] or 0.0)))
+        best = scenarios_results[0] if scenarios_results else None
+
+        return {
+            "core": "zapret",
+            "mode": best["mode"] if best else "mci",
+            "best_mode": best["mode"] if best else "mci",
+            "protocol": "udp",
+            "ok": bool(best and best["ok"]),
+            "latency_ms": best["latency_ms"] if best else None,
+            "throughput_mbps": best["throughput_mbps"] if best else None,
+            "loss_percent": best["loss_percent"] if best else None,
+            "score": best["score"] if best else 0.0,
+            "error": None if (best and best["ok"]) else (best["error"] if best else "All scenarios failed"),
+            "scenarios": scenarios_results,
+            "total_scenarios": len(scenarios_results),
+            "successful_scenarios": sum(1 for s in scenarios_results if s["ok"]),
+        }
+
     async def _run_combo(
         self,
         client: NodeClient,
@@ -772,8 +931,9 @@ class BenchmarkManager:
         foreign_node_id: str,
         iran_ip: str,
         foreign_ip: str,
+        extra_spec: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        iran_spec, foreign_spec = _build_specs(core, mode, test_port, control_port, iran_ip, foreign_ip)
+        iran_spec, foreign_spec = _build_specs(core, mode, test_port, control_port, iran_ip, foreign_ip, extra_spec=extra_spec)
 
         try:
             # 1. Sink on the foreign node = the tunnel's local target service.
@@ -785,34 +945,43 @@ class BenchmarkManager:
             if sink_response.get("status") != "success":
                 raise RuntimeError(f"Foreign sink failed: {sink_response.get('message', 'unknown error')}")
 
-            # 2. Apply the test tunnel on both nodes (iran first: it hosts the
-            # listener the foreign side dials into for most cores).
-            server_response = await client.send_to_node(
-                node_id=iran_node_id,
-                endpoint="/api/agent/tunnels/apply",
-                data={"tunnel_id": tunnel_id, "core": core, "type": mode, "spec": iran_spec},
-            )
-            if server_response.get("status") != "success":
-                raise RuntimeError(f"Iran apply failed: {server_response.get('message', 'unknown error')}")
+            # 2. Apply the test tunnel: always start the server (listener) node first
+            # so the port is bound and listening before the client dials in.
+            iran_is_server = (iran_spec.get("mode") != "client")
+            first_node_id = iran_node_id if iran_is_server else foreign_node_id
+            first_spec = iran_spec if iran_is_server else foreign_spec
+            second_node_id = foreign_node_id if iran_is_server else iran_node_id
+            second_spec = foreign_spec if iran_is_server else iran_spec
 
-            client_response = await client.send_to_node(
-                node_id=foreign_node_id,
+            first_resp = await client.send_to_node(
+                node_id=first_node_id,
                 endpoint="/api/agent/tunnels/apply",
-                data={"tunnel_id": tunnel_id, "core": core, "type": mode, "spec": foreign_spec},
+                data={"tunnel_id": tunnel_id, "core": core, "type": mode, "spec": first_spec},
             )
-            if client_response.get("status") != "success":
-                raise RuntimeError(f"Foreign apply failed: {client_response.get('message', 'unknown error')}")
+            if first_resp.get("status") != "success":
+                raise RuntimeError(f"Server node apply failed: {first_resp.get('message', 'unknown error')}")
+
+            await asyncio.sleep(0.5)
+
+            second_resp = await client.send_to_node(
+                node_id=second_node_id,
+                endpoint="/api/agent/tunnels/apply",
+                data={"tunnel_id": tunnel_id, "core": core, "type": mode, "spec": second_spec},
+            )
+            if second_resp.get("status") != "success":
+                raise RuntimeError(f"Client node apply failed: {second_resp.get('message', 'unknown error')}")
 
             # 3. Let the tunnel establish, then probe from the iran node.
             if core in ("zapret", "mport_hop"):
                 await asyncio.sleep(2.0)
             else:
-                # Dynamic polling: wait for reverse tunnel control channel to report connected
+                # Dynamic polling: check client node for connection_state == connected
+                poll_node_id = second_node_id
                 for _ in range(16):
                     await asyncio.sleep(0.5)
                     try:
                         status_resp = await client.send_to_node(
-                            node_id=foreign_node_id,
+                            node_id=poll_node_id,
                             endpoint="/api/agent/tunnels/status",
                             data={"tunnel_id": tunnel_id},
                         )
@@ -857,7 +1026,7 @@ class BenchmarkManager:
                 )
             except Exception:
                 pass
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(2.0)
 
 
 benchmark_manager = BenchmarkManager()

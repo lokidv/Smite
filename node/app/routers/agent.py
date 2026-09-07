@@ -72,15 +72,28 @@ async def remove_tunnel(data: TunnelRemove, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/tunnels/status")
-async def get_tunnel_status(tunnel_id: str, request: Request):
-    """Get tunnel status (now enriched with real connection_state)."""
+@router.api_route("/tunnels/status", methods=["GET", "POST"])
+async def get_tunnel_status(request: Request, tunnel_id: str = ""):
+    """Get tunnel status (now enriched with real connection_state, supports GET and POST)."""
+    effective_id = tunnel_id
+    if not effective_id:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                effective_id = body.get("tunnel_id", "")
+        except Exception:
+            pass
+    if not effective_id:
+        effective_id = request.query_params.get("tunnel_id", "")
+    if not effective_id:
+        raise HTTPException(status_code=400, detail="tunnel_id is required")
+
     adapter_manager = request.app.state.adapter_manager
     
     try:
-        status = await adapter_manager.get_tunnel_status(tunnel_id)
+        status = await adapter_manager.get_tunnel_status(effective_id)
         try:
-            health = adapter_manager.get_tunnel_health(tunnel_id)
+            health = adapter_manager.get_tunnel_health(effective_id)
             if isinstance(status, dict) and isinstance(health, dict):
                 status = {**status, **health}
         except Exception:
@@ -88,6 +101,30 @@ async def get_tunnel_status(tunnel_id: str, request: Request):
         return {"status": "success", "data": status}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.api_route("/tunnels/logs", methods=["GET", "POST"])
+async def get_tunnel_logs(request: Request, tunnel_id: str = "", tail: int = 50):
+    effective_id = tunnel_id
+    if not effective_id:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                effective_id = body.get("tunnel_id", "")
+        except Exception:
+            pass
+    if not effective_id:
+        effective_id = request.query_params.get("tunnel_id", "")
+    from pathlib import Path
+    base = Path("/var/lib/smite-node")
+    for sub in ["", "rathole", "udp2raw", "zapret", "hysteria2", "tuic"]:
+        f = (base / sub / f"{effective_id}.log") if sub else (base / f"{effective_id}.log")
+        if f.exists():
+            try:
+                lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+                return {"status": "success", "lines": lines[-tail:]}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+    return {"status": "not_found", "lines": []}
 
 
 @router.get("/health")

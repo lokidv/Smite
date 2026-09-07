@@ -395,6 +395,10 @@ interface Translations {
     benchmarkGroupNextGen?: string
     benchmarkGroupStandard?: string
     benchmarkModeLabel?: string
+    benchmarkZapretScenarios?: string
+    benchmarkViewScenarios?: string
+    benchmarkHideScenarios?: string
+    benchmarkTopPerformer?: string
     ratholeServiceType?: string
     ratholeServiceTypeHint?: string
     zapretPreset?: string
@@ -801,6 +805,10 @@ const translations: Record<Language, Translations> = {
       benchmarkGroupNextGen: '⭐️ Next-Gen Anti-Censorship Tunnels (WireGuard)',
       benchmarkGroupStandard: '📦 Standard Tunnels (TCP / UDP / QUIC)',
       benchmarkModeLabel: 'Mode',
+      benchmarkZapretScenarios: 'Tested ISP Scenarios (MCI, MTN, Fixed)',
+      benchmarkViewScenarios: 'View Scenarios',
+      benchmarkHideScenarios: 'Hide Scenarios',
+      benchmarkTopPerformer: 'Top Performer',
       ratholeServiceType: 'Forwarding Protocol (Service Type)',
       ratholeServiceTypeHint: 'Select UDP for WireGuard or QUIC. Select TCP for V2Ray / HTTP.',
       zapretPreset: 'ISP Anti-DPI Preset',
@@ -1314,6 +1322,10 @@ const translations: Record<Language, Translations> = {
       benchmarkGroupNextGen: '⭐️ تانل‌های نسل جدید (ضد فیلترینگ وایرگارد)',
       benchmarkGroupStandard: '📦 سایر تانل‌های استاندارد (TCP / UDP / QUIC)',
       benchmarkModeLabel: 'حالت',
+      benchmarkZapretScenarios: 'سناریوهای تست‌شده اپراتورها (همراه اول، ایرانسل، مخابرات)',
+      benchmarkViewScenarios: 'مشاهده سناریوها',
+      benchmarkHideScenarios: 'بستن سناریوها',
+      benchmarkTopPerformer: 'بهترین عملکرد',
       ratholeServiceType: 'پروتکل فوروارد (نوع سرویس)',
       ratholeServiceTypeHint: 'برای وایرگارد یا کوئیک، UDP را انتخاب کنید. برای V2Ray یا وب، TCP را انتخاب کنید.',
       zapretPreset: 'پریست ضد فیلترینگ اپراتور',

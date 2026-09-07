@@ -126,7 +126,7 @@ class TunnelReapplyManager:
             
             for tunnel in tunnels:
                 try:
-                    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel"}
+                    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4", "awg_ws", "fec_faketcp"}
                     
                     if is_reverse_tunnel:
                         iran_node_id = tunnel.iran_node_id or tunnel.node_id
@@ -240,8 +240,8 @@ class TunnelReapplyManager:
                             client_spec = spec.copy()
                             client_spec["mode"] = "client"
                             
-                            if tunnel.core == "rathole":
-                                transport = server_spec.get("transport") or server_spec.get("type") or "tcp"
+                            if tunnel.core in ("rathole", "awg_ws"):
+                                transport = server_spec.get("transport") or server_spec.get("type") or ("tls" if tunnel.core == "awg_ws" else "tcp")
                                 proxy_port = server_spec.get("remote_port") or server_spec.get("listen_port")
                                 token = server_spec.get("token")
                                 if not proxy_port or not token:
@@ -260,9 +260,14 @@ class TunnelReapplyManager:
                                 server_spec["mode"] = "server"
                                 server_spec["bind_addr"] = f"0.0.0.0:{control_port}"
                                 server_spec["control_port"] = control_port
-                                server_spec["proxy_port"] = proxy_port
                                 server_spec["transport"] = transport
-                                server_spec["token"] = token
+                                server_spec["type"] = transport
+                                if tunnel.core == "awg_ws":
+                                    server_spec["service_type"] = "udp"
+                                    client_spec["service_type"] = "udp"
+                                    if not server_spec.get("sni"):
+                                        server_spec["sni"] = "www.digikala.com"
+                                    client_spec["sni"] = server_spec["sni"]
                                 
                                 iran_node_ip = iran_node.node_metadata.get("ip_address")
                                 if not iran_node_ip:
@@ -274,9 +279,16 @@ class TunnelReapplyManager:
                                     client_spec["remote_addr"] = f"{protocol}{iran_node_ip}:{control_port}"
                                 else:
                                     client_spec["remote_addr"] = f"{iran_node_ip}:{control_port}"
-                                client_spec["mode"] = "client"
                                 client_spec["transport"] = transport
-                                client_spec["token"] = token
+                                client_spec["type"] = transport
+                                if (transport or "tcp").lower() in ("tls", "ws", "websocket") or tunnel.core == "awg_ws":
+                                    for _k in ("tls_pkcs12_b64", "tls_pkcs12_password", "tls_ca_pem_b64", "sni", "service_type"):
+                                        if _k in tunnel.spec:
+                                            server_spec[_k] = tunnel.spec[_k]
+                                            client_spec[_k] = tunnel.spec[_k]
+                                elif "service_type" in tunnel.spec:
+                                    server_spec["service_type"] = tunnel.spec["service_type"]
+                                    client_spec["service_type"] = tunnel.spec["service_type"]
                             
                             elif tunnel.core == "backhaul":
                                 transport = server_spec.get("transport") or server_spec.get("type") or "tcp"
@@ -332,7 +344,7 @@ class TunnelReapplyManager:
                                 client_spec["mode"] = "client"
                                 client_spec["reverse_port"] = listen_port
                             
-                            elif tunnel.core == "udp2raw":
+                            elif tunnel.core in ("udp2raw", "fec_faketcp"):
                                 # Iran node runs the udp2raw CLIENT (public entry point),
                                 # foreign node runs the udp2raw SERVER.
                                 raw_mode = (tunnel.type or server_spec.get("raw_mode") or "faketcp").lower()
@@ -353,8 +365,9 @@ class TunnelReapplyManager:
                                 raw_port = server_spec.get("raw_port") or (4096 + (port_hash % 1000))
                                 target_host = server_spec.get("target_host", "127.0.0.1")
                                 target_port = server_spec.get("target_port") or listen_port
-                                cipher_mode = server_spec.get("cipher_mode") or "aes128cbc"
+                                cipher_mode = server_spec.get("cipher_mode") or ("aes128cfb" if tunnel.core == "fec_faketcp" else "aes128cbc")
                                 auth_mode = server_spec.get("auth_mode") or "md5"
+                                seq_mode = 3 if tunnel.core == "fec_faketcp" else 1
                                 
                                 foreign_node_ip = foreign_node.node_metadata.get("ip_address")
                                 if not foreign_node_ip:
@@ -369,6 +382,7 @@ class TunnelReapplyManager:
                                 server_spec["key"] = key
                                 server_spec["cipher_mode"] = cipher_mode
                                 server_spec["auth_mode"] = auth_mode
+                                server_spec["seq_mode"] = seq_mode
                                 
                                 client_spec["mode"] = "server"
                                 client_spec["raw_mode"] = raw_mode
@@ -377,6 +391,7 @@ class TunnelReapplyManager:
                                 client_spec["key"] = key
                                 client_spec["cipher_mode"] = cipher_mode
                                 client_spec["auth_mode"] = auth_mode
+                                client_spec["seq_mode"] = seq_mode
 
                             elif tunnel.core == "trusttunnel":
                                 # Iran node runs rstund (server), foreign runs rstunc (client).
@@ -456,7 +471,8 @@ class TunnelReapplyManager:
                             else:
                                 failed += 1
                     else:
-                        result = await session.execute(select(Node).where(Node.id == tunnel.node_id))
+                        node_id_to_check = tunnel.node_id or tunnel.foreign_node_id or tunnel.iran_node_id
+                        result = await session.execute(select(Node).where(Node.id == node_id_to_check))
                         node = result.scalar_one_or_none()
                         if not node:
                             continue

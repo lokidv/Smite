@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel
 import logging
@@ -190,8 +190,34 @@ def parse_ports_from_spec(spec: dict) -> list:
 def normalize_zapret_spec(spec: dict) -> dict:
     """Apply zapret defaults so the node always receives a complete spec."""
     s = dict(spec or {})
-    s.setdefault("filter_tcp", "443")
-    s.setdefault("filter_l7", "tls")
+    preset = (s.get("preset") or "").lower()
+    if preset == "mci":
+        s.setdefault("desync_mode", "multisplit")
+        s.setdefault("split_pos", "midsni")
+        s.setdefault("desync_fooling", "badseq,ts")
+        s.setdefault("desync_ttl", 4)
+        s.setdefault("repeats", 2)
+    elif preset == "mtn":
+        s.setdefault("desync_mode", "fakedsplit")
+        s.setdefault("split_pos", "midsni")
+        s.setdefault("desync_fooling", "badsum,badseq")
+        s.setdefault("desync_ttl", 3)
+        s.setdefault("repeats", 2)
+    elif preset == "fixed":
+        s.setdefault("desync_mode", "disorder2")
+        s.setdefault("split_pos", "midsni")
+        s.setdefault("desync_fooling", "badseq")
+        s.setdefault("desync_ttl", 5)
+        s.setdefault("repeats", 1)
+
+    has_udp = bool(s.get("filter_udp"))
+    has_tcp = bool(s.get("filter_tcp"))
+    if not has_udp and not has_tcp:
+        s.setdefault("filter_tcp", "443")
+        s.setdefault("filter_l7", "tls")
+    elif has_tcp and not has_udp:
+        s.setdefault("filter_l7", "tls")
+
     s.setdefault("desync_mode", s.get("type") or "fake")
     s.setdefault("desync_fooling", "badseq,ts")
     s.setdefault("max_pkt", 10)
@@ -529,23 +555,34 @@ def build_obfs4_specs(spec: dict, tunnel_id: str, iran_ip: str, foreign_ip: str)
     return iran_spec, foreign_spec, resolved
 
 
+def normalize_mport_hop_spec(spec: dict) -> dict:
+    s = dict(spec or {})
+    s.setdefault("target_port", 8581)
+    s.setdefault("port_range", "20000:40000")
+    s.setdefault("ports", [int(s["target_port"]) if str(s["target_port"]).isdigit() else 8581])
+    return s
+
+
 # Single-node cores: run on exactly one node (no iran/foreign pair).
-SINGLE_NODE_CORES = {"zapret", "snispoof", "warp"}
+SINGLE_NODE_CORES = {"zapret", "snispoof", "warp", "mport_hop"}
 
 SINGLE_NODE_NORMALIZERS = {
     "zapret": normalize_zapret_spec,
     "snispoof": normalize_snispoof_spec,
     "warp": normalize_warp_spec,
+    "mport_hop": normalize_mport_hop_spec,
 }
 
 
 # Cores that support in-place core/type change (dual-node reverse cores).
 # zapret (single-node DPI bypass) and gost (panel-side forwarder) are excluded
 # because their semantics/topology differ from the reverse cores.
-CHANGEABLE_CORES = {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic"}
+CHANGEABLE_CORES = {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "awg_ws", "fec_faketcp"}
 
 # Valid tunnel types per changeable core (first entry = default).
 CORE_TYPE_OPTIONS = {
+    "awg_ws": ["tls", "ws"],
+    "fec_faketcp": ["faketcp", "icmp", "udp"],
     "rathole": ["tcp", "ws", "tls"],
     "backhaul": ["tcp", "udp", "ws", "wsmux", "tcpmux"],
     "chisel": ["chisel"],
@@ -586,13 +623,16 @@ def extract_exposed_ports(core: str, spec: dict) -> list:
     if isinstance(ports, str):
         ports = [p.strip() for p in ports.split(",") if p.strip()]
 
-    if core == "udp2raw":
+    if core in ("udp2raw", "fec_faketcp"):
         listen_port = spec.get("listen_port") or spec.get("public_port")
         if not listen_port and ports:
             first = ports[0]
             listen_port = first.get("local") if isinstance(first, dict) else first
         if listen_port:
             add(listen_port, spec.get("target_host"), spec.get("target_port"))
+    elif core == "mport_hop":
+        target_port = spec.get("target_port") or 8581
+        add(target_port, spec.get("target_host"), target_port)
     elif ports:
         for p in ports:
             if isinstance(p, dict):
@@ -665,28 +705,37 @@ def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: 
                 for e in exposed
             ],
         }
-    if new_core == "rathole":
-        return {
+    if new_core in ("rathole", "awg_ws"):
+        spec = {
             "transport": new_type,
             "type": new_type,
             "token": generate_token(),
             "remote_addr": f"0.0.0.0:{23333 + (port_hash % 1000)}",
             "remote_port": primary["port"],
             "ports": ports_int,
+            "service_type": "udp" if (new_type == "tls" or new_core == "awg_ws") else "tcp",
         }
+        if new_type == "tls" or new_core == "awg_ws":
+            spec["sni"] = "www.digikala.com"
+            from app.tls_utils import ensure_wg_stealth_materials
+            ensure_wg_stealth_materials(spec, spec["sni"])
+        return spec
     if new_core == "chisel":
         return {
             "auth": generate_token(),
             "listen_port": primary["port"],
             "ports": ports_int,
         }
-    if new_core == "udp2raw":
+    if new_core in ("udp2raw", "fec_faketcp"):
         return {
             "raw_mode": new_type,
             "listen_port": primary["port"],
             "target_host": target_host,
             "target_port": int(primary.get("target_port") or primary["port"]),
             "ports": [primary["port"]],
+            "cipher_mode": "aes128cfb" if new_core == "fec_faketcp" else "aes128cbc",
+            "auth_mode": "md5",
+            "seq_mode": 3 if new_core == "fec_faketcp" else 1,
         }
     if new_core == "trusttunnel":
         return {
@@ -804,6 +853,10 @@ async def change_tunnel_core_type(
             new_spec["type"] = new_type
         if new_core == "udp2raw":
             new_spec["raw_mode"] = new_type
+        if new_core == "rathole" and new_type == "tls":
+            new_spec.setdefault("service_type", "udp")
+            from app.tls_utils import ensure_wg_stealth_materials
+            ensure_wg_stealth_materials(new_spec, new_spec.get("sni"))
     else:
         exposed = extract_exposed_ports(old_core, tunnel.spec)
         if not exposed:
@@ -1050,7 +1103,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
         if ports:
             tunnel.spec["ports"] = ports
     
-    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4"}
+    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4", "awg_ws", "fec_faketcp"}
     foreign_node = None
     iran_node = None
     
@@ -1180,8 +1233,17 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
             client_spec = db_tunnel.spec.copy() if db_tunnel.spec else {}
             client_spec["mode"] = "client"
             
-            if db_tunnel.core == "rathole":
-                transport = server_spec.get("transport") or server_spec.get("type") or "tcp"
+            if db_tunnel.core in ("rathole", "awg_ws"):
+                transport = server_spec.get("transport") or server_spec.get("type") or ("tls" if db_tunnel.core == "awg_ws" else "tcp")
+                if db_tunnel.core == "awg_ws":
+                    server_spec["service_type"] = "udp"
+                    client_spec["service_type"] = "udp"
+                    db_tunnel.spec["service_type"] = "udp"
+                    if not server_spec.get("sni"):
+                        server_spec["sni"] = "www.digikala.com"
+                    client_spec["sni"] = server_spec["sni"]
+                    db_tunnel.spec["sni"] = server_spec["sni"]
+
                 token = server_spec.get("token")
                 if not token:
                     from app.utils import generate_token
@@ -1194,7 +1256,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 # WireGuard Stealth: rathole over native TLS with a fake SNI.
                 # Generate the cert once and persist it so re-applies/benchmarks
                 # keep using the same identity on both nodes.
-                if (transport or "tcp").lower() == "tls":
+                if (transport or "tcp").lower() in ("tls", "ws", "websocket") or db_tunnel.core == "awg_ws":
                     from app.tls_utils import ensure_wg_stealth_materials
                     ensure_wg_stealth_materials(db_tunnel.spec, db_tunnel.spec.get("sni"))
                     from sqlalchemy.orm.attributes import flag_modified
@@ -1447,8 +1509,8 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 if token:
                     client_spec["token"] = token
             
-            elif db_tunnel.core == "udp2raw":
-                # udp2raw role mapping differs from the other reverse cores:
+            elif db_tunnel.core in ("udp2raw", "fec_faketcp"):
+                # udp2raw/fec_faketcp role mapping differs from the other reverse cores:
                 # the IRAN node runs the udp2raw CLIENT (public UDP entry point that
                 # wraps traffic into raw faketcp/icmp/udp packets) and the FOREIGN
                 # node runs the udp2raw SERVER (unwraps and forwards to the local
@@ -1466,7 +1528,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 listen_port = server_spec.get("listen_port") or server_spec.get("public_port") or (ports[0] if ports else None)
                 if not listen_port:
                     db_tunnel.status = "error"
-                    db_tunnel.error_message = "udp2raw requires listen_port (public UDP port on the iran node)"
+                    db_tunnel.error_message = f"{db_tunnel.core} requires listen_port (public UDP port on the iran node)"
                     await db.commit()
                     await db.refresh(db_tunnel)
                     return db_tunnel
@@ -1476,8 +1538,9 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 raw_port = server_spec.get("raw_port") or (4096 + (port_hash % 1000))
                 target_host = server_spec.get("target_host", "127.0.0.1")
                 target_port = server_spec.get("target_port") or listen_port
-                cipher_mode = server_spec.get("cipher_mode") or "aes128cbc"
+                cipher_mode = server_spec.get("cipher_mode") or ("aes128cfb" if db_tunnel.core == "fec_faketcp" else "aes128cbc")
                 auth_mode = server_spec.get("auth_mode") or "md5"
+                seq_mode = 3 if db_tunnel.core == "fec_faketcp" else 1
                 
                 try:
                     listen_port = int(listen_port)
@@ -1485,7 +1548,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                     target_port = int(target_port)
                 except (TypeError, ValueError):
                     db_tunnel.status = "error"
-                    db_tunnel.error_message = "udp2raw ports must be numeric"
+                    db_tunnel.error_message = f"{db_tunnel.core} ports must be numeric"
                     await db.commit()
                     await db.refresh(db_tunnel)
                     return db_tunnel
@@ -1507,6 +1570,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 db_tunnel.spec["target_port"] = target_port
                 db_tunnel.spec["cipher_mode"] = cipher_mode
                 db_tunnel.spec["auth_mode"] = auth_mode
+                db_tunnel.spec["seq_mode"] = seq_mode
                 from sqlalchemy.orm.attributes import flag_modified
                 flag_modified(db_tunnel, "spec")
                 
@@ -1519,6 +1583,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 server_spec["key"] = key
                 server_spec["cipher_mode"] = cipher_mode
                 server_spec["auth_mode"] = auth_mode
+                server_spec["seq_mode"] = seq_mode
                 
                 # Foreign node: udp2raw server (raw listener -> local target service)
                 client_spec["mode"] = "server"
@@ -1528,6 +1593,7 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 client_spec["key"] = key
                 client_spec["cipher_mode"] = cipher_mode
                 client_spec["auth_mode"] = auth_mode
+                client_spec["seq_mode"] = seq_mode
 
             elif db_tunnel.core == "trusttunnel":
                 # TrustTunnel (rstun, QUIC). Iran node runs rstund (server, public
@@ -2529,6 +2595,14 @@ class BenchmarkStartRequest(BaseModel):
     iran_node_id: str
     foreign_node_id: str
     cores: List[str] | None = None
+    combos: List[Dict[str, Any]] | None = None
+
+
+@router.get("/benchmark/combos")
+async def get_benchmark_combos():
+    """Get the available benchmark combos with descriptions, categories, and defaults."""
+    from app.benchmark_manager import get_available_combos
+    return {"status": "success", "combos": get_available_combos()}
 
 
 @router.post("/benchmark")
@@ -2576,6 +2650,7 @@ async def start_benchmark(payload: BenchmarkStartRequest, db: AsyncSession = Dep
             foreign_node_name=foreign_node.name,
             foreign_ip=foreign_ip,
             cores=payload.cores,
+            combos=payload.combos,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))

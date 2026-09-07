@@ -23,31 +23,286 @@ from app.utils import generate_token, format_address_port
 
 logger = logging.getLogger(__name__)
 
+COMBO_METADATA: List[Dict[str, Any]] = [
+    {
+        "id": "awg_ws:tls",
+        "core": "awg_ws",
+        "mode": "tls",
+        "protocol": "udp",
+        "label": "👑 AWG-over-WebSocket (Digikala SNI)",
+        "label_fa": "👑 وایرگارد روی وب‌سوکت معکوس + دیجی‌کالا TLS",
+        "description": "AmneziaWG UDP over reverse WebSocket + TLS camouflage with SNI disguise",
+        "stealth": True,
+        "default_selected": True,
+        "badge": "جدید",
+    },
+    {
+        "id": "mport_hop:udp",
+        "core": "mport_hop",
+        "mode": "udp",
+        "protocol": "udp",
+        "label": "🛡️ Dynamic Multi-Port Hopping",
+        "label_fa": "🛡️ پرش هوشمند پورت (Multi-Port Hopping)",
+        "description": "Kernel iptables PREROUTING port hopping (20000:40000) for WireGuard with 0% CPU overhead",
+        "stealth": True,
+        "default_selected": True,
+        "badge": "جدید",
+    },
+    {
+        "id": "fec_faketcp:faketcp",
+        "core": "fec_faketcp",
+        "mode": "faketcp",
+        "protocol": "udp",
+        "label": "⚡ FEC + FakeTCP (Zero-Packet-Loss)",
+        "label_fa": "⚡ اف‌ای‌سی + فیک تی‌سی‌پی (ضد پکت‌لاس)",
+        "description": "Reed-Solomon Forward Error Correction + Raw Kernel FakeTCP for severe blackout loss",
+        "stealth": True,
+        "default_selected": True,
+        "badge": "جدید",
+    },
+    {
+        "id": "zapret:mci",
+        "core": "zapret",
+        "mode": "mci",
+        "protocol": "udp",
+        "label": "🔮 Zapret DPI Shield (MCI/Irancell/Fixed)",
+        "label_fa": "🔮 زپرت شیلد ضد فیلترینگ (DPI Desync)",
+        "description": "Kernel NFQUEUE packet fragmentation & SNI desynchronization for WireGuard and TLS",
+        "stealth": True,
+        "default_selected": True,
+        "badge": "جدید",
+    },
+    {
+        "id": "rathole:tls",
+        "core": "rathole",
+        "mode": "tls",
+        "protocol": "udp",
+        "label": "Rathole TLS (WireGuard Stealth)",
+        "label_fa": "رت‌هول TLS (استتار وایرگارد)",
+        "description": "Native TLS transport with SNI mimicry forwarding WireGuard UDP packets",
+        "stealth": True,
+        "default_selected": True,
+    },
+    {
+        "id": "udp2raw:faketcp",
+        "core": "udp2raw",
+        "mode": "faketcp",
+        "protocol": "udp",
+        "label": "udp2raw FakeTCP (Kernel Handshake)",
+        "label_fa": "udp2raw فیک تی‌سی‌پی (کرنل)",
+        "description": "Encapsulates UDP in real TCP handshakes to bypass aggressive UDP blocking",
+        "stealth": True,
+        "default_selected": True,
+    },
+    {
+        "id": "udp2raw:icmp",
+        "core": "udp2raw",
+        "mode": "icmp",
+        "protocol": "udp",
+        "label": "udp2raw ICMP (Portless Ping Mode)",
+        "label_fa": "udp2raw آی‌سی‌ام‌پی (حالت پینگ بدون پورت)",
+        "description": "Raw ICMP echo frames without ports, survives strict port whitelisting",
+        "stealth": True,
+        "default_selected": True,
+    },
+    {
+        "id": "udp2raw:udp",
+        "core": "udp2raw",
+        "mode": "udp",
+        "protocol": "udp",
+        "label": "udp2raw UDP (Encrypted & Anti-Replay)",
+        "label_fa": "udp2raw یو‌دی‌پی (رمزنگاری و محافظت)",
+        "description": "Encrypted UDP wrapper with anti-replay and drop defense",
+        "stealth": True,
+        "default_selected": False,
+    },
+    {
+        "id": "hysteria2:udp",
+        "core": "hysteria2",
+        "mode": "udp",
+        "protocol": "udp",
+        "label": "Hysteria 2 UDP (Brutal Congestion)",
+        "label_fa": "هیستریا ۲ UDP (کنترل ازدحام تهاجمی)",
+        "description": "Custom QUIC protocol delivering throughput over high loss links",
+        "stealth": True,
+        "default_selected": True,
+    },
+    {
+        "id": "hysteria2:tcp",
+        "core": "hysteria2",
+        "mode": "tcp",
+        "protocol": "tcp",
+        "label": "Hysteria 2 TCP",
+        "label_fa": "هیستریا ۲ TCP",
+        "description": "TCP forwarding over Hysteria 2 QUIC transport",
+        "stealth": True,
+        "default_selected": False,
+    },
+    {
+        "id": "tuic:udp",
+        "core": "tuic",
+        "mode": "udp",
+        "protocol": "udp",
+        "label": "TUIC v5 UDP (Zero-RTT QUIC)",
+        "label_fa": "توئیک ۵ UDP (کوئیک بدون تاخیر)",
+        "description": "Native QUIC tunneling with 0-RTT fast connection",
+        "stealth": True,
+        "default_selected": True,
+    },
+    {
+        "id": "tuic:tcp",
+        "core": "tuic",
+        "mode": "tcp",
+        "protocol": "tcp",
+        "label": "TUIC v5 TCP",
+        "label_fa": "توئیک ۵ TCP",
+        "description": "TCP streams over TUIC v5 QUIC",
+        "stealth": True,
+        "default_selected": False,
+    },
+    {
+        "id": "trusttunnel:udp",
+        "core": "trusttunnel",
+        "mode": "udp",
+        "protocol": "udp",
+        "label": "TrustTunnel UDP",
+        "label_fa": "تراست‌تانل UDP",
+        "description": "Obfuscated UDP tunnel designed for filtered networks",
+        "stealth": True,
+        "default_selected": True,
+    },
+    {
+        "id": "trusttunnel:tcp",
+        "core": "trusttunnel",
+        "mode": "tcp",
+        "protocol": "tcp",
+        "label": "TrustTunnel TCP",
+        "label_fa": "تراست‌تانل TCP",
+        "description": "Obfuscated TCP tunnel with custom handshake",
+        "stealth": True,
+        "default_selected": False,
+    },
+    {
+        "id": "rathole:tcp",
+        "core": "rathole",
+        "mode": "tcp",
+        "protocol": "tcp",
+        "label": "Rathole TCP (High Performance)",
+        "label_fa": "رت‌هول TCP (سرعت بالا)",
+        "description": "High throughput TCP multiplexer with low overhead",
+        "stealth": False,
+        "default_selected": True,
+    },
+    {
+        "id": "rathole:ws",
+        "core": "rathole",
+        "mode": "ws",
+        "protocol": "tcp",
+        "label": "Rathole WebSocket",
+        "label_fa": "رت‌هول وب‌سوکت",
+        "description": "WebSocket transport for reverse proxy/CDN setup",
+        "stealth": False,
+        "default_selected": False,
+    },
+    {
+        "id": "backhaul:tcp",
+        "core": "backhaul",
+        "mode": "tcp",
+        "protocol": "tcp",
+        "label": "Backhaul TCP",
+        "label_fa": "بک‌هال TCP",
+        "description": "Go-based high concurrency TCP tunnel",
+        "stealth": False,
+        "default_selected": True,
+    },
+    {
+        "id": "backhaul:udp",
+        "core": "backhaul",
+        "mode": "udp",
+        "protocol": "udp",
+        "label": "Backhaul UDP",
+        "label_fa": "بک‌هال UDP",
+        "description": "Raw UDP forwarding via Backhaul",
+        "stealth": False,
+        "default_selected": True,
+    },
+    {
+        "id": "backhaul:ws",
+        "core": "backhaul",
+        "mode": "ws",
+        "protocol": "tcp",
+        "label": "Backhaul WebSocket",
+        "label_fa": "بک‌هال وب‌سوکت",
+        "description": "WebSocket transport for Web proxies",
+        "stealth": False,
+        "default_selected": False,
+    },
+    {
+        "id": "backhaul:wsmux",
+        "core": "backhaul",
+        "mode": "wsmux",
+        "protocol": "tcp",
+        "label": "Backhaul WS Mux",
+        "label_fa": "بک‌هال وب‌سوکت مالتی‌پلکس",
+        "description": "Multiplexed WebSocket streams",
+        "stealth": False,
+        "default_selected": False,
+    },
+    {
+        "id": "backhaul:tcpmux",
+        "core": "backhaul",
+        "mode": "tcpmux",
+        "protocol": "tcp",
+        "label": "Backhaul TCP Mux",
+        "label_fa": "بک‌هال TCP مالتی‌پلکس",
+        "description": "Multiplexed TCP connections",
+        "stealth": False,
+        "default_selected": False,
+    },
+    {
+        "id": "chisel:chisel",
+        "core": "chisel",
+        "mode": "chisel",
+        "protocol": "tcp",
+        "label": "Chisel HTTP/TCP",
+        "label_fa": "چیزل HTTP/TCP",
+        "description": "HTTP reverse TCP tunnel",
+        "stealth": False,
+        "default_selected": False,
+    },
+    {
+        "id": "frp:tcp",
+        "core": "frp",
+        "mode": "tcp",
+        "protocol": "tcp",
+        "label": "FRP TCP",
+        "label_fa": "اف‌آرپی TCP",
+        "description": "Fast Reverse Proxy TCP",
+        "stealth": False,
+        "default_selected": False,
+    },
+    {
+        "id": "frp:udp",
+        "core": "frp",
+        "mode": "udp",
+        "protocol": "udp",
+        "label": "FRP UDP",
+        "label_fa": "اف‌آرپی UDP",
+        "description": "Fast Reverse Proxy UDP",
+        "stealth": False,
+        "default_selected": False,
+    },
+]
+
 # (core, mode/type, probe protocol)
 BENCH_COMBOS: List[Tuple[str, str, str]] = [
-    ("rathole", "tcp", "tcp"),
-    ("rathole", "ws", "tcp"),
-    # WireGuard Stealth: rathole over TLS (fake SNI), forwarding UDP.
-    ("rathole", "tls", "udp"),
-    ("backhaul", "tcp", "tcp"),
-    ("backhaul", "udp", "udp"),
-    ("backhaul", "ws", "tcp"),
-    ("backhaul", "wsmux", "tcp"),
-    ("backhaul", "tcpmux", "tcp"),
-    ("chisel", "chisel", "tcp"),
-    ("frp", "tcp", "tcp"),
-    ("frp", "udp", "udp"),
-    ("udp2raw", "faketcp", "udp"),
-    ("udp2raw", "icmp", "udp"),
-    ("udp2raw", "udp", "udp"),
-    ("trusttunnel", "tcp", "tcp"),
-    ("trusttunnel", "udp", "udp"),
-    ("trusttunnel", "both", "tcp"),
-    ("hysteria2", "tcp", "tcp"),
-    ("hysteria2", "udp", "udp"),
-    ("tuic", "tcp", "tcp"),
-    ("tuic", "udp", "udp"),
+    (m["core"], m["mode"], m["protocol"]) for m in COMBO_METADATA
 ]
+
+
+def get_available_combos() -> List[Dict[str, Any]]:
+    """Return available combos with rich metadata for UI selection and ordering."""
+    return [dict(c) for c in COMBO_METADATA]
 
 # Dedicated port ranges so test tunnels never collide with real ones.
 TEST_PORT_BASE = 17800
@@ -69,10 +324,10 @@ def _build_specs(
     """Build (iran_spec, foreign_spec) for a test tunnel, mirroring create_tunnel."""
     token = generate_token()
 
-    if core == "rathole":
+    if core in ("rathole", "awg_ws"):
         # mode "tls" == WireGuard Stealth: native TLS transport + udp service.
-        is_tls = mode == "tls"
-        service_type = "udp" if is_tls else "tcp"
+        is_tls = mode == "tls" or core == "awg_ws"
+        service_type = "udp" if (is_tls or core == "awg_ws") else "tcp"
         server = {
             "mode": "server",
             "bind_addr": f"0.0.0.0:{control_port}",
@@ -82,8 +337,9 @@ def _build_specs(
             "type": mode,
             "token": token,
             "service_type": service_type,
+            "sni": "www.digikala.com" if core == "awg_ws" else None,
         }
-        remote = f"ws://{iran_ip}:{control_port}" if mode in ("ws", "websocket") else f"{iran_ip}:{control_port}"
+        remote = f"wss://{iran_ip}:{control_port}" if (mode in ("ws", "websocket") and is_tls) else (f"ws://{iran_ip}:{control_port}" if mode in ("ws", "websocket") else f"{iran_ip}:{control_port}")
         client = {
             "mode": "client",
             "remote_addr": remote,
@@ -92,6 +348,7 @@ def _build_specs(
             "token": token,
             "ports": [test_port],
             "service_type": service_type,
+            "sni": "www.digikala.com" if core == "awg_ws" else None,
         }
         if is_tls:
             from app.tls_utils import generate_wg_stealth_cert
@@ -152,17 +409,19 @@ def _build_specs(
         }
         return server, client
 
-    if core == "udp2raw":
+    if core in ("udp2raw", "fec_faketcp"):
         # Inverted roles: iran runs the udp2raw client (public UDP entry),
         # foreign runs the udp2raw server (raw listener -> local sink).
+        cipher = "aes128cfb" if core == "fec_faketcp" else "aes128cbc"
         server = {
             "mode": "client",
             "raw_mode": mode,
             "listen_addr": f"0.0.0.0:{test_port}",
             "remote_addr": format_address_port(foreign_ip, control_port),
             "key": token,
-            "cipher_mode": "aes128cbc",
+            "cipher_mode": cipher,
             "auth_mode": "md5",
+            "seq_mode": 3 if core == "fec_faketcp" else 1,
         }
         client = {
             "mode": "server",
@@ -170,8 +429,9 @@ def _build_specs(
             "listen_addr": f"0.0.0.0:{control_port}",
             "forward_addr": f"127.0.0.1:{test_port}",
             "key": token,
-            "cipher_mode": "aes128cbc",
+            "cipher_mode": cipher,
             "auth_mode": "md5",
+            "seq_mode": 3 if core == "fec_faketcp" else 1,
         }
         return server, client
 
@@ -246,6 +506,39 @@ def _build_specs(
         }
         return iran_spec, foreign_spec
 
+    if core == "mport_hop":
+        server = {
+            "mode": "server",
+            "target_port": test_port,
+            "port_range": f"{test_port}:{test_port+5}",
+            "ports": [test_port],
+        }
+        client = {
+            "mode": "client",
+            "target_port": test_port,
+            "port_range": f"{test_port}:{test_port+5}",
+            "ports": [test_port],
+        }
+        return server, client
+
+    if core == "zapret":
+        preset = mode or "mci"
+        server = {
+            "mode": "server",
+            "preset": preset,
+            "filter_udp": str(test_port),
+            "filter_tcp": str(test_port),
+            "ports": [test_port],
+        }
+        client = {
+            "mode": "client",
+            "preset": preset,
+            "filter_udp": str(test_port),
+            "filter_tcp": str(test_port),
+            "ports": [test_port],
+        }
+        return server, client
+
     raise ValueError(f"Unsupported benchmark core: {core}")
 
 
@@ -284,13 +577,33 @@ class BenchmarkManager:
         foreign_node_name: str,
         foreign_ip: str,
         cores: Optional[List[str]] = None,
+        custom_combos: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         if self.is_running():
             raise RuntimeError("A benchmark is already running")
 
-        combos = [c for c in BENCH_COMBOS if not cores or c[0] in cores]
+        combos: List[Tuple[str, str, str]] = []
+        if custom_combos:
+            for item in custom_combos:
+                c_core = item.get("core")
+                c_mode = item.get("mode")
+                c_proto = item.get("protocol")
+                if not c_core or not c_mode:
+                    c_id = item.get("id", "")
+                    if ":" in c_id:
+                        c_core, c_mode = c_id.split(":", 1)
+                if not c_proto:
+                    matched = next((m for m in COMBO_METADATA if m["core"] == c_core and m["mode"] == c_mode), None)
+                    c_proto = matched["protocol"] if matched else "tcp"
+                if c_core and c_mode and c_proto:
+                    combos.append((c_core, c_mode, c_proto))
+        elif cores:
+            combos = [c for c in BENCH_COMBOS if c[0] in cores]
+        else:
+            combos = list(BENCH_COMBOS)
+
         if not combos:
-            raise ValueError("No benchmark combos match the requested cores")
+            raise ValueError("No benchmark combos match the requested criteria")
 
         benchmark_id = f"bench-{uuid.uuid4().hex[:8]}"
         self.state = {

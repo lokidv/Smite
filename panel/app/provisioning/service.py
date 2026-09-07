@@ -40,6 +40,7 @@ REMOTE_WARP_SCRIPT = "/root/smite-install-warp.sh"
 REMOTE_WARP_BUNDLE = "/root/smite-warp-bundle.tar.gz"
 REMOTE_UPDATE_PROXY_SCRIPT = "/root/smite-update-proxy.sh"
 REMOTE_PREP_SCRIPT = "/tmp/smite-prepare.sh"
+REMOTE_FETCH_SCRIPT = "/root/smite-fetch-bundle.sh"
 
 # OpenVPN and WARP (wginstaller-proxy) are not published on GitHub like the base
 # wginstaller is, so the panel ships their installer trees under scripts/ and
@@ -477,6 +478,58 @@ def _make_bundle(src_dir: Path) -> str:
     return tmp
 
 
+def _fetch_and_push_bundle(job: ProvisioningJob, ssh: SSHSession, url: str, asset: str) -> None:
+    """Download the release bundle on the panel and upload it to the target.
+
+    Fallback for targets whose own connectivity cannot sustain a ~100 MB
+    download. The panel usually sits on a healthy link, so pulling once here and
+    pushing over the existing SSH channel avoids the target's bad path entirely.
+    """
+    import shutil
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    fd, tmp = tempfile.mkstemp(prefix="smite-release-", suffix=".tar.gz")
+    os.close(fd)
+    try:
+        job.log(f"Panel is downloading {asset} ...", "info")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "smite-panel"})
+            with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as out:
+                shutil.copyfileobj(resp, out, 1024 * 1024)
+        except Exception as exc:  # noqa: BLE001
+            raise ProvisioningError(
+                f"Neither the target nor the panel could download {asset} ({exc}). "
+                f"Upload the offline bundle in the panel (Install Node -> Artifacts) and retry."
+            ) from exc
+
+        size = os.path.getsize(tmp)
+        try:
+            with tarfile.open(tmp, "r:gz") as tf:
+                if tf.next() is None:
+                    raise ValueError("empty tar archive")
+        except Exception as exc:  # noqa: BLE001
+            raise ProvisioningError(
+                f"Panel downloaded {asset} but the archive is corrupt or truncated: {exc}"
+            ) from exc
+
+        job.log(f"Panel downloaded {asset} ({size} bytes); uploading to the target ...", "info")
+        try:
+            ssh.put_file(tmp, REMOTE_BUNDLE)
+        except SSHError as exc:
+            raise ProvisioningError(
+                f"Could not upload the bundle to the target: {exc}. The target's network "
+                f"appears unable to receive large transfers; check the server before retrying."
+            ) from exc
+        job.log("Bundle uploaded to the target.", "info")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 # -- step: node --------------------------------------------------------------
 def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str, py: str) -> Dict[str, Any]:
     p = job.params
@@ -550,16 +603,35 @@ def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str, py: str) -> 
             f"No uploaded bundle; the target will download {asset} from GitHub and install natively.",
             "info",
         )
+        # Remove any previous Docker-based node so the native install can take
+        # over the API port (lets re-provisioning convert Docker -> native).
+        _run(job, ssh, "(docker rm -f smite-node 2>/dev/null || true); exit 0", timeout=120)
+
+        # fetch-bundle.sh resumes and falls back to chunked range requests; a
+        # plain curl gives up on the first mid-transfer reset.
+        ssh.put_text(_read_script("fetch-bundle.sh"), REMOTE_FETCH_SCRIPT, mode=0o755)
+        code, _ = _run(
+            job,
+            ssh,
+            f"bash {REMOTE_FETCH_SCRIPT} {shlex.quote(url)} {REMOTE_BUNDLE}",
+            timeout=1800,
+            allow_fail=True,
+        )
+        if code != 0:
+            # The target cannot pull 100 MB reliably, but the panel usually can.
+            # Download it here and push it over the SSH channel we already have.
+            job.log(
+                "Target could not download the bundle; retrying via the panel "
+                "(panel downloads, then uploads over SSH) ...",
+                "info",
+            )
+            _fetch_and_push_bundle(job, ssh, url, asset)
         _run(
             job,
             ssh,
-            # Remove any previous Docker-based node so the native install can take
-            # over the API port (lets re-provisioning convert Docker -> native).
-            f"set -e; (docker rm -f smite-node 2>/dev/null || true); "
-            f"curl -fL --retry 3 -o {REMOTE_BUNDLE} {shlex.quote(url)} && "
-            f"rm -rf {REMOTE_BUNDLE_DIR} && mkdir -p {REMOTE_BUNDLE_DIR} && "
+            f"set -e; rm -rf {REMOTE_BUNDLE_DIR} && mkdir -p {REMOTE_BUNDLE_DIR} && "
             f"tar -xzf {REMOTE_BUNDLE} -C {REMOTE_BUNDLE_DIR} --strip-components=1",
-            timeout=900,
+            timeout=600,
         )
         job.log("Running native node installer (this may take a few minutes) ...", "info")
         _run(

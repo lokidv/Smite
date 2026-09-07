@@ -383,6 +383,28 @@ interface Translations {
     benchmarkUseConfig: string
     benchmarkCoreMode: string
     benchmarkScore: string
+    benchmarkSelectCombos?: string
+    benchmarkPresetAll?: string
+    benchmarkPresetNone?: string
+    benchmarkPresetStealth?: string
+    benchmarkResetOrder?: string
+    benchmarkSelectedCount?: string
+    benchmarkProtocol?: string
+    benchmarkStealthBadge?: string
+    ratholeServiceType?: string
+    ratholeServiceTypeHint?: string
+    zapretPreset?: string
+    zapretPresetHint?: string
+    zapretPresetCustom?: string
+    zapretPresetMci?: string
+    zapretPresetMtn?: string
+    zapretPresetFixed?: string
+    zapretFilterUdp?: string
+    zapretFilterUdpHint?: string
+    zapretSplitPos?: string
+    zapretSplitPosHint?: string
+    zapretDesyncTtl?: string
+    zapretDesyncTtlHint?: string
   }
   coreHealth: {
     title: string
@@ -764,6 +786,28 @@ const translations: Record<Language, Translations> = {
       benchmarkUseConfig: 'Use this config',
       benchmarkCoreMode: 'Core / Mode',
       benchmarkScore: 'Score',
+      benchmarkSelectCombos: 'Select Tunnels & Order Priority',
+      benchmarkPresetAll: 'Select All',
+      benchmarkPresetNone: 'Clear All',
+      benchmarkPresetStealth: '🛡️ Iran Stealth Only (WireGuard)',
+      benchmarkResetOrder: 'Reset Order',
+      benchmarkSelectedCount: '{selected} of {total} tunnels selected',
+      benchmarkProtocol: 'Protocol',
+      benchmarkStealthBadge: 'Stealth Anti-DPI',
+      ratholeServiceType: 'Forwarding Protocol (Service Type)',
+      ratholeServiceTypeHint: 'Select UDP for WireGuard or QUIC. Select TCP for V2Ray / HTTP.',
+      zapretPreset: 'ISP Anti-DPI Preset',
+      zapretPresetHint: 'Choose an optimized preset tailored for Iranian ISPs to bypass DPI censorship.',
+      zapretPresetCustom: 'Custom / Manual Configuration',
+      zapretPresetMci: '📱 Hamrah-e Avval (MCI) - Multisplit midsni + TTL Fooling',
+      zapretPresetMtn: '📱 Irancell (MTN) - Fakedsplit midsni + Badsum/Badseq',
+      zapretPresetFixed: '🏠 Fixed-Line (Mokhaberat/Shatel) - Disorder2 + Badseq',
+      zapretFilterUdp: 'Filter Ports (UDP)',
+      zapretFilterUdpHint: 'Comma-separated UDP port(s) to desync (e.g. 51820 for WireGuard). Leave empty if not desyncing UDP.',
+      zapretSplitPos: 'Split Position (split-pos)',
+      zapretSplitPosHint: 'Packet offset to split TLS ClientHello / UDP packet. Use "midsni", 1, 2, or 3.',
+      zapretDesyncTtl: 'Desync Packet TTL',
+      zapretDesyncTtlHint: 'Hop distance for fake desync packets so they expire before reaching the server (typically 3, 4, or 5).',
       zapretNode: 'Node',
       selectZapretNode: 'Select a node',
       zapretNodeHint: 'The single server where nfqws + NFQUEUE rules will run (usually the foreign / proxy server).',
@@ -1252,6 +1296,28 @@ const translations: Record<Language, Translations> = {
       benchmarkUseConfig: 'استفاده از این تنظیمات',
       benchmarkCoreMode: 'هسته / حالت',
       benchmarkScore: 'امتیاز',
+      benchmarkSelectCombos: 'انتخاب تانل‌ها و اولویت تست',
+      benchmarkPresetAll: 'انتخاب همه',
+      benchmarkPresetNone: 'لغو همه',
+      benchmarkPresetStealth: '🛡️ فقط ضد فیلتر ایران (وایرگارد)',
+      benchmarkResetOrder: 'بازنشانی ترتیب',
+      benchmarkSelectedCount: '{selected} از {total} تانل انتخاب شده',
+      benchmarkProtocol: 'پروتکل',
+      benchmarkStealthBadge: 'ضد فیلتر DPI',
+      ratholeServiceType: 'پروتکل فوروارد (نوع سرویس)',
+      ratholeServiceTypeHint: 'برای وایرگارد یا کوئیک، UDP را انتخاب کنید. برای V2Ray یا وب، TCP را انتخاب کنید.',
+      zapretPreset: 'پریست ضد فیلترینگ اپراتور',
+      zapretPresetHint: 'یک پریست بهینه‌شده متناسب با اپراتورهای ایران برای دور زدن فیلترینگ DPI انتخاب کنید.',
+      zapretPresetCustom: 'تنظیم دستی و سفارشی',
+      zapretPresetMci: '📱 همراه اول (MCI) - Multisplit midsni + فریب TTL',
+      zapretPresetMtn: '📱 ایرانسل (MTN) - Fakedsplit midsni + Badsum/Badseq',
+      zapretPresetFixed: '🏠 اینترنت ثابت (مخابرات / شاتل) - Disorder2 + Badseq',
+      zapretFilterUdp: 'پورت‌های فیلتر (UDP)',
+      zapretFilterUdpHint: 'پورت‌های UDP برای دی‌سینک (مثلاً ۵۱۸۲۰ برای وایرگارد). اگر فقط TCP می‌خواهید خالی بگذارید.',
+      zapretSplitPos: 'موقعیت تقطیع پکت (split-pos)',
+      zapretSplitPosHint: 'محل شکستن پکت، مثل midsni یا عدد ۱ و ۲.',
+      zapretDesyncTtl: 'طول عمر پکت فیک (TTL)',
+      zapretDesyncTtlHint: 'میزان TTL پکت فیک تا در فایروال DPI جذب شود و به سرور نرسد (معمولاً ۳، ۴ یا ۵).',
       zapretNode: 'نود',
       selectZapretNode: 'یک نود انتخاب کنید',
       zapretNodeHint: 'تنها سروری که nfqws و قوانین NFQUEUE روی آن اجرا می‌شود (معمولاً سرور خارجی/پروکسی).',

@@ -88,6 +88,11 @@ base {
     log = "syslog:daemon";
     daemon = off;
     redirector = iptables;
+    /* redsocks سقفِ اتصالِ هم‌زمان را از همین‌جا حساب می‌کند: conn_max ≈ rlimit_nofile/8.
+       پیش‌فرضِ ۱۰۲۴ یعنی فقط ۱۲۸ اتصالِ هم‌زمان — چند کلاینتِ WireGuard در چند ثانیه
+       پرش می‌کنند، بعد redsocks دیگر accept نمی‌کند، صفِ accept سرریز می‌شود و کاربر
+       قطعی و هنگ می‌بیند (پیامِ «reached redsocks_conn_max limit»). */
+    rlimit_nofile = 65536;
 }
 redsocks {
     local_ip = 127.0.0.1;
@@ -114,6 +119,8 @@ Type=simple
 ExecStart=${REDSOCKS_BIN} -c ${REDSOCKS_CONF}
 Restart=always
 RestartSec=3
+# باید با rlimit_nofile در کانفیگ هم‌خوان باشد؛ سقفِ conn_max از همین می‌آید.
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
@@ -134,6 +141,7 @@ PROXY_IP="${PROXY_IP:-}"
 del_rules() {
   # حذفِ ایمن (خطاها را نادیده بگیر)
   iptables -t nat -D PREROUTING -i "${WG_NIC}" -p tcp -j REDSOCKS 2>/dev/null || true
+  iptables -D INPUT -i "${WG_NIC}" -p tcp -d 127.0.0.1 --dport "${RPORT}" -j ACCEPT 2>/dev/null || true
   iptables -D FORWARD -i "${WG_NIC}" -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
   iptables -t nat -F REDSOCKS 2>/dev/null || true
   iptables -t nat -X REDSOCKS 2>/dev/null || true
@@ -162,6 +170,12 @@ add_rules() {
   # فقط ترافیکِ واردشونده از wg0 (یعنی از کلاینت‌ها) را به REDSOCKS بفرست
   iptables -t nat -C PREROUTING -i "${WG_NIC}" -p tcp -j REDSOCKS 2>/dev/null \
     || iptables -t nat -A PREROUTING -i "${WG_NIC}" -p tcp -j REDSOCKS
+
+  # پس از DNAT مقصدِ بسته 127.0.0.1 می‌شود، پس بسته وارد زنجیرهٔ INPUT می‌شود (نه
+  # FORWARD). روی سروری که ufw فعال است INPUT سیاستِ DROP دارد و این بسته‌ها بی‌صدا
+  # دور ریخته می‌شوند — کلاینت فقط timeout می‌بیند. پس صریحاً اجازه بده.
+  iptables -C INPUT -i "${WG_NIC}" -p tcp -d 127.0.0.1 --dport "${RPORT}" -j ACCEPT 2>/dev/null \
+    || iptables -I INPUT 1 -i "${WG_NIC}" -p tcp -d 127.0.0.1 --dport "${RPORT}" -j ACCEPT
 
   # QUIC/HTTP3 (UDP 443) را ببند تا مرورگر به TCP برگردد و از پروکسی عبور کند
   iptables -C FORWARD -i "${WG_NIC}" -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null \

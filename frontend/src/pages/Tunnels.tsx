@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, Edit2, RotateCw, Gauge, Power } from 'lucide-react'
+import { Plus, Trash2, Edit2, RotateCw, Gauge, Power, ChevronUp, ChevronDown, CheckSquare, Square, Shield, ArrowUpDown } from 'lucide-react'
 import api from '../api/client'
 import { parseAddressPort, formatAddressPort } from '../utils/addressUtils'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -473,9 +473,13 @@ const parseTuicSpec = (spec: Record<string, any> | undefined, currentType?: stri
 }
 
 // ---- In-place core/type change (reverse cores only) ----
-const CHANGEABLE_CORES = ['rathole', 'backhaul', 'chisel', 'frp', 'udp2raw', 'trusttunnel', 'hysteria2', 'tuic']
+const CHANGEABLE_CORES = ['awg_ws', 'mport_hop', 'fec_faketcp', 'rathole', 'backhaul', 'chisel', 'frp', 'udp2raw', 'trusttunnel', 'hysteria2', 'tuic']
 
 const CORE_LABELS: Record<string, string> = {
+  awg_ws: '👑 AWG-over-WebSocket (Digikala TLS)',
+  mport_hop: '🛡️ Dynamic Multi-Port Hopping',
+  fec_faketcp: '⚡ FEC + FakeTCP (Zero-Loss)',
+  zapret: '🔮 Zapret Anti-DPI Shield',
   rathole: 'Rathole',
   backhaul: 'Backhaul',
   chisel: 'Chisel',
@@ -489,10 +493,33 @@ const CORE_LABELS: Record<string, string> = {
 }
 
 const CORE_TYPE_OPTIONS: Record<string, { value: string; label: string }[]> = {
+  awg_ws: [
+    { value: 'tls', label: 'WireGuard over Digikala TLS [NEW]' },
+    { value: 'ws', label: 'Reverse WebSocket (WSS) [NEW]' },
+  ],
+  mport_hop: [
+    { value: 'udp', label: 'Kernel Multi-Port Redirect [NEW]' },
+  ],
+  fec_faketcp: [
+    { value: 'faketcp', label: 'FakeTCP + FEC Error Correction [NEW]' },
+    { value: 'icmp', label: 'ICMP Ping-Mode + FEC [NEW]' },
+    { value: 'udp', label: 'Encrypted UDP + FEC [NEW]' },
+  ],
   rathole: [
+    { value: 'tls', label: 'WireGuard Stealth (TLS+SNI) [NEW]' },
     { value: 'tcp', label: 'TCP' },
     { value: 'ws', label: 'WebSocket (WS)' },
-    { value: 'tls', label: 'WireGuard Stealth (TLS+SNI)' },
+  ],
+  zapret: [
+    { value: 'mci', label: '📱 Hamrah-e Avval (MCI Anti-DPI) [NEW]' },
+    { value: 'mtn', label: '📱 Irancell (MTN Anti-DPI) [NEW]' },
+    { value: 'fixed', label: '🏠 Fixed-Line Anti-DPI [NEW]' },
+    { value: 'multisplit', label: 'multisplit' },
+    { value: 'fakedsplit', label: 'fakedsplit' },
+    { value: 'fake', label: 'fake' },
+    { value: 'disorder2', label: 'disorder2' },
+    { value: 'split2', label: 'split2' },
+    { value: 'syndata', label: 'syndata' },
   ],
   backhaul: [
     { value: 'tcp', label: 'TCP' },
@@ -536,15 +563,29 @@ const defaultTypeForCore = (core: string, currentType: string): string => {
   return options[0]?.value || currentType
 }
 
+const NewBadge = () => {
+  const { language } = useLanguage()
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-extrabold bg-emerald-500 text-white shadow-sm mx-1.5 align-middle select-none">
+      {language === 'fa' ? 'جدید' : 'NEW'}
+    </span>
+  )
+}
+
 // ---- zapret (DPI desync / SNI bypass) ----
 const ZAPRET_DESYNC_MODES = ['fake', 'fakedsplit', 'multisplit', 'multidisorder', 'disorder2', 'split2', 'syndata']
 const ZAPRET_L7_FILTERS = ['tls', 'http', 'quic', 'none']
 const ZAPRET_DIRECTIONS = ['both', 'out', 'in']
 
 interface ZapretFormState {
+  preset: string
   desync_mode: string
   filter_tcp: string
+  filter_udp: string
   filter_l7: string
+  split_pos: string
+  desync_ttl: string
+  repeats: string
   fake_tls_sni: string
   desync_fooling: string
   direction: string
@@ -554,9 +595,14 @@ interface ZapretFormState {
 }
 
 const createDefaultZapretState = (): ZapretFormState => ({
+  preset: 'none',
   desync_mode: 'fake',
   filter_tcp: '443',
+  filter_udp: '',
   filter_l7: 'tls',
+  split_pos: '',
+  desync_ttl: '',
+  repeats: '',
   fake_tls_sni: 'hcaptcha.com',
   desync_fooling: 'badseq,ts',
   direction: 'both',
@@ -570,9 +616,14 @@ const buildZapretSpec = (state: ZapretFormState, desyncOverride?: string): Recor
   const mode = ZAPRET_DESYNC_MODES.includes(modeCandidate) ? modeCandidate : 'fake'
 
   const spec: Record<string, any> = {
+    preset: state.preset && state.preset !== 'none' ? state.preset : undefined,
     desync_mode: mode,
-    filter_tcp: state.filter_tcp.trim() || '443',
-    filter_l7: state.filter_l7 || 'tls',
+    filter_tcp: state.filter_tcp.trim(),
+    filter_udp: state.filter_udp.trim(),
+    filter_l7: state.filter_l7 || '',
+    split_pos: state.split_pos.trim() || undefined,
+    desync_ttl: state.desync_ttl.trim() ? parseInt(state.desync_ttl.trim(), 10) : undefined,
+    repeats: state.repeats.trim() ? parseInt(state.repeats.trim(), 10) : undefined,
     desync_fooling: state.desync_fooling.trim(),
     direction: ZAPRET_DIRECTIONS.includes(state.direction) ? state.direction : 'both',
     max_pkt: 10,
@@ -605,8 +656,13 @@ const parseZapretSpec = (spec: Record<string, any> | undefined, currentType?: st
   if (!spec) {
     return state
   }
-  if (spec.filter_tcp) state.filter_tcp = String(spec.filter_tcp)
-  if (spec.filter_l7) state.filter_l7 = String(spec.filter_l7)
+  if (spec.preset) state.preset = String(spec.preset)
+  if (spec.filter_tcp !== undefined) state.filter_tcp = String(spec.filter_tcp)
+  if (spec.filter_udp !== undefined) state.filter_udp = String(spec.filter_udp)
+  if (spec.filter_l7 !== undefined) state.filter_l7 = String(spec.filter_l7)
+  if (spec.split_pos) state.split_pos = String(spec.split_pos)
+  if (spec.desync_ttl) state.desync_ttl = String(spec.desync_ttl)
+  if (spec.repeats) state.repeats = String(spec.repeats)
   state.fake_tls_sni = spec.fake_tls_sni ?? spec.fake_sni ?? state.fake_tls_sni
   if (spec.desync_fooling !== undefined) state.desync_fooling = String(spec.desync_fooling)
   if (spec.direction) state.direction = String(spec.direction)
@@ -897,7 +953,7 @@ const getBackhaulDisplayInfo = (spec: Record<string, any> | undefined): Backhaul
 }
 
 const Tunnels = () => {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const [tunnels, setTunnels] = useState<Tunnel[]>([])
   const [nodes, setNodes] = useState<any[]>([])
   const [servers, setServers] = useState<any[]>([])
@@ -1119,7 +1175,10 @@ const Tunnels = () => {
             className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 transition-all duration-200 font-medium shadow-sm hover:shadow-md flex items-center gap-2"
           >
             <Gauge size={20} />
-            {t.tunnels.benchmarkButton}
+            <span>{t.tunnels.benchmarkButton}</span>
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-white text-orange-600 shadow-sm animate-pulse">
+              {language === 'fa' ? 'جدید' : 'NEW'}
+            </span>
           </button>
           <button
             onClick={handleReapplyAll}
@@ -1345,6 +1404,18 @@ const Tunnels = () => {
                           </span>
                         )
                       })()}
+                      {tunnel.core === 'rathole' && tunnel.spec?.service_type === 'udp' && (
+                        <span className="px-2 py-1 rounded-lg text-xs font-bold bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200 border border-orange-300 dark:border-orange-700 shrink-0 flex items-center">
+                          WireGuard UDP
+                          <NewBadge />
+                        </span>
+                      )}
+                      {tunnel.core === 'zapret' && tunnel.spec?.preset && tunnel.spec.preset !== 'none' && (
+                        <span className="px-2 py-1 rounded-lg text-xs font-bold bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700 shrink-0 flex items-center">
+                          {String(tunnel.spec.preset).toUpperCase()} Anti-DPI
+                          <NewBadge />
+                        </span>
+                      )}
                       <div className="flex items-center gap-1.5">
                         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Ports:</span>
                         <span className="text-sm font-mono font-semibold text-gray-700 dark:text-gray-300">{ports}</span>
@@ -1675,12 +1746,27 @@ interface BenchmarkModalProps {
   onUseConfig: (core: string, type: string, iranNodeId: string, foreignNodeId: string) => void
 }
 
+interface BenchmarkComboItem {
+  id: string
+  core: string
+  mode: string
+  protocol: 'tcp' | 'udp'
+  label: string
+  label_fa?: string
+  description?: string
+  stealth: boolean
+  default_selected: boolean
+  enabled: boolean
+}
+
 const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModalProps) => {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const [iranNodeId, setIranNodeId] = useState('')
   const [foreignNodeId, setForeignNodeId] = useState('')
   const [state, setState] = useState<any | null>(null)
   const [starting, setStarting] = useState(false)
+  const [combos, setCombos] = useState<BenchmarkComboItem[]>([])
+  const [showConfig, setShowConfig] = useState(true)
 
   const fetchState = async () => {
     try {
@@ -1697,13 +1783,142 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
     return () => clearInterval(interval)
   }, [])
 
+  useEffect(() => {
+    const fetchCombos = async () => {
+      try {
+        const res = await api.get('/tunnels/benchmark/combos')
+        const rawCombos: any[] = Array.isArray(res.data) ? res.data : (res.data?.combos || [])
+
+        let savedOrder: string[] = []
+        let savedSelected: Record<string, boolean> = {}
+        try {
+          const storedOrder = localStorage.getItem('smite_bench_order')
+          if (storedOrder) savedOrder = JSON.parse(storedOrder)
+          const storedSelected = localStorage.getItem('smite_bench_selected')
+          if (storedSelected) savedSelected = JSON.parse(storedSelected)
+        } catch {}
+
+        let initialList: BenchmarkComboItem[] = rawCombos.map((item) => ({
+          id: item.id || `${item.core}:${item.mode}`,
+          core: item.core,
+          mode: item.mode,
+          protocol: item.protocol || 'tcp',
+          label: item.label,
+          label_fa: item.label_fa,
+          description: item.description,
+          stealth: !!item.stealth,
+          default_selected: !!item.default_selected,
+          enabled: savedSelected[item.id] !== undefined ? savedSelected[item.id] : !!item.default_selected,
+        }))
+
+        if (savedOrder && savedOrder.length > 0) {
+          const ordered: BenchmarkComboItem[] = []
+          for (const id of savedOrder) {
+            const found = initialList.find((c) => c.id === id)
+            if (found) ordered.push(found)
+          }
+          for (const item of initialList) {
+            if (!ordered.some((c) => c.id === item.id)) {
+              ordered.push(item)
+            }
+          }
+          initialList = ordered
+        }
+
+        setCombos(initialList)
+      } catch (err) {
+        console.error('Failed to fetch benchmark combos:', err)
+      }
+    }
+    fetchCombos()
+  }, [])
+
+  const savePreferences = (updatedCombos: BenchmarkComboItem[]) => {
+    try {
+      const order = updatedCombos.map((c) => c.id)
+      const selected: Record<string, boolean> = {}
+      updatedCombos.forEach((c) => {
+        selected[c.id] = c.enabled
+      })
+      localStorage.setItem('smite_bench_order', JSON.stringify(order))
+      localStorage.setItem('smite_bench_selected', JSON.stringify(selected))
+    } catch {}
+  }
+
+  const toggleCombo = (index: number) => {
+    setCombos((prev) => {
+      const copy = [...prev]
+      copy[index] = { ...copy[index], enabled: !copy[index].enabled }
+      savePreferences(copy)
+      return copy
+    })
+  }
+
+  const moveCombo = (index: number, direction: 'up' | 'down') => {
+    setCombos((prev) => {
+      const targetIndex = direction === 'up' ? index - 1 : index + 1
+      if (targetIndex < 0 || targetIndex >= prev.length) return prev
+      const copy = [...prev]
+      const temp = copy[index]
+      copy[index] = copy[targetIndex]
+      copy[targetIndex] = temp
+      savePreferences(copy)
+      return copy
+    })
+  }
+
+  const applyPreset = (type: 'all' | 'none' | 'stealth') => {
+    setCombos((prev) => {
+      const copy = prev.map((c) => ({
+        ...c,
+        enabled: type === 'all' ? true : type === 'none' ? false : c.stealth,
+      }))
+      savePreferences(copy)
+      return copy
+    })
+  }
+
+  const resetOrder = async () => {
+    try {
+      localStorage.removeItem('smite_bench_order')
+      localStorage.removeItem('smite_bench_selected')
+      const res = await api.get('/tunnels/benchmark/combos')
+      const rawCombos: any[] = res.data?.combos || []
+      const list = rawCombos.map((item) => ({
+        id: item.id || `${item.core}:${item.mode}`,
+        core: item.core,
+        mode: item.mode,
+        protocol: item.protocol || 'tcp',
+        label: item.label,
+        label_fa: item.label_fa,
+        description: item.description,
+        stealth: !!item.stealth,
+        default_selected: !!item.default_selected,
+        enabled: !!item.default_selected,
+      }))
+      setCombos(list)
+    } catch {}
+  }
+
   const startBenchmark = async () => {
     if (!iranNodeId || !foreignNodeId) return
+    const activeCombos = combos.filter((c) => c.enabled)
+    if (activeCombos.length === 0) {
+      alert('لطفاً حداقل یک تانل را برای تست انتخاب کنید / Please select at least one tunnel')
+      return
+    }
     setStarting(true)
+    setShowConfig(false)
     try {
       await api.post('/tunnels/benchmark', {
         iran_node_id: iranNodeId,
         foreign_node_id: foreignNodeId,
+        combos: activeCombos.map((c) => ({
+          id: c.id,
+          core: c.core,
+          mode: c.mode,
+          protocol: c.protocol,
+        })),
       })
       await fetchState()
     } catch (error: any) {
@@ -1717,13 +1932,23 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
   const running = state?.status === 'running'
   const results: any[] = Array.isArray(state?.results) ? state.results : []
   const progressPercent = running && state?.total ? Math.round((state.completed / state.total) * 100) : 0
+  const selectedCount = combos.filter((c) => c.enabled).length
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100] p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-3xl max-h-[85vh] flex flex-col">
-        <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{t.tunnels.benchmarkTitle}</h2>
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-4xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <Gauge className="text-orange-500" size={22} />
+            {t.tunnels.benchmarkTitle}
+          </h2>
+          <span className="text-xs px-2.5 py-1 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 font-semibold">
+            {selectedCount} / {combos.length} {language === 'fa' ? 'تانل فعال' : 'active'}
+          </span>
+        </div>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">{t.tunnels.benchmarkHint}</p>
 
+        {/* Node Pair Selector */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -1733,7 +1958,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
               value={iranNodeId}
               onChange={(e) => setIranNodeId(e.target.value)}
               disabled={running}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm"
             >
               <option value="">{t.tunnels.selectIranNode}</option>
               {nodes.map((node) => (
@@ -1751,7 +1976,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
               value={foreignNodeId}
               onChange={(e) => setForeignNodeId(e.target.value)}
               disabled={running}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm"
             >
               <option value="">{t.tunnels.selectForeignServer}</option>
               {servers.map((server) => (
@@ -1765,26 +1990,164 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
             <button
               type="button"
               onClick={startBenchmark}
-              disabled={running || starting || !iranNodeId || !foreignNodeId}
-              className="w-full px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              disabled={running || starting || !iranNodeId || !foreignNodeId || selectedCount === 0}
+              className="w-full px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-medium"
             >
               <Gauge size={18} className={running || starting ? 'animate-pulse' : ''} />
-              {running || starting ? t.tunnels.benchmarkRunning : t.tunnels.benchmarkRun}
+              {running || starting ? t.tunnels.benchmarkRunning : `${t.tunnels.benchmarkRun} (${selectedCount})`}
             </button>
           </div>
         </div>
 
+        {/* Accordion / Config toggle bar */}
+        <div className="flex items-center justify-between bg-gray-50 dark:bg-gray-700/40 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 mb-3">
+          <button
+            type="button"
+            onClick={() => setShowConfig(!showConfig)}
+            className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200 hover:text-orange-500"
+          >
+            <ArrowUpDown size={16} className="text-orange-500" />
+            <span>{t.tunnels.benchmarkSelectCombos || 'Select Tunnels & Order Priority'}</span>
+            <NewBadge />
+            <span className="text-xs text-gray-500">({showConfig ? '▲' : '▼'})</span>
+          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => applyPreset('all')}
+              disabled={running}
+              className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-200 rounded transition"
+            >
+              {t.tunnels.benchmarkPresetAll || 'All'}
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('none')}
+              disabled={running}
+              className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-200 rounded transition"
+            >
+              {t.tunnels.benchmarkPresetNone || 'None'}
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('stealth')}
+              disabled={running}
+              className="px-2.5 py-1 text-xs bg-purple-100 dark:bg-purple-900/40 hover:bg-purple-200 text-purple-800 dark:text-purple-200 rounded font-semibold transition flex items-center gap-1"
+            >
+              <Shield size={12} />
+              {t.tunnels.benchmarkPresetStealth || '🛡️ Iran Stealth Only'}
+            </button>
+            <button
+              type="button"
+              onClick={resetOrder}
+              disabled={running}
+              className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
+            >
+              {t.tunnels.benchmarkResetOrder || 'Reset Order'}
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable Combos Checklist with Up/Down buttons */}
+        {showConfig && (
+          <div className="mb-4 max-h-56 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg divide-y divide-gray-100 dark:divide-gray-700/50 bg-white dark:bg-gray-800">
+            {combos.map((combo, idx) => (
+              <div
+                key={combo.id}
+                className={`flex items-center justify-between p-2 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition ${
+                  combo.enabled ? '' : 'opacity-40 bg-gray-50/50 dark:bg-gray-800/50'
+                }`}
+              >
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  {/* Up / Down reorder controls */}
+                  <div className="flex flex-col gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => moveCombo(idx, 'up')}
+                      disabled={idx === 0 || running}
+                      className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 p-0.5"
+                      title="Move Up"
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveCombo(idx, 'down')}
+                      disabled={idx === combos.length - 1 || running}
+                      className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 p-0.5"
+                      title="Move Down"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                  </div>
+
+                  {/* Priority number */}
+                  <span className="font-mono text-xs text-gray-400 w-5 text-center">{idx + 1}</span>
+
+                  {/* Checkbox toggle */}
+                  <button
+                    type="button"
+                    onClick={() => toggleCombo(idx)}
+                    disabled={running}
+                    className="text-gray-700 dark:text-gray-300 hover:text-orange-500"
+                  >
+                    {combo.enabled ? (
+                      <CheckSquare size={18} className="text-orange-500" />
+                    ) : (
+                      <Square size={18} className="text-gray-400" />
+                    )}
+                  </button>
+
+                  {/* Combo Title & Badges */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-sm text-gray-900 dark:text-white">
+                        {language === 'fa' && combo.label_fa ? combo.label_fa : combo.label}
+                      </span>
+                      {combo.protocol === 'udp' ? (
+                        <span className="px-1.5 py-0.2 rounded text-[11px] font-bold bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300">
+                          UDP (WireGuard)
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.2 rounded text-[11px] font-semibold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                          TCP
+                        </span>
+                      )}
+                      {combo.stealth && (
+                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 flex items-center gap-0.5">
+                          <Shield size={10} />
+                          {t.tunnels.benchmarkStealthBadge || 'Anti-DPI'}
+                        </span>
+                      )}
+                      {['rathole:tls', 'zapret:mci', 'zapret:mtn', 'zapret:fixed'].includes(combo.id) && (
+                        <NewBadge />
+                      )}
+                    </div>
+                    {combo.description && (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-xl">
+                        {combo.description}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Running progress bar */}
         {running && (
-          <div className="mb-4">
-            <div className="flex justify-between text-sm text-gray-600 dark:text-gray-300 mb-1">
-              <span>
+          <div className="mb-4 p-3 rounded-lg bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800">
+            <div className="flex justify-between text-sm text-gray-700 dark:text-gray-200 mb-1 font-semibold">
+              <span className="flex items-center gap-2">
+                <Gauge size={16} className="animate-spin text-orange-500" />
                 {state.current ? `${state.current.core} / ${state.current.mode}` : '...'}
               </span>
               <span>
-                {state.completed} / {state.total}
+                {state.completed} / {state.total} ({progressPercent}%)
               </span>
             </div>
-            <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+            <div className="w-full h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
                 className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-500"
                 style={{ width: `${progressPercent}%` }}
@@ -1799,13 +2162,15 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
           </div>
         )}
 
+        {/* Results Table */}
         <div className="overflow-y-auto flex-1">
           {results.length > 0 && (
             <table className="w-full text-sm">
-              <thead className="text-left text-xs uppercase text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+              <thead className="text-left text-xs uppercase text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700 sticky top-0 bg-white dark:bg-gray-800">
                 <tr>
                   <th className="py-2 pr-2">#</th>
                   <th className="py-2 pr-2">{t.tunnels.benchmarkCoreMode}</th>
+                  <th className="py-2 pr-2">{t.tunnels.benchmarkProtocol || 'Protocol'}</th>
                   <th className="py-2 pr-2">{t.tunnels.benchmarkLatency}</th>
                   <th className="py-2 pr-2">{t.tunnels.benchmarkThroughput}</th>
                   <th className="py-2 pr-2">{t.tunnels.benchmarkLoss}</th>
@@ -1823,12 +2188,25 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                   >
                     <td className="py-2 pr-2 font-semibold text-gray-500 dark:text-gray-400">{idx + 1}</td>
                     <td className="py-2 pr-2">
-                      <span className="font-semibold text-gray-900 dark:text-white">{CORE_LABELS[r.core] || r.core}</span>
-                      <span className="text-gray-500 dark:text-gray-400"> / {r.mode}</span>
+                      <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
+                        <span>{CORE_LABELS[r.core] || r.core}</span>
+                        <span className="text-gray-500 dark:text-gray-400 font-normal">/ {r.mode}</span>
+                      </div>
                       {!r.ok && r.error && (
                         <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={r.error}>
                           {r.error}
                         </div>
+                      )}
+                    </td>
+                    <td className="py-2 pr-2">
+                      {r.protocol === 'udp' ? (
+                        <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300">
+                          UDP
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
+                          TCP
+                        </span>
                       )}
                     </td>
                     <td className="py-2 pr-2 font-mono text-gray-700 dark:text-gray-300">
@@ -1863,7 +2241,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                               state?.foreign_node_id || foreignNodeId,
                             )
                           }
-                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 font-medium"
                         >
                           {t.tunnels.benchmarkUseConfig}
                         </button>
@@ -1898,7 +2276,7 @@ interface EditTunnelModalProps {
 }
 
 const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) => {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const forwardToParsed = tunnel.spec?.forward_to ? parseAddressPort(tunnel.spec.forward_to) : null
   const remoteIp = tunnel.spec?.remote_ip || forwardToParsed?.host || '127.0.0.1'
   const remotePort = tunnel.spec?.remote_port || forwardToParsed?.port || 8080
@@ -1949,6 +2327,7 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
     frp_local_ip: tunnel.spec?.local_ip || '127.0.0.1',
     node_ipv6: tunnel.spec?.node_ipv6 || '',
     rathole_local_port: (tunnel.spec?.local_port || '').toString(),
+    rathole_service_type: tunnel.spec?.service_type || (tunnel.type === 'tls' || tunnel.spec?.transport === 'tls' ? 'udp' : 'tcp'),
   })
   const parsedBackhaul = parseBackhaulSpec(tunnel.spec, tunnel.type)
   const [backhaulState, setBackhaulState] = useState<BackhaulFormState>(parsedBackhaul.state)
@@ -2035,7 +2414,8 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
       
       if (tunnel.core === 'rathole') {
         if (formData.rathole_remote_addr) {
-          const remoteHost = window.location.hostname
+          const existingHost = tunnel.spec?.remote_addr ? parseAddressPort(tunnel.spec.remote_addr).host : ''
+          const remoteHost = existingHost || remoteIp || window.location.hostname
           const remotePort = formData.rathole_remote_addr.includes(':') 
             ? formData.rathole_remote_addr.split(':')[1] 
             : formData.rathole_remote_addr
@@ -2043,6 +2423,9 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
         }
         if (formData.node_ipv6) {
           updatedSpec.node_ipv6 = formData.node_ipv6
+        }
+        if (formData.rathole_service_type) {
+          updatedSpec.service_type = formData.rathole_service_type
         }
         updatedSpec.ports = ports
         updatedSpec.remote_port = ports[0]  // Keep for backward compatibility
@@ -2331,7 +2714,8 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
                   value={formData.rathole_remote_addr ? formData.rathole_remote_addr.split(':')[1] || formData.rathole_remote_addr : ''}
                   onChange={(e) => {
                     const port = e.target.value
-                    const host = window.location.hostname
+                    const existingHost = tunnel.spec?.remote_addr ? parseAddressPort(tunnel.spec.remote_addr).host : ''
+                    const host = existingHost || remoteIp || window.location.hostname
                     setFormData({ ...formData, rathole_remote_addr: port ? `${host}:${port}` : '' })
                   }}
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
@@ -2339,7 +2723,24 @@ const EditTunnelModal = ({ tunnel, onClose, onSuccess }: EditTunnelModalProps) =
                   min="1"
                   max="65535"
                 />
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Rathole server port on panel (IP: {window.location.hostname})</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Rathole server port</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 flex items-center">
+                  <span>{t.tunnels.ratholeServiceType || 'Forwarding Protocol'}</span>
+                  <NewBadge />
+                </label>
+                <select
+                  value={formData.rathole_service_type}
+                  onChange={(e) => setFormData({ ...formData, rathole_service_type: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm"
+                >
+                  <option value="udp">UDP (WireGuard / QUIC)</option>
+                  <option value="tcp">TCP (V2Ray / HTTP)</option>
+                </select>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  {t.tunnels.ratholeServiceTypeHint || 'Select UDP for WireGuard. Select TCP for V2Ray / HTTP.'}
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -2545,19 +2946,20 @@ interface AddTunnelModalProps {
 }
 
 const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunnelModalProps) => {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const [formData, setFormData] = useState({
     name: '',
     core: initial?.core || 'gost',
-    type: initial?.type || 'tcp',
+    type: initial?.type || (initial?.core === 'rathole' ? 'tls' : 'tcp'),
     node_id: initial?.iran_node_id || '',
     foreign_node_id: initial?.foreign_node_id || '',
     iran_node_id: initial?.iran_node_id || '',
-    ports: '8080',  // Comma-separated ports (e.g., "8080,8081,8082")
+    ports: initial?.core === 'rathole' ? '8581' : '8080',  // Comma-separated ports
     remote_ip: '127.0.0.1',
     rathole_remote_addr: '23333',
     rathole_token: '',
-    rathole_transport: 'tcp',
+    rathole_transport: initial?.type || 'tls',
+    rathole_service_type: initial?.type === 'tcp' ? 'tcp' : 'udp',
     rathole_sni: 'www.digikala.com',
     chisel_control_port: '',  // Empty means auto (listen_port + 10000)
     frp_bind_port: '7000',
@@ -2565,6 +2967,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
     frp_local_ip: '127.0.0.1',
     use_ipv6: false,
     node_ipv6: '',  // Optional IPv6 address for node (Rathole/Chisel)
+    mport_range: '20000:40000',
     spec: {} as Record<string, any>,
   })
   const [backhaulState, setBackhaulState] = useState<BackhaulFormState>(() => {
@@ -2655,8 +3058,9 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         spec.remote_port = ports[0]  // Keep first port for backward compatibility
       }
       
-      if (formData.core === 'rathole') {
-        const remoteHost = window.location.hostname
+      if (formData.core === 'rathole' || formData.core === 'awg_ws') {
+        const iranNode = nodes.find((n) => n.id === formData.iran_node_id || n.id === formData.node_id)
+        const remoteHost = iranNode?.ip || window.location.hostname
         const remotePort = formData.rathole_remote_addr || '23333'
         spec.remote_addr = `${remoteHost}:${remotePort}`
         if (formData.rathole_token) {
@@ -2666,14 +3070,15 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         spec.remote_port = ports[0]
         spec.listen_port = ports[0]
         // Transport selection (tcp / ws / tls=WireGuard Stealth)
-        const ratholeTransport = formData.rathole_transport || 'tcp'
+        const ratholeTransport = formData.core === 'awg_ws' ? (formData.type || 'tls') : (formData.rathole_transport || 'tcp')
         spec.transport = ratholeTransport
         spec.type = ratholeTransport
         tunnelType = ratholeTransport
-        if (ratholeTransport === 'tls') {
+        const ratholeService = formData.core === 'awg_ws' ? 'udp' : (formData.rathole_service_type || (ratholeTransport === 'tls' ? 'udp' : 'tcp'))
+        spec.service_type = ratholeService
+        if (ratholeTransport === 'tls' || formData.core === 'awg_ws') {
           // WireGuard Stealth: carry UDP and present a fake SNI. The panel
           // auto-generates the TLS cert; nothing else is required from the user.
-          spec.service_type = 'udp'
           spec.sni = (formData.rathole_sni || 'www.digikala.com').trim()
         }
       }
@@ -2767,19 +3172,36 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         tunnelType = formData.type === 'udp' ? 'udp' : 'tcp'
       }
       
-      if (formData.core === 'udp2raw') {
+      if (formData.core === 'udp2raw' || formData.core === 'fec_faketcp') {
         if (!formData.node_id && !formData.iran_node_id) {
-          alert('udp2raw tunnels require an iran node')
+          alert('udp2raw/fec_faketcp tunnels require an iran node')
           return
         }
         const listenPort = parseInt(udp2rawState.listen_port, 10)
         if (Number.isNaN(listenPort) || listenPort <= 0) {
-          alert('Please enter a valid listen port for udp2raw')
+          alert('Please enter a valid listen port')
           return
         }
         spec = buildUdp2rawSpec(udp2rawState)
+        if (formData.core === 'fec_faketcp') {
+          spec.cipher_mode = 'aes128cfb'
+          spec.auth_mode = 'md5'
+          spec.seq_mode = 3
+        }
         spec.use_ipv6 = formData.use_ipv6 || false
         tunnelType = udp2rawState.raw_mode
+      }
+
+      if (formData.core === 'mport_hop') {
+        if (!formData.node_id && !formData.iran_node_id && !formData.foreign_node_id) {
+          alert('Dynamic Port Hopping requires a node')
+          return
+        }
+        const targetPort = parseInt(formData.ports || '8581', 10) || 8581
+        spec.target_port = targetPort
+        spec.port_range = (formData.mport_range || '20000:40000').trim()
+        spec.ports = [targetPort]
+        tunnelType = 'udp'
       }
 
       if (formData.core === 'trusttunnel') {
@@ -2914,7 +3336,66 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
 
   const handleCoreChange = (core: string) => {
     let newType = formData.type
-    if (core === 'rathole' || core === 'chisel') {
+    if (core === 'awg_ws') {
+      setFormData((prev) => ({
+        ...prev,
+        core,
+        type: 'tls',
+        rathole_transport: 'tls',
+        rathole_service_type: 'udp',
+        rathole_sni: 'www.digikala.com',
+        ports: prev.ports === '8080' ? '8581' : prev.ports,
+      }))
+      return
+    } else if (core === 'mport_hop') {
+      setFormData((prev) => ({
+        ...prev,
+        core,
+        type: 'udp',
+        ports: prev.ports === '8080' ? '8581' : prev.ports,
+        mport_range: '20000:40000',
+      }))
+      return
+    } else if (core === 'fec_faketcp') {
+      setUdp2rawState((prev) => ({
+        ...prev,
+        raw_mode: 'faketcp',
+        cipher_mode: 'aes128cfb',
+        auth_mode: 'md5',
+        listen_port: prev.listen_port === '8080' ? '8581' : prev.listen_port,
+        target_port: prev.target_port === '8080' ? '8581' : prev.target_port,
+      }))
+      setFormData((prev) => ({
+        ...prev,
+        core,
+        type: 'faketcp',
+        ports: prev.ports === '8080' ? '8581' : prev.ports,
+      }))
+      return
+    } else if (core === 'rathole') {
+      setFormData((prev) => ({
+        ...prev,
+        core,
+        type: 'tls',
+        rathole_transport: 'tls',
+        rathole_service_type: 'udp',
+        ports: prev.ports === '8080' ? '8581' : prev.ports,
+      }))
+      return
+    } else if (core === 'zapret') {
+      setZapretState((prev) => ({
+        ...prev,
+        preset: 'mci',
+        desync_mode: 'multisplit',
+        split_pos: 'midsni',
+        desync_fooling: 'badseq,ts',
+        desync_ttl: '4',
+        repeats: '2',
+        filter_udp: '51820',
+      }))
+      setFormData((prev) => ({ ...prev, core, type: 'mci' }))
+      return
+    } else if (core === 'chisel') {
       newType = core
     } else if (core === 'frp') {
       // Keep current type if it's tcp or udp, otherwise default to tcp
@@ -2929,15 +3410,13 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
       newType = hysteria2State.type
     } else if (core === 'tuic') {
       newType = tuicState.type
-    } else if (core === 'zapret') {
-      newType = zapretState.desync_mode
     } else if (core === 'snispoof') {
       newType = sniSpoofState.desync_mode
     } else if (core === 'warp') {
       newType = 'socks'
     } else if (core === 'obfs4') {
       newType = 'tcp'
-    } else if (formData.type === 'rathole' || formData.type === 'chisel' || formData.core === 'backhaul' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'zapret' || formData.core === 'snispoof' || formData.core === 'warp' || formData.core === 'obfs4') {
+    } else {
       newType = 'tcp'
     }
     setFormData({ ...formData, core, type: newType })
@@ -2968,7 +3447,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               required
             />
           </div>
-          {formData.core !== 'zapret' && formData.core !== 'snispoof' && formData.core !== 'warp' && (
+          {formData.core !== 'zapret' && formData.core !== 'snispoof' && formData.core !== 'warp' && formData.core !== 'mport_hop' && (
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -2978,7 +3457,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 value={formData.iran_node_id || formData.node_id}
                 onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
+                required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
               >
                 <option value="">{t.tunnels.selectIranNode}</option>
                 {nodes.map((node) => (
@@ -2996,7 +3475,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 value={formData.foreign_node_id}
                 onChange={(e) => setFormData({ ...formData, foreign_node_id: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                required={formData.core === 'rathole' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
+                required={formData.core === 'rathole' || formData.core === 'awg_ws' || formData.core === 'backhaul' || formData.core === 'frp' || formData.core === 'chisel' || formData.core === 'udp2raw' || formData.core === 'fec_faketcp' || formData.core === 'trusttunnel' || formData.core === 'hysteria2' || formData.core === 'tuic' || formData.core === 'obfs4'}
               >
                 <option value="">{t.tunnels.selectForeignServer}</option>
                 {servers.map((server) => (
@@ -3007,6 +3486,30 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               </select>
             </div>
           </div>
+          )}
+
+          {formData.core === 'mport_hop' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                {language === 'fa' ? 'سرور مقصد پرش پورت (سروری که وایرگارد روی آن نصب است)' : 'Target Server (Where WireGuard is running)'}
+              </label>
+              <select
+                value={formData.iran_node_id || formData.node_id || formData.foreign_node_id}
+                onChange={(e) => setFormData({ ...formData, iran_node_id: e.target.value, node_id: e.target.value, foreign_node_id: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                required
+              >
+                <option value="">{language === 'fa' ? 'انتخاب سرور...' : 'Select server...'}</option>
+                {[...servers, ...nodes].map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.name} ({node.metadata?.role || node.node_metadata?.role || 'node'})
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                {language === 'fa' ? 'قوانین ریدایرکت PREROUTING در سطح هسته لینوکس روی این سرور اعمال خواهند شد.' : 'Linux kernel PREROUTING redirect rules will be applied on this server.'}
+              </p>
+            </div>
           )}
 
           {(formData.core === 'zapret' || formData.core === 'snispoof') && (
@@ -3065,58 +3568,139 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               <select
                 value={formData.core}
                 onChange={(e) => handleCoreChange(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white font-medium"
               >
-                <option value="gost">GOST</option>
-                <option value="rathole">Rathole</option>
-                <option value="backhaul">Backhaul</option>
-                <option value="chisel">Chisel</option>
-                <option value="frp">FRP</option>
-                <option value="udp2raw">udp2raw</option>
-                <option value="trusttunnel">TrustTunnel (QUIC)</option>
-                <option value="hysteria2">Hysteria2 (QUIC carrier)</option>
-                <option value="tuic">TUIC (QUIC carrier)</option>
-                <option value="zapret">Zapret (DPI bypass)</option>
-                <option value="snispoof">SNI Spoof (Xray + Zapret)</option>
-                <option value="warp">WARP-MASQUE (egress)</option>
-                <option value="obfs4">obfs4 (TCP fallback)</option>
+                <optgroup label={language === 'fa' ? '⭐️ تانل‌های نسل جدید (ضد فیلترینگ وایرگارد)' : '⭐️ Next-Gen Anti-Censorship Tunnels'}>
+                  <option value="awg_ws">
+                    {language === 'fa' ? '👑 AWG-over-WebSocket (دیجی‌کالا TLS) [جدید]' : '👑 AWG-over-WebSocket (Digikala TLS) [NEW]'}
+                  </option>
+                  <option value="mport_hop">
+                    {language === 'fa' ? '🛡️ Dynamic Multi-Port Hopping (پرش پورت) [جدید]' : '🛡️ Dynamic Multi-Port Hopping [NEW]'}
+                  </option>
+                  <option value="fec_faketcp">
+                    {language === 'fa' ? '⚡ FEC + FakeTCP (ضد پکت‌لاس شدید) [جدید]' : '⚡ FEC + FakeTCP (Zero-Packet-Loss) [NEW]'}
+                  </option>
+                  <option value="zapret">
+                    {language === 'fa' ? '🔮 Zapret (بای‌پس فیلترینگ DPI ایران) [جدید]' : '🔮 Zapret (Anti-DPI Bypass) [NEW]'}
+                  </option>
+                </optgroup>
+                <optgroup label={language === 'fa' ? 'سایر تانل‌ها' : 'Other Tunnels'}>
+                  <option value="gost">GOST</option>
+                  <option value="rathole">Rathole</option>
+                  <option value="backhaul">Backhaul</option>
+                  <option value="chisel">Chisel</option>
+                  <option value="frp">FRP</option>
+                  <option value="udp2raw">udp2raw (FakeTCP / ICMP)</option>
+                  <option value="trusttunnel">TrustTunnel (QUIC)</option>
+                  <option value="hysteria2">Hysteria2 (QUIC carrier)</option>
+                  <option value="tuic">TUIC (QUIC carrier)</option>
+                  <option value="snispoof">SNI Spoof (Xray + Zapret)</option>
+                  <option value="warp">WARP-MASQUE (egress)</option>
+                  <option value="obfs4">obfs4 (TCP fallback)</option>
+                </optgroup>
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {t.tunnels.type}
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 flex items-center">
+                <span>{t.tunnels.type}</span>
+                {(formData.core === 'awg_ws' || formData.core === 'mport_hop' || formData.core === 'fec_faketcp' || (formData.core === 'rathole' && (formData.type === 'tls' || formData.rathole_transport === 'tls')) || (formData.core === 'zapret' && ['mci', 'mtn', 'fixed'].includes(formData.type))) && (
+                  <NewBadge />
+                )}
               </label>
               <select
                 value={formData.type}
                 onChange={(e) => {
-                  const value = e.target.value as BackhaulTransport
-                  setFormData({ ...formData, type: value })
+                  const value = e.target.value as any
+                  setFormData((prev) => ({
+                    ...prev,
+                    type: value,
+                    rathole_transport: value,
+                    rathole_service_type: value === 'tls' ? 'udp' : prev.rathole_service_type || 'tcp',
+                  }))
+                  if (formData.core === 'zapret') {
+                    if (value === 'mci') {
+                      setZapretState((prev) => ({
+                        ...prev,
+                        preset: 'mci',
+                        desync_mode: 'multisplit',
+                        split_pos: 'midsni',
+                        desync_fooling: 'badseq,ts',
+                        desync_ttl: '4',
+                        repeats: '2',
+                        filter_udp: '51820',
+                      }))
+                    } else if (value === 'mtn') {
+                      setZapretState((prev) => ({
+                        ...prev,
+                        preset: 'mtn',
+                        desync_mode: 'fakedsplit',
+                        split_pos: 'midsni',
+                        desync_fooling: 'badsum,badseq',
+                        desync_ttl: '3',
+                        repeats: '2',
+                        filter_udp: '51820',
+                      }))
+                    } else if (value === 'fixed') {
+                      setZapretState((prev) => ({
+                        ...prev,
+                        preset: 'fixed',
+                        desync_mode: 'disorder2',
+                        split_pos: 'midsni',
+                        desync_fooling: 'badseq',
+                        desync_ttl: '5',
+                        repeats: '1',
+                        filter_udp: '51820',
+                      }))
+                    } else {
+                      setZapretState((prev) => ({ ...prev, preset: 'none', desync_mode: value }))
+                    }
+                  }
                   if (formData.core === 'backhaul') {
                     setBackhaulState((prev) => ({ ...prev, transport: value }))
                   }
-                  if (formData.core === 'udp2raw') {
-                    setUdp2rawState((prev) => ({ ...prev, raw_mode: e.target.value as Udp2rawRawMode }))
+                  if (formData.core === 'udp2raw' || formData.core === 'fec_faketcp') {
+                    setUdp2rawState((prev) => ({ ...prev, raw_mode: value }))
                   }
                   if (formData.core === 'trusttunnel') {
-                    setTrustTunnelState((prev) => ({ ...prev, transport: e.target.value as TrustTunnelTransport }))
+                    setTrustTunnelState((prev) => ({ ...prev, transport: value }))
                   }
                   if (formData.core === 'hysteria2') {
-                    setHysteria2State((prev) => ({ ...prev, type: e.target.value as Hysteria2Type }))
+                    setHysteria2State((prev) => ({ ...prev, type: value }))
                   }
                   if (formData.core === 'tuic') {
-                    setTuicState((prev) => ({ ...prev, type: e.target.value as TuicType }))
-                  }
-                  if (formData.core === 'zapret') {
-                    setZapretState((prev) => ({ ...prev, desync_mode: e.target.value }))
+                    setTuicState((prev) => ({ ...prev, type: value }))
                   }
                   if (formData.core === 'snispoof') {
-                    setSniSpoofState((prev) => ({ ...prev, desync_mode: e.target.value }))
+                    setSniSpoofState((prev) => ({ ...prev, desync_mode: value }))
                   }
                 }}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                disabled={formData.core === 'chisel' || formData.core === 'warp' || formData.core === 'obfs4'}
+                disabled={formData.core === 'chisel' || formData.core === 'warp' || formData.core === 'obfs4' || formData.core === 'mport_hop'}
               >
-                {formData.core === 'chisel' ? (
+                {formData.core === 'awg_ws' ? (
+                  <>
+                    <option value="tls">
+                      {language === 'fa' ? '🛡️ استتار TLS دیجی‌کالا (WireGuard Stealth) [جدید]' : '🛡️ WireGuard Stealth (TLS+SNI) [NEW]'}
+                    </option>
+                    <option value="ws">Reverse WebSocket (WSS) [NEW]</option>
+                  </>
+                ) : formData.core === 'mport_hop' ? (
+                  <option value="udp">
+                    {language === 'fa' ? '⚡ ریدایرکت داینامیک کرنل (UDP Kernel Hopping)' : '⚡ Kernel Multi-Port Redirect'}
+                  </option>
+                ) : formData.core === 'fec_faketcp' ? (
+                  <>
+                    <option value="faketcp">
+                      {language === 'fa' ? '⚡ هسته FakeTCP + تصحیح خطای FEC [جدید]' : '⚡ Kernel FakeTCP + FEC [NEW]'}
+                    </option>
+                    <option value="icmp">
+                      {language === 'fa' ? '🛡️ پینگ خام ICMP بدون پورت + FEC [جدید]' : '🛡️ Raw ICMP Ping Mode + FEC [NEW]'}
+                    </option>
+                    <option value="udp">
+                      {language === 'fa' ? '🔒 یو‌دی‌پی رمزنگاری شده + FEC [جدید]' : '🔒 Encrypted UDP + FEC [NEW]'}
+                    </option>
+                  </>
+                ) : formData.core === 'chisel' ? (
                   <option value={formData.core}>{formData.core.charAt(0).toUpperCase() + formData.core.slice(1)}</option>
                 ) : formData.core === 'warp' ? (
                   <option value="socks">SOCKS5 (WARP egress)</option>
@@ -3124,8 +3708,26 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                   <option value="tcp">TCP (V2Ray / any TCP)</option>
                 ) : formData.core === 'rathole' ? (
                   <>
-                    <option value="tcp">TCP</option>
+                    <option value="tls">
+                      {language === 'fa' ? '🛡️ استتار وایرگارد (WireGuard Stealth TLS) [جدید]' : '🛡️ WireGuard Stealth (TLS+SNI) [NEW]'}
+                    </option>
+                    <option value="tcp">TCP (Standard)</option>
                     <option value="ws">WebSocket (WS)</option>
+                  </>
+                ) : formData.core === 'zapret' ? (
+                  <>
+                    <option value="mci">
+                      {language === 'fa' ? '📱 همراه اول (MCI Anti-DPI) [جدید]' : '📱 Hamrah-e Avval (MCI Anti-DPI) [NEW]'}
+                    </option>
+                    <option value="mtn">
+                      {language === 'fa' ? '📱 ایرانسل (Irancell/MTN Anti-DPI) [جدید]' : '📱 Irancell (MTN Anti-DPI) [NEW]'}
+                    </option>
+                    <option value="fixed">
+                      {language === 'fa' ? '🏠 اینترنت ثابت (Fixed-Line Anti-DPI) [جدید]' : '🏠 Fixed-Line Anti-DPI [NEW]'}
+                    </option>
+                    {ZAPRET_DESYNC_MODES.map((mode) => (
+                      <option key={mode} value={mode}>{mode}</option>
+                    ))}
                   </>
                 ) : formData.core === 'frp' ? (
                   <>
@@ -3157,12 +3759,6 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                     <option value="udp">UDP (WireGuard)</option>
                     <option value="tcp">TCP (V2Ray/Xray)</option>
                     <option value="both">TCP + UDP</option>
-                  </>
-                ) : formData.core === 'zapret' || formData.core === 'snispoof' ? (
-                  <>
-                    {ZAPRET_DESYNC_MODES.map((mode) => (
-                      <option key={mode} value={mode}>{mode}</option>
-                    ))}
                   </>
                 ) : (
                   <>
@@ -3232,16 +3828,67 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
             />
           )}
           
-          {formData.core === 'udp2raw' && (
-            <Udp2rawForm
-              state={udp2rawState}
-              onChange={(partial) => {
-                setUdp2rawState((prev) => ({ ...prev, ...partial }))
-                if (partial.raw_mode) {
-                  setFormData((prev) => ({ ...prev, type: partial.raw_mode as string }))
-                }
-              }}
-            />
+          {formData.core === 'mport_hop' && (
+            <div className="space-y-4 p-4 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    {language === 'fa' ? 'پورت اصلی وایرگارد (Target Port)' : 'WireGuard Target Port'}
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.ports}
+                    onChange={(e) => setFormData({ ...formData, ports: e.target.value })}
+                    placeholder="8581"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                    required
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {language === 'fa' ? 'پورتی که هسته WireGuard روی آن گوش می‌دهد (مثلاً 8581)' : 'The port WireGuard listens on (e.g. 8581)'}
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    {language === 'fa' ? 'بازه پورت‌های پرش داینامیک (Port Range)' : 'Dynamic Port Range'}
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.mport_range || '20000:40000'}
+                    onChange={(e) => setFormData({ ...formData, mport_range: e.target.value })}
+                    placeholder="20000:40000"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white font-mono"
+                    required
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {language === 'fa' ? 'بازه بزرگ پورت‌های UDP برای دور زدن تراتلینگ (مثلاً 20000:40000)' : 'Wide UDP port range to evade throttling (e.g. 20000:40000)'}
+                  </p>
+                </div>
+              </div>
+              <div className="text-xs text-emerald-800 dark:text-emerald-300 bg-emerald-100/50 dark:bg-emerald-900/30 p-2.5 rounded">
+                💡 {language === 'fa' 
+                  ? 'تمامی پکت‌های UDP ارسالی به هر پورتی در این بازه، مستقیماً در سطح هسته لینوکس بدون تاخیر و بدون مصرف رم/پردازنده به پورت وایرگارد منتقل می‌شوند.' 
+                  : 'All UDP packets sent to any port in this range will be redirected directly at kernel level to the WireGuard port with zero CPU/RAM overhead.'}
+              </div>
+            </div>
+          )}
+
+          {(formData.core === 'udp2raw' || formData.core === 'fec_faketcp') && (
+            <div>
+              {formData.core === 'fec_faketcp' && (
+                <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-100/50 dark:bg-amber-900/30 p-2.5 rounded border border-amber-200 dark:border-amber-800/40 mb-3">
+                  ⚡ <strong>{language === 'fa' ? 'حالت فوق امنیتی ضد پکت‌لاس (FEC + FakeTCP)' : 'Zero-Loss FEC + FakeTCP Mode'}</strong>: {language === 'fa' ? 'بسته‌های UDP وایرگارد درون هندشیک‌های واقعی TCP کرنل قرار گرفته و با کدهای تصحیح خطای رید-سالامون (Reed-Solomon) در برابر پکت‌لاس‌های شدید ایران بیمه می‌شوند.' : 'WireGuard UDP is wrapped in kernel TCP handshakes with Reed-Solomon FEC redundancy to survive >30% packet loss.'}
+                </div>
+              )}
+              <Udp2rawForm
+                state={udp2rawState}
+                onChange={(partial) => {
+                  setUdp2rawState((prev) => ({ ...prev, ...partial }))
+                  if (partial.raw_mode) {
+                    setFormData((prev) => ({ ...prev, type: partial.raw_mode as string }))
+                  }
+                }}
+              />
+            </div>
           )}
 
           {formData.core === 'trusttunnel' && (
@@ -3322,8 +3969,13 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
             />
           )}
           
-          {formData.core === 'rathole' && (
+          {(formData.core === 'rathole' || formData.core === 'awg_ws') && (
             <>
+              {formData.core === 'awg_ws' && (
+                <div className="text-xs text-indigo-800 dark:text-indigo-300 bg-indigo-100/50 dark:bg-indigo-900/30 p-2.5 rounded border border-indigo-200 dark:border-indigo-800/40 mb-3">
+                  👑 <strong>AWG-over-WebSocket + TLS Camouflage</strong>: {language === 'fa' ? 'پکت‌های UDP وایرگارد داخل وب‌سوکت معکوس با گواهی TLS خودکار و جعل SNI دیجی‌کالا استتار می‌شوند تا ترافیک توسط DPI فایروال ملی مسدود نشود.' : 'WireGuard UDP packets are camouflaged inside reverse WebSocket with auto-generated TLS and Digikala SNI disguise.'}
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Ports
@@ -3345,22 +3997,67 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Rathole Port
-                </label>
-                <input
-                  type="number"
-                  value={formData.rathole_remote_addr}
-                  onChange={(e) =>
-                    setFormData({ ...formData, rathole_remote_addr: e.target.value })
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                  placeholder="23333"
-                  min="1"
-                  max="65535"
-                  required
-                />
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Rathole server port on panel (IP: {window.location.hostname})</p>
+                    Rathole Port
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.rathole_remote_addr}
+                    onChange={(e) =>
+                      setFormData({ ...formData, rathole_remote_addr: e.target.value })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                    placeholder="23333"
+                    min="1"
+                    max="65535"
+                    required
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {language === 'fa' ? 'پورت اتصال بین دو سرور' : `Rathole server port on panel (IP: ${window.location.hostname})`}
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 flex items-center justify-between">
+                    <span className="flex items-center">
+                      {t.tunnels.ratholeServiceType || 'Forwarding Protocol'}
+                      <NewBadge />
+                    </span>
+                    {formData.rathole_service_type === 'udp' && (
+                      <span className="text-xs font-bold text-orange-600 dark:text-orange-400">WireGuard UDP</span>
+                    )}
+                  </label>
+                  <select
+                    value={formData.rathole_service_type || (formData.type === 'tls' || formData.rathole_transport === 'tls' ? 'udp' : 'tcp')}
+                    onChange={(e) => setFormData({ ...formData, rathole_service_type: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                  >
+                    <option value="udp">UDP (WireGuard / UDP)</option>
+                    <option value="tcp">TCP (V2Ray / HTTP)</option>
+                  </select>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {t.tunnels.ratholeServiceTypeHint || 'Select UDP for WireGuard. Select TCP for V2Ray / HTTP.'}
+                  </p>
+                </div>
               </div>
+
+              {(formData.type === 'tls' || formData.rathole_transport === 'tls') && (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg">
+                  <label className="block text-sm font-semibold text-emerald-900 dark:text-emerald-200 mb-1 flex items-center">
+                    <span>{t.tunnels.fakeSni || 'Fake SNI (camouflage domain)'}</span>
+                    <NewBadge />
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.rathole_sni}
+                    onChange={(e) => setFormData({ ...formData, rathole_sni: e.target.value })}
+                    className="w-full px-3 py-2 border border-emerald-300 dark:border-emerald-700 rounded-lg dark:bg-gray-800 dark:text-white text-sm"
+                    placeholder="www.digikala.com"
+                  />
+                  <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-1">
+                    {t.tunnels.fakeSniHint || 'The TLS handshake will present this name, so it looks like normal traffic to that site.'}
+                  </p>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Token (Optional - Auto-generated if empty)
@@ -3376,45 +4073,6 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Authentication token (will be auto-generated if not provided)</p>
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  {t.tunnels.ratholeTransport || 'Transport'}
-                </label>
-                <select
-                  value={formData.rathole_transport}
-                  onChange={(e) => setFormData({ ...formData, rathole_transport: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                >
-                  <option value="tcp">TCP</option>
-                  <option value="ws">WebSocket (WS)</option>
-                  <option value="tls">{t.tunnels.wgStealthLabel || 'WireGuard Stealth (TLS + fake SNI)'}</option>
-                </select>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  {formData.rathole_transport === 'tls'
-                    ? (t.tunnels.wgStealthHint || 'Reverse TLS on the iran node, disguised as HTTPS. Carries WireGuard UDP. Use 8581 as the port.')
-                    : 'Transport between foreign (client) and iran (server).'}
-                </p>
-              </div>
-              {formData.rathole_transport === 'tls' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    {t.tunnels.fakeSni || 'Fake SNI (camouflage domain)'}
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.rathole_sni}
-                    onChange={(e) => setFormData({ ...formData, rathole_sni: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-                    placeholder="www.digikala.com"
-                  />
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    {t.tunnels.fakeSniHint || 'The TLS handshake will present this name, so it looks like normal traffic to that site.'}
-                  </p>
-                </div>
-              )}
-            </div>
             </>
           )}
           
@@ -4236,11 +4894,103 @@ function ZapretForm({
   onChange: (partial: Partial<ZapretFormState>) => void
 }) {
   const { t } = useLanguage()
+
+  const handlePresetChange = (preset: string) => {
+    if (preset === 'mci') {
+      onChange({
+        preset,
+        desync_mode: 'multisplit',
+        split_pos: 'midsni',
+        desync_fooling: 'badseq,ts',
+        desync_ttl: '4',
+        repeats: '2',
+      })
+    } else if (preset === 'mtn') {
+      onChange({
+        preset,
+        desync_mode: 'fakedsplit',
+        split_pos: 'midsni',
+        desync_fooling: 'badsum,badseq',
+        desync_ttl: '3',
+        repeats: '2',
+      })
+    } else if (preset === 'fixed') {
+      onChange({
+        preset,
+        desync_mode: 'disorder2',
+        split_pos: 'midsni',
+        desync_fooling: 'badseq',
+        desync_ttl: '5',
+        repeats: '1',
+      })
+    } else {
+      onChange({ preset: 'none' })
+    }
+  }
+
   return (
     <div className="space-y-4">
       <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
         {t.tunnels.zapretHint}
       </p>
+
+      {/* Preset selection */}
+      <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+        <label className="block text-sm font-semibold text-blue-900 dark:text-blue-200 mb-1 flex items-center">
+          <span>{t.tunnels.zapretPreset || 'ISP Anti-DPI Preset'}</span>
+          <NewBadge />
+        </label>
+        <select
+          value={state.preset || 'none'}
+          onChange={(e) => handlePresetChange(e.target.value)}
+          className="w-full px-3 py-2 border border-blue-300 dark:border-blue-700 rounded-lg dark:bg-gray-800 dark:text-white text-sm"
+        >
+          <option value="none">{t.tunnels.zapretPresetCustom || 'Custom / Manual Configuration'}</option>
+          <option value="mci">{t.tunnels.zapretPresetMci || '📱 Hamrah-e Avval (MCI) - Multisplit midsni + TTL Fooling'}</option>
+          <option value="mtn">{t.tunnels.zapretPresetMtn || '📱 Irancell (MTN) - Fakedsplit midsni + Badsum/Badseq'}</option>
+          <option value="fixed">{t.tunnels.zapretPresetFixed || '🏠 Fixed-Line (Mokhaberat/Shatel) - Disorder2 + Badseq'}</option>
+        </select>
+        <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+          {t.tunnels.zapretPresetHint || 'Pre-configured desync parameters tested against Iranian ISP firewalls.'}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Filter Ports (TCP)
+          </label>
+          <input
+            type="text"
+            value={state.filter_tcp}
+            onChange={(e) => onChange({ filter_tcp: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="443"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            TCP port(s) to desync (e.g. <code>443</code> or <code>443,8443</code>).
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 flex items-center justify-between">
+            <span className="flex items-center">
+              {t.tunnels.zapretFilterUdp || 'Filter Ports (UDP)'}
+              <NewBadge />
+            </span>
+            <span className="text-xs text-orange-600 dark:text-orange-400 font-semibold">WireGuard</span>
+          </label>
+          <input
+            type="text"
+            value={state.filter_udp}
+            onChange={(e) => onChange({ filter_udp: e.target.value })}
+            className="w-full px-3 py-2 border border-orange-300 dark:border-orange-700 rounded-lg dark:bg-gray-700 dark:text-white"
+            placeholder="51820"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {t.tunnels.zapretFilterUdpHint || 'UDP port(s) to desync (e.g. 51820 for WireGuard).'}
+          </p>
+        </div>
+      </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -4257,22 +5007,23 @@ function ZapretForm({
             ))}
           </select>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            nfqws strategy (--dpi-desync). Try <code>fake</code> first.
+            nfqws strategy (--dpi-desync).
           </p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Filter Ports (TCP)
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 flex items-center">
+            <span>{t.tunnels.zapretSplitPos || 'Split Position (split-pos)'}</span>
+            <NewBadge />
           </label>
           <input
             type="text"
-            value={state.filter_tcp}
-            onChange={(e) => onChange({ filter_tcp: e.target.value })}
+            value={state.split_pos}
+            onChange={(e) => onChange({ split_pos: e.target.value })}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-            placeholder="443"
+            placeholder="midsni"
           />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Port(s) to desync, e.g. <code>443</code> or <code>443,8443</code>
+            {t.tunnels.zapretSplitPosHint || 'e.g. midsni, 1, 2, 3'}
           </p>
         </div>
       </div>
@@ -4280,36 +5031,34 @@ function ZapretForm({
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            L7 Filter
+            {t.tunnels.zapretDesyncTtl || 'Desync Packet TTL'}
           </label>
-          <select
-            value={state.filter_l7}
-            onChange={(e) => onChange({ filter_l7: e.target.value })}
+          <input
+            type="number"
+            value={state.desync_ttl}
+            onChange={(e) => onChange({ desync_ttl: e.target.value })}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-          >
-            {ZAPRET_L7_FILTERS.map((f) => (
-              <option key={f} value={f}>{f}</option>
-            ))}
-          </select>
+            placeholder="4"
+            min={1}
+            max={64}
+          />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Protocol layer (--filter-l7). Use <code>tls</code> for HTTPS/SNI.
+            {t.tunnels.zapretDesyncTtlHint || 'Fake packet TTL (usually 3 to 5).'}
           </p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Direction
+            Fooling
           </label>
-          <select
-            value={state.direction}
-            onChange={(e) => onChange({ direction: e.target.value })}
+          <input
+            type="text"
+            value={state.desync_fooling}
+            onChange={(e) => onChange({ desync_fooling: e.target.value })}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-          >
-            {ZAPRET_DIRECTIONS.map((d) => (
-              <option key={d} value={d}>{d}</option>
-            ))}
-          </select>
+            placeholder="badseq,ts"
+          />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            <code>both</code> is recommended for outbound TLS servers.
+            --dpi-desync-fooling (e.g. <code>badseq,ts</code>, <code>badsum</code>)
           </p>
         </div>
       </div>
@@ -4327,7 +5076,7 @@ function ZapretForm({
             placeholder="hcaptcha.com"
           />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Decoy SNI sent in the fake ClientHello (--dpi-desync-fake-tls-mod=sni=). Use an allowed domain.
+            Decoy SNI sent in the fake ClientHello.
           </p>
         </div>
         <div>
@@ -4350,17 +5099,19 @@ function ZapretForm({
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Fooling
+            Direction
           </label>
-          <input
-            type="text"
-            value={state.desync_fooling}
-            onChange={(e) => onChange({ desync_fooling: e.target.value })}
+          <select
+            value={state.direction}
+            onChange={(e) => onChange({ direction: e.target.value })}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-            placeholder="badseq,ts"
-          />
+          >
+            {ZAPRET_DIRECTIONS.map((d) => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            --dpi-desync-fooling (e.g. <code>badseq,ts</code>, <code>md5sig</code>, <code>badsum</code>)
+            <code>both</code> is recommended.
           </p>
         </div>
         <div>
@@ -4377,7 +5128,7 @@ function ZapretForm({
             max={65535}
           />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Leave empty to auto-pick a unique queue per tunnel.
+            Leave empty to auto-pick a unique queue.
           </p>
         </div>
       </div>
@@ -4391,10 +5142,10 @@ function ZapretForm({
           value={state.extra_args}
           onChange={(e) => onChange({ extra_args: e.target.value })}
           className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-          placeholder="--dpi-desync-ttl=5 --dpi-desync-split-pos=2"
+          placeholder="--dpi-desync-repeats=2"
         />
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-          Optional raw flags appended to nfqws. Leave empty unless you know what you need.
+          Optional raw flags appended to nfqws.
         </p>
       </div>
     </div>

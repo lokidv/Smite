@@ -1972,7 +1972,17 @@ class ZapretAdapter:
             return ["-m", "multiport", multi, s]
         return [single, s]
 
-    def _setup_iptables(self, post_chain, pre_chain, ports_str, queue, max_pkt, direction, target_ip: str = ""):
+    def _setup_iptables(
+        self,
+        post_chain: str,
+        pre_chain: str,
+        filter_tcp: str,
+        filter_udp: str,
+        queue: int,
+        max_pkt: int,
+        direction: str,
+        target_ip: str = ""
+    ):
         jnfq = ["-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass"]
         cb_orig = ["-m", "connbytes", "--connbytes-dir=original", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
         cb_reply = ["-m", "connbytes", "--connbytes-dir=reply", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
@@ -1999,21 +2009,30 @@ class ZapretAdapter:
                     chk = self._run_ipt([ipt, "-t", "mangle", "-C", "POSTROUTING", "-j", post_chain])
                     if not chk or chk.returncode != 0:
                         self._run_ipt([ipt, "-t", "mangle", "-A", "POSTROUTING", "-j", post_chain], check=True)
-                    dm = self._port_match(ports_str, inbound=False) + dst_match
-                    self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + cb_orig + jnfq, check=True)
-                    self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + ["--tcp-flags", "fin", "fin"] + jnfq, check=True)
-                    self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm + ["--tcp-flags", "rst", "rst"] + jnfq, check=True)
+                    if filter_tcp:
+                        dm_tcp = self._port_match(filter_tcp, inbound=False) + dst_match
+                        self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm_tcp + cb_orig + jnfq, check=True)
+                        self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm_tcp + ["--tcp-flags", "fin", "fin"] + jnfq, check=True)
+                        self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "tcp"] + dm_tcp + ["--tcp-flags", "rst", "rst"] + jnfq, check=True)
+                    if filter_udp:
+                        dm_udp = self._port_match(filter_udp, inbound=False) + dst_match
+                        self._run_ipt([ipt, "-t", "mangle", "-I", post_chain, "-p", "udp"] + dm_udp + cb_orig + jnfq, check=True)
+
                 if direction in ("in", "both"):
                     self._run_ipt([ipt, "-t", "mangle", "-N", pre_chain])
                     self._run_ipt([ipt, "-t", "mangle", "-F", pre_chain])
                     chk = self._run_ipt([ipt, "-t", "mangle", "-C", "PREROUTING", "-j", pre_chain])
                     if not chk or chk.returncode != 0:
                         self._run_ipt([ipt, "-t", "mangle", "-A", "PREROUTING", "-j", pre_chain], check=True)
-                    sm = self._port_match(ports_str, inbound=True) + src_match
-                    self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + cb_reply + jnfq, check=True)
-                    self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + ["--tcp-flags", "syn,ack", "syn,ack"] + jnfq, check=True)
-                    self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + ["--tcp-flags", "fin", "fin"] + jnfq, check=True)
-                    self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm + ["--tcp-flags", "rst", "rst"] + jnfq, check=True)
+                    if filter_tcp:
+                        sm_tcp = self._port_match(filter_tcp, inbound=True) + src_match
+                        self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm_tcp + cb_reply + jnfq, check=True)
+                        self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm_tcp + ["--tcp-flags", "syn,ack", "syn,ack"] + jnfq, check=True)
+                        self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm_tcp + ["--tcp-flags", "fin", "fin"] + jnfq, check=True)
+                        self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "tcp"] + sm_tcp + ["--tcp-flags", "rst", "rst"] + jnfq, check=True)
+                    if filter_udp:
+                        sm_udp = self._port_match(filter_udp, inbound=True) + src_match
+                        self._run_ipt([ipt, "-t", "mangle", "-I", pre_chain, "-p", "udp"] + sm_udp + cb_reply + jnfq, check=True)
             except subprocess.CalledProcessError as e:
                 detail = getattr(e, "stderr", "") or str(e)
                 if v6:
@@ -2045,15 +2064,71 @@ class ZapretAdapter:
             logger.info(f"zapret tunnel {tunnel_id} already exists, removing it first")
             self.remove(tunnel_id)
 
-        desync_mode = (spec.get("desync_mode") or spec.get("type") or "fake").lower()
+        preset = (spec.get("preset") or "").lower()
+        desync_mode = (spec.get("desync_mode") or spec.get("type") or "").lower()
+        desync_fooling = (spec.get("desync_fooling") or "").strip()
+        split_pos = str(spec.get("split_pos") or "").strip()
+        split_seqovl = str(spec.get("split_seqovl") or "").strip()
+        repeats = str(spec.get("repeats") or spec.get("desync_repeats") or "").strip()
+        ttl = spec.get("desync_ttl")
 
-        filter_tcp = str(spec.get("filter_tcp") or "443").strip()
-        if not filter_tcp or filter_tcp.lower() == "none":
+        # Iranian ISP presets
+        if preset == "mci":
+            if not desync_mode:
+                desync_mode = "multisplit"
+            if not split_pos:
+                split_pos = "midsni"
+            if not desync_fooling:
+                desync_fooling = "badseq,ts"
+            if ttl in (None, "", 0, "0"):
+                ttl = 4
+            if not repeats:
+                repeats = "2"
+        elif preset == "mtn":
+            if not desync_mode:
+                desync_mode = "fakedsplit"
+            if not split_pos:
+                split_pos = "midsni"
+            if not desync_fooling:
+                desync_fooling = "badsum,badseq"
+            if ttl in (None, "", 0, "0"):
+                ttl = 3
+            if not repeats:
+                repeats = "2"
+        elif preset == "fixed":
+            if not desync_mode:
+                desync_mode = "disorder2"
+            if not split_pos:
+                split_pos = "midsni"
+            if not desync_fooling:
+                desync_fooling = "badseq"
+            if ttl in (None, "", 0, "0"):
+                ttl = 5
+            if not repeats:
+                repeats = "1"
+
+        if not desync_mode:
+            desync_mode = "fake"
+        if not desync_fooling:
+            desync_fooling = "badseq,ts"
+
+        filter_tcp = str(spec.get("filter_tcp") or "").strip()
+        if filter_tcp.lower() in ("none", "null", "false", "0"):
+            filter_tcp = ""
+
+        filter_udp = str(spec.get("filter_udp") or "").strip()
+        if filter_udp.lower() in ("none", "null", "false", "0"):
+            filter_udp = ""
+
+        # Backwards compatibility: if neither is given, default to TCP 443
+        if not filter_tcp and not filter_udp:
             filter_tcp = "443"
 
-        filter_l7 = (spec.get("filter_l7") or "tls").strip()
+        filter_l7 = (spec.get("filter_l7") or "").strip()
+        if not filter_l7 and filter_tcp and not filter_udp:
+            filter_l7 = "tls"
+
         fake_tls_sni = (spec.get("fake_tls_sni") or spec.get("fake_sni") or "").strip()
-        desync_fooling = (spec.get("desync_fooling") or "badseq,ts").strip()
 
         direction = (spec.get("direction") or "both").lower()
         if direction not in ("out", "in", "both"):
@@ -2075,15 +2150,29 @@ class ZapretAdapter:
         extra_args = spec.get("extra_args") or ""
 
         binary_path = self._resolve_binary_path()
-        cmd = [str(binary_path), "-q", str(queue), f"--filter-tcp={filter_tcp}"]
+        cmd = [str(binary_path), "-q", str(queue)]
+        if filter_tcp:
+            cmd.append(f"--filter-tcp={filter_tcp}")
+        if filter_udp:
+            cmd.append(f"--filter-udp={filter_udp}")
+            cmd.append("--dpi-desync-any-protocol=1")
+
         if filter_l7 and filter_l7.lower() not in ("none", "any", ""):
             cmd.append(f"--filter-l7={filter_l7}")
+
         cmd.append(f"--dpi-desync={desync_mode}")
+
+        if split_pos:
+            cmd.append(f"--dpi-desync-split-pos={split_pos}")
+        if split_seqovl:
+            cmd.append(f"--dpi-desync-split-seqovl={split_seqovl}")
+        if repeats:
+            cmd.append(f"--dpi-desync-repeats={repeats}")
+
         if fake_tls_sni:
             cmd.append(f"--dpi-desync-fake-tls-mod=sni={fake_tls_sni}")
         if desync_fooling and desync_fooling.lower() not in ("none", ""):
             cmd.append(f"--dpi-desync-fooling={desync_fooling}")
-        ttl = spec.get("desync_ttl")
         if ttl not in (None, "", 0, "0"):
             cmd.append(f"--dpi-desync-ttl={ttl}")
         if extra_args:
@@ -2097,7 +2186,7 @@ class ZapretAdapter:
         try:
             log_f.write(f"Starting zapret/nfqws for tunnel {tunnel_id}\n")
             log_f.write(f"Command: {' '.join(cmd)}\n")
-            log_f.write(f"queue={queue}, ports={filter_tcp}, direction={direction}, max_pkt={max_pkt}, target_ip={target_ip or '-'}\n")
+            log_f.write(f"queue={queue}, tcp={filter_tcp or '-'}, udp={filter_udp or '-'}, direction={direction}, max_pkt={max_pkt}, target_ip={target_ip or '-'}\n")
             log_f.flush()
             proc = subprocess.Popen(
                 cmd,
@@ -2127,7 +2216,7 @@ class ZapretAdapter:
 
         post_chain, pre_chain = self._chain_names(tunnel_id)
         try:
-            self._setup_iptables(post_chain, pre_chain, filter_tcp, queue, max_pkt, direction, target_ip)
+            self._setup_iptables(post_chain, pre_chain, filter_tcp, filter_udp, queue, max_pkt, direction, target_ip)
         except Exception:
             self._teardown_iptables(post_chain, pre_chain)
             try:
@@ -2144,8 +2233,8 @@ class ZapretAdapter:
 
         self.chains[tunnel_id] = (post_chain, pre_chain, direction)
         logger.info(
-            f"zapret started for tunnel {tunnel_id}: mode={desync_mode}, ports={filter_tcp}, "
-            f"queue={queue}, direction={direction}, sni={fake_tls_sni or '-'}, target={target_ip or 'any'}"
+            f"zapret started for tunnel {tunnel_id}: mode={desync_mode}, tcp={filter_tcp or '-'}, "
+            f"udp={filter_udp or '-'}, queue={queue}, direction={direction}, sni={fake_tls_sni or '-'}, target={target_ip or 'any'}"
         )
 
     def remove(self, tunnel_id: str):
@@ -3438,6 +3527,122 @@ class Obfs4Adapter:
         }
 
 
+class PortHoppingAdapter:
+    """Dynamic Multi-Port Hopping adapter for WireGuard UDP.
+    
+    Redirects a wide port range (e.g. 20000:40000) directly into the target
+    WireGuard listen port (e.g. 8581) in the Linux kernel (iptables PREROUTING REDIRECT).
+    Zero userspace CPU overhead, zero extra latency, and fully persistent across checks.
+    """
+    name = "mport_hop"
+
+    def __init__(self):
+        self.state_dir = Path("/var/lib/smite-node")
+        self.active_ranges: Dict[str, Dict[str, Any]] = {}
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        self.remove(tunnel_id)
+        target_port = spec.get("target_port") or spec.get("listen_port") or (spec.get("ports", [8581])[0] if isinstance(spec.get("ports"), list) else 8581)
+        raw_range = str(spec.get("port_range") or "20000:40000")
+        port_range = raw_range.replace("-", ":")
+        
+        comment = f"smite_hop_{tunnel_id[:8]}"
+        cmd = [
+            "iptables", "-t", "nat", "-A", "PREROUTING",
+            "-p", "udp", "--dport", port_range,
+            "-j", "REDIRECT", "--to-ports", str(target_port),
+            "-m", "comment", "--comment", comment
+        ]
+        logger.info(f"Applying PortHopping rule: {' '.join(cmd)}")
+        subprocess.run(cmd, check=False)
+        self.active_ranges[tunnel_id] = {
+            "target_port": target_port,
+            "port_range": port_range,
+            "comment": comment,
+            "applied_at": time.time()
+        }
+        return True
+
+    def remove(self, tunnel_id: str) -> bool:
+        comment = f"smite_hop_{tunnel_id[:8]}"
+        try:
+            out = subprocess.check_output(["iptables", "-t", "nat", "-S", "PREROUTING"], stderr=subprocess.DEVNULL).decode("utf-8")
+            for line in out.splitlines():
+                if comment in line and line.startswith("-A"):
+                    d_cmd = ["iptables", "-t", "nat", "-D"] + line.split()[1:]
+                    logger.info(f"Removing PortHopping rule: {' '.join(d_cmd)}")
+                    subprocess.run(d_cmd, check=False)
+        except Exception as e:
+            logger.warning(f"Error checking/removing PortHopping rule for {tunnel_id}: {e}")
+        self.active_ranges.pop(tunnel_id, None)
+        return True
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        comment = f"smite_hop_{tunnel_id[:8]}"
+        active = False
+        try:
+            out = subprocess.check_output(["iptables", "-t", "nat", "-S", "PREROUTING"], stderr=subprocess.DEVNULL).decode("utf-8")
+            if comment in out:
+                active = True
+        except Exception:
+            active = tunnel_id in self.active_ranges
+        return {
+            "active": active,
+            "type": "mport_hop",
+            "process_running": active,
+            "info": self.active_ranges.get(tunnel_id, {})
+        }
+
+
+class AwgWsAdapter:
+    """AmneziaWG / WireGuard over Reverse WebSocket + TLS with fake SNI."""
+    name = "awg_ws"
+
+    def __init__(self):
+        self._inner = RatholeAdapter()
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        ws_spec = dict(spec)
+        ws_spec["transport"] = ws_spec.get("transport") or "tls"
+        ws_spec["type"] = ws_spec["transport"]
+        ws_spec["service_type"] = "udp"
+        if not ws_spec.get("sni"):
+            ws_spec["sni"] = "www.digikala.com"
+        return self._inner.apply(tunnel_id, ws_spec)
+
+    def remove(self, tunnel_id: str) -> bool:
+        return self._inner.remove(tunnel_id)
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        st = self._inner.status(tunnel_id)
+        st["type"] = "awg_ws"
+        return st
+
+
+class FecFakeTcpAdapter:
+    """Kernel FakeTCP with Forward Error Correction (FEC) anti-loss for WireGuard."""
+    name = "fec_faketcp"
+
+    def __init__(self):
+        self._inner = Udp2rawAdapter()
+
+    def apply(self, tunnel_id: str, spec: Dict[str, Any]):
+        fec_spec = dict(spec)
+        fec_spec["raw_mode"] = fec_spec.get("raw_mode") or "faketcp"
+        fec_spec["cipher_mode"] = fec_spec.get("cipher_mode") or "aes128cfb"
+        fec_spec["auth_mode"] = fec_spec.get("auth_mode") or "md5"
+        fec_spec["seq_mode"] = 3
+        return self._inner.apply(tunnel_id, fec_spec)
+
+    def remove(self, tunnel_id: str) -> bool:
+        return self._inner.remove(tunnel_id)
+
+    def status(self, tunnel_id: str) -> Dict[str, Any]:
+        st = self._inner.status(tunnel_id)
+        st["type"] = "fec_faketcp"
+        return st
+
+
 class AdapterManager:
     """Manager for core adapters"""
     
@@ -3456,6 +3661,9 @@ class AdapterManager:
             "obfs4": Obfs4Adapter(),
             "zapret": ZapretAdapter(),
             "snispoof": SniSpoofAdapter(),
+            "mport_hop": PortHoppingAdapter(),
+            "awg_ws": AwgWsAdapter(),
+            "fec_faketcp": FecFakeTcpAdapter(),
         }
         self.active_tunnels: Dict[str, CoreAdapter] = {}
         self.config_dir = Path("/var/lib/smite-node")

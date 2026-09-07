@@ -19,19 +19,20 @@ class RatholeServerManager:
         self.active_servers: Dict[str, subprocess.Popen] = {}
         self.server_configs: Dict[str, dict] = {}
     
-    def start_server(self, tunnel_id: str, remote_addr: str, token: str, proxy_port: int, use_ipv6: bool = False) -> bool:
+    def start_server(
+        self,
+        tunnel_id: str,
+        remote_addr: str,
+        token: str,
+        proxy_port: int,
+        use_ipv6: bool = False,
+        transport: str = "tcp",
+        service_type: str = "tcp",
+        tls_pkcs12_b64: Optional[str] = None,
+        tls_pkcs12_password: str = "",
+    ) -> bool:
         """
         Start a Rathole server for a tunnel
-        
-        Args:
-            tunnel_id: Unique tunnel identifier (used as service name)
-            remote_addr: Panel address where server listens for client connections (e.g., "0.0.0.0:23333")
-            token: Authentication token
-            proxy_port: Port where clients will connect to access the tunneled service (e.g., 8989)
-            use_ipv6: Whether to use IPv6 (default: False for IPv4)
-        
-        Returns:
-            True if server started successfully, False otherwise
         """
         try:
             _, port, _ = parse_address_port(remote_addr)
@@ -48,8 +49,23 @@ class RatholeServerManager:
             config = f"""[server]
 bind_addr = "{bind_addr}"
 default_token = "{token}"
+"""
+            if transport == "tls" and tls_pkcs12_b64:
+                import base64
+                p12_path = self.config_dir / f"{tunnel_id}.p12"
+                with open(p12_path, "wb") as f:
+                    f.write(base64.b64decode(tls_pkcs12_b64))
+                config += f"""
+[server.transport]
+type = "tls"
 
-[server.services.{tunnel_id}]
+[server.transport.tls]
+pkcs12 = "{p12_path}"
+pkcs12_password = "{tls_pkcs12_password}"
+"""
+            svc_type_line = '\ntype = "udp"' if service_type == "udp" else ""
+            config += f"""
+[server.services.{tunnel_id}]{svc_type_line}
 bind_addr = "{proxy_bind_addr}"
 """
             

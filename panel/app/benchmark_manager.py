@@ -649,14 +649,16 @@ class BenchmarkManager:
         foreign_node_name: str,
         foreign_ip: str,
         cores: Optional[List[str]] = None,
+        combos: Optional[List[Dict[str, Any]]] = None,
         custom_combos: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         if self.is_running():
             raise RuntimeError("A benchmark is already running")
 
-        combos: List[Tuple[str, str, str]] = []
-        if custom_combos:
-            for item in custom_combos:
+        raw_combos = combos if combos is not None else custom_combos
+        bench_combos: List[Tuple[str, str, str]] = []
+        if raw_combos:
+            for item in raw_combos:
                 c_core = item.get("core")
                 c_mode = item.get("mode")
                 c_proto = item.get("protocol")
@@ -668,13 +670,13 @@ class BenchmarkManager:
                     matched = next((m for m in COMBO_METADATA if m["core"] == c_core and m["mode"] == c_mode), None)
                     c_proto = matched["protocol"] if matched else "tcp"
                 if c_core and c_mode and c_proto:
-                    combos.append((c_core, c_mode, c_proto))
+                    bench_combos.append((c_core, c_mode, c_proto))
         elif cores:
-            combos = [c for c in BENCH_COMBOS if c[0] in cores]
+            bench_combos = [c for c in BENCH_COMBOS if c[0] in cores]
         else:
-            combos = list(BENCH_COMBOS)
+            bench_combos = list(BENCH_COMBOS)
 
-        if not combos:
+        if not bench_combos:
             raise ValueError("No benchmark combos match the requested criteria")
 
         benchmark_id = f"bench-{uuid.uuid4().hex[:8]}"
@@ -685,7 +687,7 @@ class BenchmarkManager:
             "iran_node_name": iran_node_name,
             "foreign_node_id": foreign_node_id,
             "foreign_node_name": foreign_node_name,
-            "total": len(combos),
+            "total": len(bench_combos),
             "completed": 0,
             "current": None,
             "results": [],
@@ -694,7 +696,7 @@ class BenchmarkManager:
             "error": None,
         }
         self._task = asyncio.create_task(
-            self._run(benchmark_id, combos, iran_node_id, foreign_node_id, iran_ip, foreign_ip)
+            self._run(benchmark_id, bench_combos, iran_node_id, foreign_node_id, iran_ip, foreign_ip)
         )
         return benchmark_id
 
@@ -802,11 +804,12 @@ class BenchmarkManager:
             # 3. Let the tunnel establish, then probe from the iran node.
             await asyncio.sleep(SETTLE_SECONDS)
 
+            probe_host = foreign_ip if core in ("zapret", "mport_hop") else "127.0.0.1"
             probe_response = await client.send_to_node(
                 node_id=iran_node_id,
                 endpoint="/api/agent/benchmark/probe",
                 data={
-                    "host": "127.0.0.1",
+                    "host": probe_host,
                     "port": test_port,
                     "protocol": protocol,
                     "ping_count": PING_COUNT,

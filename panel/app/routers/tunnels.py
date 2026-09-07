@@ -2656,6 +2656,9 @@ async def start_benchmark(payload: BenchmarkStartRequest, db: AsyncSession = Dep
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to start benchmark: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to start benchmark: {e}")
 
     return {"status": "started", "benchmark_id": benchmark_id}
 

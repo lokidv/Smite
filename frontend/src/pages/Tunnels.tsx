@@ -1642,26 +1642,43 @@ const Tunnels = () => {
       )}
 
       {showBenchmark && (
-        <ErrorBoundary fallback={
+        <ErrorBoundary fallback={(error, reset) => (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
             <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl text-center border border-gray-200 dark:border-gray-700">
               <div className="text-3xl mb-2">⚠️</div>
               <h3 className="text-lg font-bold text-red-600 dark:text-red-400 mb-2">
                 {language === 'fa' ? 'خطا در بارگذاری پاپ‌آپ تست بین نودها' : 'Error loading benchmark modal'}
               </h3>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-                {language === 'fa' ? 'یک خطای غیرمنتظره رخ داد. پنجره را ببندید و مجدداً امتحان کنید.' : 'An unexpected error occurred. Please close and try again.'}
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                {language === 'fa' ? 'یک خطای غیرمنتظره رخ داد. می‌توانید دوباره امتحان کنید یا پنجره را ببندید.' : 'An unexpected error occurred. Please retry or close.'}
               </p>
-              <button
-                type="button"
-                onClick={() => setShowBenchmark(false)}
-                className="px-5 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 text-gray-800 dark:text-gray-200 rounded-lg text-sm font-bold transition"
-              >
-                {t.tunnels.cancel || 'بستن'}
-              </button>
+              {error?.message && (
+                <p className="text-[11px] font-mono text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 p-2 rounded-lg break-all mb-4 text-left dir-ltr">
+                  {error.message}
+                </p>
+              )}
+              <div className="flex items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => reset()}
+                  className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-bold transition cursor-pointer"
+                >
+                  {language === 'fa' ? 'تلاش مجدد' : 'Retry'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    reset()
+                    setShowBenchmark(false)
+                  }}
+                  className="px-5 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 text-gray-800 dark:text-gray-200 rounded-lg text-sm font-bold transition cursor-pointer"
+                >
+                  {t.tunnels.cancel || 'بستن'}
+                </button>
+              </div>
             </div>
           </div>
-        }>
+        )}>
           <BenchmarkModal
             nodes={nodes}
             servers={servers}
@@ -1907,6 +1924,7 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
   const [foreignNodeId, setForeignNodeId] = useState('')
   const [state, setState] = useState<any | null>(null)
   const [starting, setStarting] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [combos, setCombos] = useState<BenchmarkComboItem[]>([])
   const [showConfig, setShowConfig] = useState(true)
   const [expandedZapret, setExpandedZapret] = useState(true)
@@ -1920,6 +1938,25 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
     }
   }
 
+  const stopBenchmark = async () => {
+    setStopping(true)
+    try {
+      await api.post('/tunnels/benchmark/stop')
+      await fetchState()
+    } catch (error) {
+      console.error('Failed to stop benchmark:', error)
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  const handleClose = () => {
+    if (state?.status === 'running') {
+      stopBenchmark().catch(() => {})
+    }
+    onClose()
+  }
+
   useEffect(() => {
     fetchState()
     const interval = setInterval(fetchState, 3000)
@@ -1927,10 +1964,10 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
   }, [])
 
   useEffect(() => {
-    if (!iranNodeId && nodes && nodes.length > 0) {
+    if (!iranNodeId && Array.isArray(nodes) && nodes.length > 0 && nodes[0]?.id) {
       setIranNodeId(nodes[0].id)
     }
-    if (!foreignNodeId && servers && servers.length > 0) {
+    if (!foreignNodeId && Array.isArray(servers) && servers.length > 0 && servers[0]?.id) {
       setForeignNodeId(servers[0].id)
     }
   }, [nodes, servers])
@@ -1945,9 +1982,15 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
         let savedSelected: Record<string, boolean> = {}
         try {
           const storedOrder = localStorage.getItem('smite_bench_order')
-          if (storedOrder) savedOrder = JSON.parse(storedOrder)
+          if (storedOrder) {
+            const parsed = JSON.parse(storedOrder)
+            if (Array.isArray(parsed)) savedOrder = parsed
+          }
           const storedSelected = localStorage.getItem('smite_bench_selected')
-          if (storedSelected) savedSelected = JSON.parse(storedSelected)
+          if (storedSelected) {
+            const parsed = JSON.parse(storedSelected)
+            if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) savedSelected = parsed
+          }
         } catch {}
 
         let initialList: BenchmarkComboItem[] = rawCombos.map((item) => ({
@@ -2132,11 +2175,13 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm focus:ring-2 focus:ring-orange-500 font-medium"
             >
               <option value="">{t.tunnels.selectIranNode}</option>
-              {nodes.map((node) => {
+              {Array.isArray(nodes) && nodes.map((node) => {
+                if (!node) return null
                 const ip = node.node_metadata?.ip_address || node.ip_address || ''
+                const displayName = node.name || (node.id ? String(node.id).substring(0, 8) : 'Node')
                 return (
-                  <option key={node.id} value={node.id}>
-                    {node.name || node.id.substring(0, 8)}{ip ? ` (${ip})` : ''}
+                  <option key={node.id || Math.random()} value={node.id || ''}>
+                    {displayName}{ip ? ` (${ip})` : ''}
                   </option>
                 )
               })}
@@ -2153,11 +2198,13 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm focus:ring-2 focus:ring-orange-500 font-medium"
             >
               <option value="">{t.tunnels.selectForeignServer}</option>
-              {servers.map((server) => {
+              {Array.isArray(servers) && servers.map((server) => {
+                if (!server) return null
                 const ip = server.node_metadata?.ip_address || server.ip_address || ''
+                const displayName = server.name || (server.id ? String(server.id).substring(0, 8) : 'Server')
                 return (
-                  <option key={server.id} value={server.id}>
-                    {server.name || server.id.substring(0, 8)}{ip ? ` (${ip})` : ''}
+                  <option key={server.id || Math.random()} value={server.id || ''}>
+                    {displayName}{ip ? ` (${ip})` : ''}
                   </option>
                 )
               })}
@@ -2351,17 +2398,31 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
         {/* Running progress bar */}
         {running && (
           <div className="mb-4 p-3.5 rounded-xl bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 shadow-sm">
-            <div className="flex justify-between text-sm text-gray-700 dark:text-gray-200 mb-1.5 font-bold">
+            <div className="flex justify-between items-center text-sm text-gray-700 dark:text-gray-200 mb-1.5 font-bold flex-wrap gap-2">
               <span className="flex items-center gap-2">
                 <Gauge size={18} className="animate-spin text-orange-500" />
                 <span>
                   {language === 'fa' ? 'در حال تست: ' : 'Testing: '}
-                  {state.current ? `${getCoreDisplayName(state.current.core, language)} (${state.current.mode})` : '...'}
+                  {state?.current && typeof state.current === 'object'
+                    ? `${getCoreDisplayName(state.current.core || '', language)} (${state.current.mode || ''})`
+                    : '...'}
                 </span>
               </span>
-              <span>
-                {state.completed} / {state.total} ({progressPercent}%)
-              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={stopBenchmark}
+                  disabled={stopping}
+                  className="px-3 py-1 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white rounded-md text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  title={language === 'fa' ? 'لغو و توقف کامل تست' : 'Stop Benchmark'}
+                >
+                  <Power size={13} className={stopping ? 'animate-spin' : ''} />
+                  <span>{stopping ? (language === 'fa' ? 'در حال توقف...' : 'Stopping...') : (language === 'fa' ? 'توقف تست' : 'Stop Benchmark')}</span>
+                </button>
+                <span>
+                  {state?.completed || 0} / {state?.total || 0} ({progressPercent}%)
+                </span>
+              </div>
             </div>
             <div className="w-full h-3 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
@@ -2372,9 +2433,21 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
           </div>
         )}
 
+        {state?.status === 'stopped' && (
+          <div className="mb-4 p-3 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 text-sm text-yellow-800 dark:text-yellow-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span>🛑</span>
+              <span className="font-semibold">{language === 'fa' ? 'تست بنچمارک متوقف شد.' : 'Benchmark was stopped.'}</span>
+            </div>
+            <span className="text-xs opacity-75">
+              {language === 'fa' ? 'نتایج تا لحظه توقف در جدول ثبت شده‌اند' : 'Results up to stop are recorded below'}
+            </span>
+          </div>
+        )}
+
         {state?.status === 'error' && state?.error && (
           <div className="mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
-            {state.error}
+            {typeof state.error === 'string' ? state.error : JSON.stringify(state.error)}
           </div>
         )}
 
@@ -2434,8 +2507,8 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
                             )}
                           </div>
                           {!r.ok && r.error && (
-                            <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={r.error}>
-                              {r.error}
+                            <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={typeof r.error === 'string' ? r.error : JSON.stringify(r.error)}>
+                              {typeof r.error === 'string' ? r.error : JSON.stringify(r.error)}
                             </div>
                           )}
                         </td>
@@ -2695,11 +2768,24 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
           )}
         </div>
 
-        <div className="flex justify-end mt-4 pt-2 border-t border-gray-100 dark:border-gray-700">
+        <div className="flex items-center justify-between mt-4 pt-2 border-t border-gray-100 dark:border-gray-700">
+          <div>
+            {running && (
+              <button
+                type="button"
+                onClick={stopBenchmark}
+                disabled={stopping}
+                className="px-4 py-2 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/60 border border-red-200 dark:border-red-800 rounded-lg text-sm font-bold transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <Power size={15} className={stopping ? 'animate-spin' : ''} />
+                <span>{stopping ? (language === 'fa' ? 'در حال توقف...' : 'Stopping...') : (language === 'fa' ? 'توقف تست بنچمارک' : 'Stop Benchmark')}</span>
+              </button>
+            )}
+          </div>
           <button
             type="button"
-            onClick={onClose}
-            className="px-5 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 font-medium transition"
+            onClick={handleClose}
+            className="px-5 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 font-medium transition cursor-pointer"
           >
             {t.tunnels.cancel}
           </button>

@@ -700,6 +700,16 @@ class BenchmarkManager:
     def get_state(self) -> Dict[str, Any]:
         return self.state
 
+    def stop(self) -> bool:
+        """Cancel the currently running benchmark task, clean up, and mark state as stopped."""
+        if self._task and not self._task.done():
+            self._task.cancel()
+            self.state["status"] = "stopped"
+            self.state["current"] = None
+            self.state["finished_at"] = time.time()
+            return True
+        return False
+
     def start(
         self,
         iran_node_id: str,
@@ -820,6 +830,10 @@ class BenchmarkManager:
             # Rank: successful combos by score desc, failures last.
             self.state["results"].sort(key=lambda r: (not r["ok"], -(r["score"] or 0.0)))
             self.state["status"] = "done"
+        except asyncio.CancelledError:
+            logger.info(f"Benchmark {benchmark_id} cancelled by user")
+            self.state["status"] = "stopped"
+            self.state["error"] = None
         except Exception as e:
             logger.error(f"Benchmark {benchmark_id} aborted: {e}", exc_info=True)
             self.state["status"] = "error"
@@ -1011,22 +1025,25 @@ class BenchmarkManager:
             # 4. Teardown, best effort.
             for node_id in (iran_node_id, foreign_node_id):
                 try:
-                    await client.send_to_node(
+                    await asyncio.shield(client.send_to_node(
                         node_id=node_id,
                         endpoint="/api/agent/tunnels/remove",
                         data={"tunnel_id": tunnel_id},
-                    )
+                    ))
                 except Exception:
                     pass
             try:
-                await client.send_to_node(
+                await asyncio.shield(client.send_to_node(
                     node_id=foreign_node_id,
                     endpoint="/api/agent/benchmark/sink/stop",
                     data={"sink_id": tunnel_id},
-                )
+                ))
             except Exception:
                 pass
-            await asyncio.sleep(2.0)
+            try:
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                pass
 
 
 benchmark_manager = BenchmarkManager()

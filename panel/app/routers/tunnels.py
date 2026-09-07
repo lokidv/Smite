@@ -2689,6 +2689,14 @@ async def benchmark_status():
     return benchmark_manager.get_state()
 
 
+@router.post("/benchmark/stop")
+async def stop_benchmark():
+    """Stop/cancel the running benchmark."""
+    from app.benchmark_manager import benchmark_manager
+    stopped = benchmark_manager.stop()
+    return {"status": "stopped" if stopped else "idle", "stopped": stopped}
+
+
 async def _resolve_snispoof_node(tunnel_id: str, db: AsyncSession):
     """Load a snispoof tunnel + its node, with normalized spec, for test/auto-tune."""
     result = await db.execute(select(Tunnel).where(Tunnel.id == tunnel_id))

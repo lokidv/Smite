@@ -3487,7 +3487,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
         ...prev,
         preset: 'mci',
         desync_mode: 'multisplit',
-        split_pos: 'midsni',
+        split_pos: '2',
         desync_fooling: 'badseq,ts',
         desync_ttl: '4',
         repeats: '2',
@@ -3723,7 +3723,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                         ...prev,
                         preset: 'mci',
                         desync_mode: 'multisplit',
-                        split_pos: 'midsni',
+                        split_pos: '2',
                         desync_fooling: 'badseq,ts',
                         desync_ttl: '4',
                         repeats: '2',
@@ -3734,7 +3734,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                         ...prev,
                         preset: 'mtn',
                         desync_mode: 'fakedsplit',
-                        split_pos: 'midsni',
+                        split_pos: '2',
                         desync_fooling: 'badsum,badseq',
                         desync_ttl: '3',
                         repeats: '2',
@@ -3745,7 +3745,7 @@ const AddTunnelModal = ({ nodes, servers, onClose, onSuccess, initial }: AddTunn
                         ...prev,
                         preset: 'fixed',
                         desync_mode: 'disorder2',
-                        split_pos: 'midsni',
+                        split_pos: '2',
                         desync_fooling: 'badseq',
                         desync_ttl: '5',
                         repeats: '1',
@@ -5000,7 +5000,7 @@ function ZapretForm({
       onChange({
         preset,
         desync_mode: 'multisplit',
-        split_pos: 'midsni',
+        split_pos: '2',
         desync_fooling: 'badseq,ts',
         desync_ttl: '4',
         repeats: '2',
@@ -5009,7 +5009,7 @@ function ZapretForm({
       onChange({
         preset,
         desync_mode: 'fakedsplit',
-        split_pos: 'midsni',
+        split_pos: '2',
         desync_fooling: 'badsum,badseq',
         desync_ttl: '3',
         repeats: '2',
@@ -5018,7 +5018,7 @@ function ZapretForm({
       onChange({
         preset,
         desync_mode: 'disorder2',
-        split_pos: 'midsni',
+        split_pos: '2',
         desync_fooling: 'badseq',
         desync_ttl: '5',
         repeats: '1',
@@ -5120,10 +5120,10 @@ function ZapretForm({
             value={state.split_pos}
             onChange={(e) => onChange({ split_pos: e.target.value })}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
-            placeholder="midsni"
+            placeholder="2"
           />
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            {t.tunnels.zapretSplitPosHint || 'e.g. midsni, 1, 2, 3'}
+            {t.tunnels.zapretSplitPosHint || 'e.g. 2, 1, 3, sniext'}
           </p>
         </div>
       </div>

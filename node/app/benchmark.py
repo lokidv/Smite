@@ -49,7 +49,7 @@ class BenchmarkSinkManager:
         if protocol == "tcp":
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server_socket.bind(("127.0.0.1", port))
+            server_socket.bind(("0.0.0.0", port))
             server_socket.listen(8)
             server_socket.settimeout(0.5)
             thread = threading.Thread(
@@ -58,7 +58,7 @@ class BenchmarkSinkManager:
         else:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server_socket.bind(("127.0.0.1", port))
+            server_socket.bind(("0.0.0.0", port))
             server_socket.settimeout(0.5)
             thread = threading.Thread(
                 target=self._udp_sink_loop, args=(sink_id, server_socket, stop_event), daemon=True

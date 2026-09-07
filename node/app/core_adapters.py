@@ -2077,7 +2077,7 @@ class ZapretAdapter:
             if not desync_mode:
                 desync_mode = "multisplit"
             if not split_pos:
-                split_pos = "midsni"
+                split_pos = "2"
             if not desync_fooling:
                 desync_fooling = "badseq,ts"
             if ttl in (None, "", 0, "0"):
@@ -2088,7 +2088,7 @@ class ZapretAdapter:
             if not desync_mode:
                 desync_mode = "fakedsplit"
             if not split_pos:
-                split_pos = "midsni"
+                split_pos = "2"
             if not desync_fooling:
                 desync_fooling = "badsum,badseq"
             if ttl in (None, "", 0, "0"):
@@ -2099,7 +2099,7 @@ class ZapretAdapter:
             if not desync_mode:
                 desync_mode = "disorder2"
             if not split_pos:
-                split_pos = "midsni"
+                split_pos = "2"
             if not desync_fooling:
                 desync_fooling = "badseq"
             if ttl in (None, "", 0, "0"):
@@ -2111,6 +2111,8 @@ class ZapretAdapter:
             desync_mode = "fake"
         if not desync_fooling:
             desync_fooling = "badseq,ts"
+        if not split_pos or split_pos.lower() == "midsni":
+            split_pos = "2"
 
         filter_tcp = str(spec.get("filter_tcp") or "").strip()
         if filter_tcp.lower() in ("none", "null", "false", "0"):
@@ -2163,6 +2165,8 @@ class ZapretAdapter:
         cmd.append(f"--dpi-desync={desync_mode}")
 
         if split_pos:
+            if filter_udp and any(c.isalpha() for c in split_pos):
+                split_pos = "2"
             cmd.append(f"--dpi-desync-split-pos={split_pos}")
         if split_seqovl:
             cmd.append(f"--dpi-desync-split-seqovl={split_seqovl}")

@@ -193,22 +193,25 @@ def normalize_zapret_spec(spec: dict) -> dict:
     preset = (s.get("preset") or "").lower()
     if preset == "mci":
         s.setdefault("desync_mode", "multisplit")
-        s.setdefault("split_pos", "midsni")
+        s.setdefault("split_pos", "2")
         s.setdefault("desync_fooling", "badseq,ts")
         s.setdefault("desync_ttl", 4)
         s.setdefault("repeats", 2)
     elif preset == "mtn":
         s.setdefault("desync_mode", "fakedsplit")
-        s.setdefault("split_pos", "midsni")
+        s.setdefault("split_pos", "2")
         s.setdefault("desync_fooling", "badsum,badseq")
         s.setdefault("desync_ttl", 3)
         s.setdefault("repeats", 2)
     elif preset == "fixed":
         s.setdefault("desync_mode", "disorder2")
-        s.setdefault("split_pos", "midsni")
+        s.setdefault("split_pos", "2")
         s.setdefault("desync_fooling", "badseq")
         s.setdefault("desync_ttl", 5)
         s.setdefault("repeats", 1)
+
+    if str(s.get("split_pos") or "").lower() in ("midsni", ""):
+        s["split_pos"] = "2"
 
     has_udp = bool(s.get("filter_udp"))
     has_tcp = bool(s.get("filter_tcp"))

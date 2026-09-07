@@ -598,6 +598,7 @@ def _build_specs(
         server = {
             "mode": "server",
             "preset": preset,
+            "split_pos": "2",
             "filter_udp": str(test_port),
             "filter_tcp": str(test_port),
             "ports": [test_port],
@@ -605,6 +606,7 @@ def _build_specs(
         client = {
             "mode": "client",
             "preset": preset,
+            "split_pos": "2",
             "filter_udp": str(test_port),
             "filter_tcp": str(test_port),
             "ports": [test_port],
@@ -802,15 +804,32 @@ class BenchmarkManager:
                 raise RuntimeError(f"Foreign apply failed: {client_response.get('message', 'unknown error')}")
 
             # 3. Let the tunnel establish, then probe from the iran node.
-            await asyncio.sleep(SETTLE_SECONDS)
+            if core in ("zapret", "mport_hop"):
+                await asyncio.sleep(2.0)
+            else:
+                # Dynamic polling: wait for reverse tunnel control channel to report connected
+                for _ in range(16):
+                    await asyncio.sleep(0.5)
+                    try:
+                        status_resp = await client.send_to_node(
+                            node_id=foreign_node_id,
+                            endpoint="/api/agent/tunnels/status",
+                            data={"tunnel_id": tunnel_id},
+                        )
+                        state_val = (status_resp.get("data") or {}).get("connection_state")
+                        if state_val == "connected":
+                            break
+                    except Exception:
+                        pass
 
             probe_host = foreign_ip if core in ("zapret", "mport_hop") else "127.0.0.1"
+            probe_port = (test_port + 1) if core == "mport_hop" else test_port
             probe_response = await client.send_to_node(
                 node_id=iran_node_id,
                 endpoint="/api/agent/benchmark/probe",
                 data={
                     "host": probe_host,
-                    "port": test_port,
+                    "port": probe_port,
                     "protocol": protocol,
                     "ping_count": PING_COUNT,
                     "throughput_seconds": THROUGHPUT_SECONDS,
@@ -838,6 +857,7 @@ class BenchmarkManager:
                 )
             except Exception:
                 pass
+            await asyncio.sleep(1.0)
 
 
 benchmark_manager = BenchmarkManager()

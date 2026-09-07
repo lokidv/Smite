@@ -335,7 +335,9 @@ tls = {"true" if websocket_tls else "false"}
             for i, port in enumerate(ports):
                 port_num = int(port) if isinstance(port, (int, str)) and str(port).isdigit() else port
                 service_name = f"{tunnel_id}_{i}" if len(ports) > 1 else tunnel_id
-                local_addr = f"127.0.0.1:{port_num}"
+                dst_port = spec.get('target_port') if (len(ports) == 1 and spec.get('target_port')) else port_num
+                target_host = spec.get('target_host', '127.0.0.1')
+                local_addr = f"{target_host}:{dst_port}"
                 svc_type_line = '\ntype = "udp"' if service_type == 'udp' else ''
                 config += f"""
 [client.services.{service_name}]{svc_type_line}

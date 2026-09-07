@@ -391,6 +391,10 @@ interface Translations {
     benchmarkSelectedCount?: string
     benchmarkProtocol?: string
     benchmarkStealthBadge?: string
+    benchmarkPresetNextGen?: string
+    benchmarkGroupNextGen?: string
+    benchmarkGroupStandard?: string
+    benchmarkModeLabel?: string
     ratholeServiceType?: string
     ratholeServiceTypeHint?: string
     zapretPreset?: string
@@ -791,9 +795,12 @@ const translations: Record<Language, Translations> = {
       benchmarkPresetNone: 'Clear All',
       benchmarkPresetStealth: '🛡️ Iran Stealth Only (WireGuard)',
       benchmarkResetOrder: 'Reset Order',
-      benchmarkSelectedCount: '{selected} of {total} tunnels selected',
       benchmarkProtocol: 'Protocol',
       benchmarkStealthBadge: 'Stealth Anti-DPI',
+      benchmarkPresetNextGen: '⭐️ Next-Gen Only (4)',
+      benchmarkGroupNextGen: '⭐️ Next-Gen Anti-Censorship Tunnels (WireGuard)',
+      benchmarkGroupStandard: '📦 Standard Tunnels (TCP / UDP / QUIC)',
+      benchmarkModeLabel: 'Mode',
       ratholeServiceType: 'Forwarding Protocol (Service Type)',
       ratholeServiceTypeHint: 'Select UDP for WireGuard or QUIC. Select TCP for V2Ray / HTTP.',
       zapretPreset: 'ISP Anti-DPI Preset',
@@ -1301,9 +1308,12 @@ const translations: Record<Language, Translations> = {
       benchmarkPresetNone: 'لغو همه',
       benchmarkPresetStealth: '🛡️ فقط ضد فیلتر ایران (وایرگارد)',
       benchmarkResetOrder: 'بازنشانی ترتیب',
-      benchmarkSelectedCount: '{selected} از {total} تانل انتخاب شده',
       benchmarkProtocol: 'پروتکل',
       benchmarkStealthBadge: 'ضد فیلتر DPI',
+      benchmarkPresetNextGen: '⭐️ فقط نسل جدید وایرگارد (۴ تانل)',
+      benchmarkGroupNextGen: '⭐️ تانل‌های نسل جدید (ضد فیلترینگ وایرگارد)',
+      benchmarkGroupStandard: '📦 سایر تانل‌های استاندارد (TCP / UDP / QUIC)',
+      benchmarkModeLabel: 'حالت',
       ratholeServiceType: 'پروتکل فوروارد (نوع سرویس)',
       ratholeServiceTypeHint: 'برای وایرگارد یا کوئیک، UDP را انتخاب کنید. برای V2Ray یا وب، TCP را انتخاب کنید.',
       zapretPreset: 'پریست ضد فیلترینگ اپراتور',

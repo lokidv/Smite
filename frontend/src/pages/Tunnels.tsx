@@ -478,18 +478,59 @@ const CHANGEABLE_CORES = ['awg_ws', 'mport_hop', 'fec_faketcp', 'rathole', 'back
 const CORE_LABELS: Record<string, string> = {
   awg_ws: '👑 AWG-over-WebSocket (Digikala TLS)',
   mport_hop: '🛡️ Dynamic Multi-Port Hopping',
-  fec_faketcp: '⚡ FEC + FakeTCP (Zero-Loss)',
-  zapret: '🔮 Zapret Anti-DPI Shield',
+  fec_faketcp: '⚡ FEC + FakeTCP (Zero-Packet-Loss)',
+  zapret: '🔮 Zapret (Anti-DPI Bypass)',
   rathole: 'Rathole',
   backhaul: 'Backhaul',
   chisel: 'Chisel',
   frp: 'FRP',
-  udp2raw: 'udp2raw',
+  udp2raw: 'udp2raw (FakeTCP / ICMP)',
   trusttunnel: 'TrustTunnel (QUIC)',
-  hysteria2: 'Hysteria2 (QUIC)',
-  tuic: 'TUIC (QUIC)',
+  hysteria2: 'Hysteria2 (QUIC carrier)',
+  tuic: 'TUIC (QUIC carrier)',
+  snispoof: 'SNI Spoof (Xray + Zapret)',
   warp: 'WARP-MASQUE (egress)',
   obfs4: 'obfs4 (TCP fallback)',
+}
+
+const getCoreDisplayName = (core: string, lang: string = 'fa') => {
+  const isFa = lang === 'fa'
+  switch (core) {
+    case 'awg_ws':
+      return isFa ? '👑 AWG-over-WebSocket (دیجی‌کالا TLS)' : '👑 AWG-over-WebSocket (Digikala TLS)'
+    case 'mport_hop':
+      return isFa ? '🛡️ Dynamic Multi-Port Hopping (پرش پورت)' : '🛡️ Dynamic Multi-Port Hopping'
+    case 'fec_faketcp':
+      return isFa ? '⚡ FEC + FakeTCP (ضد پکت‌لاس شدید)' : '⚡ FEC + FakeTCP (Zero-Packet-Loss)'
+    case 'zapret':
+      return isFa ? '🔮 Zapret (بای‌پس فیلترینگ DPI ایران)' : '🔮 Zapret (Anti-DPI Bypass)'
+    case 'udp2raw':
+      return 'udp2raw (FakeTCP / ICMP)'
+    case 'trusttunnel':
+      return 'TrustTunnel (QUIC)'
+    case 'hysteria2':
+      return 'Hysteria2 (QUIC carrier)'
+    case 'tuic':
+      return 'TUIC (QUIC carrier)'
+    case 'snispoof':
+      return 'SNI Spoof (Xray + Zapret)'
+    case 'warp':
+      return 'WARP-MASQUE (egress)'
+    case 'obfs4':
+      return 'obfs4 (TCP fallback)'
+    case 'rathole':
+      return 'Rathole'
+    case 'backhaul':
+      return 'Backhaul'
+    case 'chisel':
+      return 'Chisel'
+    case 'frp':
+      return 'FRP'
+    case 'gost':
+      return 'GOST'
+    default:
+      return CORE_LABELS[core] || core
+  }
 }
 
 const CORE_TYPE_OPTIONS: Record<string, { value: string; label: string }[]> = {
@@ -1750,13 +1791,17 @@ interface BenchmarkComboItem {
   id: string
   core: string
   mode: string
+  category?: string
   protocol: 'tcp' | 'udp'
   label: string
   label_fa?: string
+  mode_label?: string
+  mode_label_fa?: string
   description?: string
   stealth: boolean
   default_selected: boolean
   enabled: boolean
+  badge?: string
 }
 
 const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModalProps) => {
@@ -1802,13 +1847,17 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
           id: item.id || `${item.core}:${item.mode}`,
           core: item.core,
           mode: item.mode,
+          category: item.category || (['awg_ws', 'mport_hop', 'fec_faketcp', 'zapret'].includes(item.core) ? 'nextgen' : 'standard'),
           protocol: item.protocol || 'tcp',
           label: item.label,
           label_fa: item.label_fa,
+          mode_label: item.mode_label,
+          mode_label_fa: item.mode_label_fa,
           description: item.description,
           stealth: !!item.stealth,
           default_selected: !!item.default_selected,
           enabled: savedSelected[item.id] !== undefined ? savedSelected[item.id] : !!item.default_selected,
+          badge: item.badge,
         }))
 
         if (savedOrder && savedOrder.length > 0) {
@@ -1867,11 +1916,18 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
     })
   }
 
-  const applyPreset = (type: 'all' | 'none' | 'stealth') => {
+  const applyPreset = (type: 'all' | 'none' | 'stealth' | 'nextgen') => {
     setCombos((prev) => {
       const copy = prev.map((c) => ({
         ...c,
-        enabled: type === 'all' ? true : type === 'none' ? false : c.stealth,
+        enabled:
+          type === 'all'
+            ? true
+            : type === 'none'
+            ? false
+            : type === 'nextgen'
+            ? c.category === 'nextgen' || ['awg_ws', 'mport_hop', 'fec_faketcp', 'zapret'].includes(c.core)
+            : c.stealth,
       }))
       savePreferences(copy)
       return copy
@@ -1888,13 +1944,17 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
         id: item.id || `${item.core}:${item.mode}`,
         core: item.core,
         mode: item.mode,
+        category: item.category || (['awg_ws', 'mport_hop', 'fec_faketcp', 'zapret'].includes(item.core) ? 'nextgen' : 'standard'),
         protocol: item.protocol || 'tcp',
         label: item.label,
         label_fa: item.label_fa,
+        mode_label: item.mode_label,
+        mode_label_fa: item.mode_label_fa,
         description: item.description,
         stealth: !!item.stealth,
         default_selected: !!item.default_selected,
         enabled: !!item.default_selected,
+        badge: item.badge,
       }))
       setCombos(list)
     } catch {}
@@ -1904,7 +1964,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
     if (!iranNodeId || !foreignNodeId) return
     const activeCombos = combos.filter((c) => c.enabled)
     if (activeCombos.length === 0) {
-      alert('لطفاً حداقل یک تانل را برای تست انتخاب کنید / Please select at least one tunnel')
+      alert(language === 'fa' ? 'لطفاً حداقل یک تانل را برای تست انتخاب کنید' : 'Please select at least one tunnel')
       return
     }
     setStarting(true)
@@ -1935,14 +1995,14 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
   const selectedCount = combos.filter((c) => c.enabled).length
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100] p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-4xl max-h-[90vh] flex flex-col">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-3 md:p-6 overflow-y-auto">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-5xl xl:max-w-6xl max-h-[94vh] flex flex-col shadow-2xl border border-gray-100 dark:border-gray-700">
         <div className="flex items-center justify-between mb-1">
           <h2 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-            <Gauge className="text-orange-500" size={22} />
+            <Gauge className="text-orange-500" size={24} />
             {t.tunnels.benchmarkTitle}
           </h2>
-          <span className="text-xs px-2.5 py-1 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 font-semibold">
+          <span className="text-xs px-3 py-1 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 font-bold border border-orange-200 dark:border-orange-800">
             {selectedCount} / {combos.length} {language === 'fa' ? 'تانل فعال' : 'active'}
           </span>
         </div>
@@ -1951,14 +2011,14 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
         {/* Node Pair Selector */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
               {t.tunnels.iranNode}
             </label>
             <select
               value={iranNodeId}
               onChange={(e) => setIranNodeId(e.target.value)}
               disabled={running}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm focus:ring-2 focus:ring-orange-500 font-medium"
             >
               <option value="">{t.tunnels.selectIranNode}</option>
               {nodes.map((node) => (
@@ -1969,14 +2029,14 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
               {t.tunnels.foreignServer}
             </label>
             <select
               value={foreignNodeId}
               onChange={(e) => setForeignNodeId(e.target.value)}
               disabled={running}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm focus:ring-2 focus:ring-orange-500 font-medium"
             >
               <option value="">{t.tunnels.selectForeignServer}</option>
               {servers.map((server) => (
@@ -1991,7 +2051,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
               type="button"
               onClick={startBenchmark}
               disabled={running || starting || !iranNodeId || !foreignNodeId || selectedCount === 0}
-              className="w-full px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-medium"
+              className="w-full px-4 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-bold shadow-md transition"
             >
               <Gauge size={18} className={running || starting ? 'animate-pulse' : ''} />
               {running || starting ? t.tunnels.benchmarkRunning : `${t.tunnels.benchmarkRun} (${selectedCount})`}
@@ -2000,23 +2060,40 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
         </div>
 
         {/* Accordion / Config toggle bar */}
-        <div className="flex items-center justify-between bg-gray-50 dark:bg-gray-700/40 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 mb-3">
+        <div className="flex items-center justify-between bg-gray-50 dark:bg-gray-700/40 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 mb-3 flex-wrap gap-2">
           <button
             type="button"
             onClick={() => setShowConfig(!showConfig)}
-            className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200 hover:text-orange-500"
+            className="flex items-center gap-2 text-sm font-bold text-gray-800 dark:text-gray-200 hover:text-orange-500"
           >
             <ArrowUpDown size={16} className="text-orange-500" />
             <span>{t.tunnels.benchmarkSelectCombos || 'Select Tunnels & Order Priority'}</span>
-            <NewBadge />
-            <span className="text-xs text-gray-500">({showConfig ? '▲' : '▼'})</span>
+            <span className="text-xs text-gray-500">({showConfig ? '▲ بستن' : '▼ باز کردن لیست'})</span>
           </button>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button
+              type="button"
+              onClick={() => applyPreset('nextgen')}
+              disabled={running}
+              className="px-2.5 py-1 text-xs bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 text-amber-800 dark:text-amber-200 rounded-md font-bold transition flex items-center gap-1 border border-amber-300 dark:border-amber-700"
+            >
+              <span>⭐️</span>
+              <span>{t.tunnels.benchmarkPresetNextGen || '⭐️ فقط نسل جدید وایرگارد (۴ تانل)'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('stealth')}
+              disabled={running}
+              className="px-2.5 py-1 text-xs bg-purple-100 dark:bg-purple-900/40 hover:bg-purple-200 text-purple-800 dark:text-purple-200 rounded-md font-semibold transition flex items-center gap-1 border border-purple-200 dark:border-purple-800"
+            >
+              <Shield size={12} />
+              <span>{t.tunnels.benchmarkPresetStealth || '🛡️ همه ضد فیلترها'}</span>
+            </button>
             <button
               type="button"
               onClick={() => applyPreset('all')}
               disabled={running}
-              className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-200 rounded transition"
+              className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-200 rounded-md transition"
             >
               {t.tunnels.benchmarkPresetAll || 'All'}
             </button>
@@ -2024,18 +2101,9 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
               type="button"
               onClick={() => applyPreset('none')}
               disabled={running}
-              className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-200 rounded transition"
+              className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-200 rounded-md transition"
             >
               {t.tunnels.benchmarkPresetNone || 'None'}
-            </button>
-            <button
-              type="button"
-              onClick={() => applyPreset('stealth')}
-              disabled={running}
-              className="px-2.5 py-1 text-xs bg-purple-100 dark:bg-purple-900/40 hover:bg-purple-200 text-purple-800 dark:text-purple-200 rounded font-semibold transition flex items-center gap-1"
-            >
-              <Shield size={12} />
-              {t.tunnels.benchmarkPresetStealth || '🛡️ Iran Stealth Only'}
             </button>
             <button
               type="button"
@@ -2048,106 +2116,136 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
           </div>
         </div>
 
-        {/* Scrollable Combos Checklist with Up/Down buttons */}
+        {/* Scrollable Combos Checklist with Up/Down buttons and Clear Layout */}
         {showConfig && (
-          <div className="mb-4 max-h-56 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg divide-y divide-gray-100 dark:divide-gray-700/50 bg-white dark:bg-gray-800">
-            {combos.map((combo, idx) => (
-              <div
-                key={combo.id}
-                className={`flex items-center justify-between p-2 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition ${
-                  combo.enabled ? '' : 'opacity-40 bg-gray-50/50 dark:bg-gray-800/50'
-                }`}
-              >
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                  {/* Up / Down reorder controls */}
-                  <div className="flex flex-col gap-0.5">
-                    <button
-                      type="button"
-                      onClick={() => moveCombo(idx, 'up')}
-                      disabled={idx === 0 || running}
-                      className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 p-0.5"
-                      title="Move Up"
-                    >
-                      <ChevronUp size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moveCombo(idx, 'down')}
-                      disabled={idx === combos.length - 1 || running}
-                      className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 p-0.5"
-                      title="Move Down"
-                    >
-                      <ChevronDown size={14} />
-                    </button>
-                  </div>
+          <div className="mb-4 max-h-[500px] min-h-[300px] overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50/50 dark:bg-gray-900/20 p-2 space-y-2">
+            {combos.map((combo, idx) => {
+              const isNextGen = combo.category === 'nextgen' || ['awg_ws', 'mport_hop', 'fec_faketcp', 'zapret'].includes(combo.core)
+              const isFirstNextGen = isNextGen && idx === 0
+              const isFirstStandard = !isNextGen && (idx === 0 || (combos[idx - 1] && (combos[idx - 1].category === 'nextgen' || ['awg_ws', 'mport_hop', 'fec_faketcp', 'zapret'].includes(combos[idx - 1].core))))
 
-                  {/* Priority number */}
-                  <span className="font-mono text-xs text-gray-400 w-5 text-center">{idx + 1}</span>
-
-                  {/* Checkbox toggle */}
-                  <button
-                    type="button"
-                    onClick={() => toggleCombo(idx)}
-                    disabled={running}
-                    className="text-gray-700 dark:text-gray-300 hover:text-orange-500"
-                  >
-                    {combo.enabled ? (
-                      <CheckSquare size={18} className="text-orange-500" />
-                    ) : (
-                      <Square size={18} className="text-gray-400" />
-                    )}
-                  </button>
-
-                  {/* Combo Title & Badges */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-sm text-gray-900 dark:text-white">
-                        {language === 'fa' && combo.label_fa ? combo.label_fa : combo.label}
-                      </span>
-                      {combo.protocol === 'udp' ? (
-                        <span className="px-1.5 py-0.2 rounded text-[11px] font-bold bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300">
-                          UDP (WireGuard)
-                        </span>
-                      ) : (
-                        <span className="px-1.5 py-0.2 rounded text-[11px] font-semibold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
-                          TCP
-                        </span>
-                      )}
-                      {combo.stealth && (
-                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 flex items-center gap-0.5">
-                          <Shield size={10} />
-                          {t.tunnels.benchmarkStealthBadge || 'Anti-DPI'}
-                        </span>
-                      )}
-                      {['rathole:tls', 'zapret:mci', 'zapret:mtn', 'zapret:fixed'].includes(combo.id) && (
-                        <NewBadge />
-                      )}
+              return (
+                <div key={combo.id} className="space-y-1">
+                  {isFirstNextGen && (
+                    <div className="flex items-center gap-2 px-2 py-1 text-xs font-bold text-amber-800 dark:text-amber-300 bg-amber-100/60 dark:bg-amber-900/30 rounded-lg border border-amber-200 dark:border-amber-800/40">
+                      <span>⭐️</span>
+                      <span>{t.tunnels.benchmarkGroupNextGen || '⭐️ تانل‌های نسل جدید (ضد فیلترینگ وایرگارد)'}</span>
                     </div>
-                    {combo.description && (
-                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-xl">
-                        {combo.description}
-                      </p>
-                    )}
+                  )}
+                  {isFirstStandard && (
+                    <div className="flex items-center gap-2 px-2 py-1 text-xs font-bold text-gray-700 dark:text-gray-300 bg-gray-200/60 dark:bg-gray-800 rounded-lg mt-3 border border-gray-300 dark:border-gray-700">
+                      <span>📦</span>
+                      <span>{t.tunnels.benchmarkGroupStandard || '📦 سایر تانل‌های استاندارد (TCP / UDP / QUIC)'}</span>
+                    </div>
+                  )}
+
+                  <div
+                    className={`flex items-center justify-between p-2.5 md:p-3 rounded-lg border transition ${
+                      combo.enabled
+                        ? isNextGen
+                          ? 'bg-amber-50/80 dark:bg-amber-950/30 border-amber-300 dark:border-amber-600 shadow-sm'
+                          : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 shadow-sm'
+                        : 'opacity-45 bg-gray-100/50 dark:bg-gray-800/40 border-dashed border-gray-300 dark:border-gray-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                      {/* Up / Down reorder controls */}
+                      <div className="flex flex-col gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => moveCombo(idx, 'up')}
+                          disabled={idx === 0 || running}
+                          className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 p-0.5"
+                          title="Move Up"
+                        >
+                          <ChevronUp size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveCombo(idx, 'down')}
+                          disabled={idx === combos.length - 1 || running}
+                          className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-20 p-0.5"
+                          title="Move Down"
+                        >
+                          <ChevronDown size={14} />
+                        </button>
+                      </div>
+
+                      {/* Priority number */}
+                      <span className="font-mono text-xs text-gray-400 w-6 text-center font-bold">#{idx + 1}</span>
+
+                      {/* Checkbox toggle */}
+                      <button
+                        type="button"
+                        onClick={() => toggleCombo(idx)}
+                        disabled={running}
+                        className="text-gray-700 dark:text-gray-300 hover:text-orange-500 focus:outline-none"
+                      >
+                        {combo.enabled ? (
+                          <CheckSquare size={20} className="text-orange-500" />
+                        ) : (
+                          <Square size={20} className="text-gray-400" />
+                        )}
+                      </button>
+
+                      {/* Combo Details matching Create Tunnel */}
+                      <div className="flex-1 min-w-0 cursor-pointer select-none" onClick={() => toggleCombo(idx)}>
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className="font-bold text-sm text-gray-900 dark:text-white">
+                            {language === 'fa' && combo.label_fa ? combo.label_fa : combo.label}
+                          </span>
+                          {isNextGen && <NewBadge />}
+                          {(combo.mode_label_fa || combo.mode_label) && (
+                            <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600">
+                              {language === 'fa' && combo.mode_label_fa ? combo.mode_label_fa : (combo.mode_label || `${t.tunnels.benchmarkModeLabel || 'Mode'}: ${combo.mode}`)}
+                            </span>
+                          )}
+                          {combo.protocol === 'udp' ? (
+                            <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300">
+                              UDP (WireGuard)
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                              TCP
+                            </span>
+                          )}
+                          {combo.stealth && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 flex items-center gap-1">
+                              <Shield size={10} />
+                              {t.tunnels.benchmarkStealthBadge || 'Anti-DPI'}
+                            </span>
+                          )}
+                        </div>
+                        {combo.description && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-2xl">
+                            {combo.description}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
 
         {/* Running progress bar */}
         {running && (
-          <div className="mb-4 p-3 rounded-lg bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800">
-            <div className="flex justify-between text-sm text-gray-700 dark:text-gray-200 mb-1 font-semibold">
+          <div className="mb-4 p-3.5 rounded-xl bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 shadow-sm">
+            <div className="flex justify-between text-sm text-gray-700 dark:text-gray-200 mb-1.5 font-bold">
               <span className="flex items-center gap-2">
-                <Gauge size={16} className="animate-spin text-orange-500" />
-                {state.current ? `${state.current.core} / ${state.current.mode}` : '...'}
+                <Gauge size={18} className="animate-spin text-orange-500" />
+                <span>
+                  {language === 'fa' ? 'در حال تست: ' : 'Testing: '}
+                  {state.current ? `${getCoreDisplayName(state.current.core, language)} (${state.current.mode})` : '...'}
+                </span>
               </span>
               <span>
                 {state.completed} / {state.total} ({progressPercent}%)
               </span>
             </div>
-            <div className="w-full h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+            <div className="w-full h-3 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
                 className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-500"
                 style={{ width: `${progressPercent}%` }}
@@ -2188,9 +2286,11 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                   >
                     <td className="py-2 pr-2 font-semibold text-gray-500 dark:text-gray-400">{idx + 1}</td>
                     <td className="py-2 pr-2">
-                      <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
-                        <span>{CORE_LABELS[r.core] || r.core}</span>
-                        <span className="text-gray-500 dark:text-gray-400 font-normal">/ {r.mode}</span>
+                      <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                        <span>{getCoreDisplayName(r.core, language)}</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                          {r.mode}
+                        </span>
                       </div>
                       {!r.ok && r.error && (
                         <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={r.error}>
@@ -2201,7 +2301,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                     <td className="py-2 pr-2">
                       {r.protocol === 'udp' ? (
                         <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300">
-                          UDP
+                          UDP (WireGuard)
                         </span>
                       ) : (
                         <span className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
@@ -2241,7 +2341,7 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
                               state?.foreign_node_id || foreignNodeId,
                             )
                           }
-                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 font-medium"
+                          className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow transition"
                         >
                           {t.tunnels.benchmarkUseConfig}
                         </button>
@@ -2254,11 +2354,11 @@ const BenchmarkModal = ({ nodes, servers, onClose, onUseConfig }: BenchmarkModal
           )}
         </div>
 
-        <div className="flex justify-end mt-4">
+        <div className="flex justify-end mt-4 pt-2 border-t border-gray-100 dark:border-gray-700">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600"
+            className="px-5 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 font-medium transition"
           >
             {t.tunnels.cancel}
           </button>

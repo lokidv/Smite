@@ -2006,6 +2006,7 @@ class ZapretAdapter:
                     if p:
                         cmd_dnat = [
                             "iptables", "-t", "nat", "-A", "PREROUTING",
+                            "!", "-s", target_ip,
                             "-p", "udp", "--dport", p,
                             "-j", "DNAT", "--to-destination", f"{target_ip}:{actual_tgt_port}",
                             "-m", "comment", "--comment", nat_comment
@@ -2020,6 +2021,18 @@ class ZapretAdapter:
                 ]
                 logger.info(f"Applying zapret MASQUERADE rule: {' '.join(cmd_masq)}")
                 self._run_ipt(cmd_masq)
+                self._run_ipt([
+                    "iptables", "-I", "FORWARD",
+                    "-p", "udp", "-d", target_ip,
+                    "-j", "ACCEPT",
+                    "-m", "comment", "--comment", nat_comment
+                ])
+                self._run_ipt([
+                    "iptables", "-I", "FORWARD",
+                    "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED",
+                    "-j", "ACCEPT",
+                    "-m", "comment", "--comment", nat_comment
+                ])
 
         jnfq = ["-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass"]
         cb_orig = ["-m", "connbytes", "--connbytes-dir=original", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
@@ -2226,6 +2239,8 @@ class ZapretAdapter:
         direction = (spec.get("direction") or "both").lower()
         if direction not in ("out", "in", "both"):
             direction = "both"
+        if filter_udp and direction == "both":
+            direction = "out"
 
         target_ip = (spec.get("target_ip") or "").strip()
         target_port = 0
@@ -3662,22 +3677,24 @@ class PortHoppingAdapter:
         comment = f"smite_hop_{tunnel_id[:8]}"
         
         if target_ip and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
-            # Relay / Iran node mode: enable forwarding and DNAT to foreign server
+            # Relay / Iran node mode: enable forwarding and DNAT directly to foreign server target_port
             subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            # 1. DNAT port_range to target_ip (preserving original port in dynamic range so international DPI does not see static port)
+            # 1. DNAT port_range directly to target_ip:target_port (with ! -s target_ip to avoid return loops)
             cmd_dnat_range = [
                 "iptables", "-t", "nat", "-A", "PREROUTING",
+                "!", "-s", target_ip,
                 "-p", "udp", "--dport", port_range,
-                "-j", "DNAT", "--to-destination", target_ip,
+                "-j", "DNAT", "--to-destination", f"{target_ip}:{target_port}",
                 "-m", "comment", "--comment", comment
             ]
             logger.info(f"Applying PortHopping range DNAT rule: {' '.join(cmd_dnat_range)}")
             subprocess.run(cmd_dnat_range, check=False)
             
-            # 2. DNAT target_port (e.g. 8863) to target_ip:target_port
+            # 2. DNAT target_port to target_ip:target_port
             cmd_dnat_target = [
                 "iptables", "-t", "nat", "-A", "PREROUTING",
+                "!", "-s", target_ip,
                 "-p", "udp", "--dport", str(target_port),
                 "-j", "DNAT", "--to-destination", f"{target_ip}:{target_port}",
                 "-m", "comment", "--comment", comment
@@ -3685,27 +3702,22 @@ class PortHoppingAdapter:
             logger.info(f"Applying PortHopping target DNAT rule: {' '.join(cmd_dnat_target)}")
             subprocess.run(cmd_dnat_target, check=False)
             
-            # 3. MASQUERADE outbound UDP to foreign server for all hopped traffic
+            # 3. MASQUERADE outbound UDP to foreign server for target_port
             cmd_masq = [
                 "iptables", "-t", "nat", "-A", "POSTROUTING",
-                "-p", "udp", "-d", target_ip,
+                "-p", "udp", "-d", target_ip, "--dport", str(target_port),
                 "-j", "MASQUERADE",
                 "-m", "comment", "--comment", comment
             ]
             logger.info(f"Applying PortHopping MASQUERADE rule: {' '.join(cmd_masq)}")
             subprocess.run(cmd_masq, check=False)
-        else:
-            # Endpoint / Foreign node mode: REDIRECT port_range to local WireGuard port
-            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            cmd_redirect = [
-                "iptables", "-t", "nat", "-A", "PREROUTING",
-                "-p", "udp", "--dport", port_range,
-                "-j", "REDIRECT", "--to-ports", str(target_port),
-                "-m", "comment", "--comment", comment
-            ]
-            logger.info(f"Applying PortHopping REDIRECT rule: {' '.join(cmd_redirect)}")
-            subprocess.run(cmd_redirect, check=False)
 
+            # 4. FORWARD accept rules for relayed traffic
+            subprocess.run(["iptables", "-I", "FORWARD", "-p", "udp", "-d", target_ip, "-j", "ACCEPT", "-m", "comment", "--comment", comment], check=False)
+            subprocess.run(["iptables", "-I", "FORWARD", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT", "-m", "comment", "--comment", comment], check=False)
+        else:
+            # Endpoint / Foreign node mode: accept input on target_port and normalize return TOS/checksum
+            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             cmd_input = [
                 "iptables", "-I", "INPUT",
                 "-p", "udp", "--dport", str(target_port),
@@ -3713,6 +3725,21 @@ class PortHoppingAdapter:
                 "-m", "comment", "--comment", comment
             ]
             subprocess.run(cmd_input, check=False)
+
+            # International transit drop fix: WireGuard default TOS (0x88) is dropped by upstream transit/firewalls.
+            # Normalizing TOS to 0x00 and filling checksum ensures 100% reliable return delivery.
+            subprocess.run([
+                "iptables", "-t", "mangle", "-A", "POSTROUTING",
+                "-p", "udp", "--sport", str(target_port),
+                "-j", "TOS", "--set-tos", "0x00/0xff",
+                "-m", "comment", "--comment", comment
+            ], check=False)
+            subprocess.run([
+                "iptables", "-t", "mangle", "-A", "POSTROUTING",
+                "-p", "udp", "--sport", str(target_port),
+                "-j", "CHECKSUM", "--checksum-fill",
+                "-m", "comment", "--comment", comment
+            ], check=False)
 
         self.active_ranges[tunnel_id] = {
             "target_port": target_port,
@@ -3726,7 +3753,7 @@ class PortHoppingAdapter:
     def remove(self, tunnel_id: str) -> bool:
         comment = f"smite_hop_{tunnel_id[:8]}"
         is_bench = tunnel_id.startswith("bench-")
-        for table_chain in [("nat", "PREROUTING"), ("nat", "POSTROUTING"), ("filter", "INPUT")]:
+        for table_chain in [("nat", "PREROUTING"), ("nat", "POSTROUTING"), ("filter", "INPUT"), ("filter", "FORWARD"), ("mangle", "POSTROUTING")]:
             try:
                 out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
                 for line in out.splitlines():

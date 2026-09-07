@@ -212,6 +212,11 @@ def normalize_zapret_spec(spec: dict) -> dict:
             s.setdefault("desync_fooling", "none")
             s.setdefault("repeats", 1)
             s.setdefault("extra_args", "--dpi-desync-ipfrag-pos-udp=8")
+        elif preset == "hybrid":
+            s.setdefault("desync_mode", "fake,ipfrag2")
+            s.setdefault("desync_fooling", "badsum")
+            s.setdefault("repeats", 2)
+            s.setdefault("extra_args", "--dpi-desync-ipfrag-pos-udp=8")
         else:
             s.setdefault("desync_mode", "fake")
             s.setdefault("desync_fooling", "badsum")

@@ -4063,14 +4063,14 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
       setZapretState((prev) => ({
         ...prev,
         preset: 'mci',
-        desync_mode: 'multisplit',
-        split_pos: '2',
-        desync_fooling: 'badseq,ts',
-        desync_ttl: '4',
+        desync_mode: 'fake',
+        split_pos: '',
+        desync_fooling: 'badsum',
+        desync_ttl: '',
         repeats: '2',
-        filter_udp: '51820',
+        filter_udp: detectedWgPort,
       }))
-      setFormData((prev) => ({ ...prev, core, type: 'mci' }))
+      setFormData((prev) => ({ ...prev, core, type: 'mci', ports: detectedWgPort }))
       return
     } else if (core === 'chisel') {
       newType = core
@@ -4305,34 +4305,45 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
                       setZapretState((prev) => ({
                         ...prev,
                         preset: 'mci',
-                        desync_mode: 'multisplit',
-                        split_pos: '2',
-                        desync_fooling: 'badseq,ts',
-                        desync_ttl: '4',
+                        desync_mode: 'fake',
+                        split_pos: '',
+                        desync_fooling: 'badsum',
+                        desync_ttl: '',
                         repeats: '2',
-                        filter_udp: '51820',
+                        filter_udp: prev.filter_udp || detectedWgPort,
                       }))
                     } else if (value === 'mtn') {
                       setZapretState((prev) => ({
                         ...prev,
                         preset: 'mtn',
-                        desync_mode: 'fakedsplit',
-                        split_pos: '2',
-                        desync_fooling: 'badsum,badseq',
-                        desync_ttl: '3',
-                        repeats: '2',
-                        filter_udp: '51820',
+                        desync_mode: 'fake',
+                        split_pos: '',
+                        desync_fooling: 'badsum',
+                        desync_ttl: '',
+                        repeats: '3',
+                        filter_udp: prev.filter_udp || detectedWgPort,
                       }))
                     } else if (value === 'fixed') {
                       setZapretState((prev) => ({
                         ...prev,
                         preset: 'fixed',
-                        desync_mode: 'disorder2',
-                        split_pos: '2',
-                        desync_fooling: 'badseq',
-                        desync_ttl: '5',
+                        desync_mode: 'ipfrag2',
+                        split_pos: '',
+                        desync_fooling: 'none',
                         repeats: '1',
-                        filter_udp: '51820',
+                        extra_args: '--dpi-desync-ipfrag-pos-udp=8',
+                        filter_udp: prev.filter_udp || detectedWgPort,
+                      }))
+                    } else if (value === 'hybrid') {
+                      setZapretState((prev) => ({
+                        ...prev,
+                        preset: 'hybrid',
+                        desync_mode: 'fake,ipfrag2',
+                        split_pos: '',
+                        desync_fooling: 'badsum',
+                        repeats: '2',
+                        extra_args: '--dpi-desync-ipfrag-pos-udp=8',
+                        filter_udp: prev.filter_udp || detectedWgPort,
                       }))
                     } else {
                       setZapretState((prev) => ({ ...prev, preset: 'none', desync_mode: value }))

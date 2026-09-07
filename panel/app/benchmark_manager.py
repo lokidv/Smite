@@ -902,12 +902,13 @@ class BenchmarkManager:
                     "score": sc_score,
                     "error": metrics.get("error"),
                     "spec": {
-                        "preset": sc["preset"],
-                        "desync_mode": sc["desync_mode"],
-                        "split_pos": sc["split_pos"],
-                        "desync_fooling": sc["desync_fooling"],
-                        "desync_ttl": sc["desync_ttl"],
-                        "repeats": sc["repeats"],
+                        "preset": sc.get("preset", "mci"),
+                        "desync_mode": sc.get("desync_mode", "fake"),
+                        "split_pos": sc.get("split_pos", ""),
+                        "desync_fooling": sc.get("desync_fooling", "badsum"),
+                        "desync_ttl": sc.get("desync_ttl"),
+                        "repeats": sc.get("repeats", 2),
+                        "extra_args": sc.get("extra_args", ""),
                     },
                 })
             except Exception as e:

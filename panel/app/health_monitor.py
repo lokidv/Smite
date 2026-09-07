@@ -126,9 +126,17 @@ class HealthMonitor:
     # ---- helpers ----
     @staticmethod
     def _required_ends(t: Tunnel) -> List[str]:
-        if t.core in {"zapret", "snispoof", "warp", "mport_hop"}:
+        if t.core in {"zapret", "snispoof", "warp"}:
             iran = t.iran_node_id or t.node_id
             return [iran] if iran else []
+        if t.core == "mport_hop":
+            ends = []
+            iran = t.iran_node_id or t.node_id
+            if iran:
+                ends.append(iran)
+            if t.foreign_node_id:
+                ends.append(t.foreign_node_id)
+            return ends
         if t.foreign_node_id or t.core in REVERSE_CORES:
             iran = t.iran_node_id or t.node_id
             foreign = t.foreign_node_id

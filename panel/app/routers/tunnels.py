@@ -192,38 +192,69 @@ def normalize_zapret_spec(spec: dict) -> dict:
     """Apply zapret defaults so the node always receives a complete spec."""
     s = dict(spec or {})
     preset = (s.get("preset") or "").lower()
-    if preset == "mci":
-        s.setdefault("desync_mode", "multisplit")
-        s.setdefault("split_pos", "2")
-        s.setdefault("desync_fooling", "badseq,ts")
-        s.setdefault("desync_ttl", 4)
-        s.setdefault("repeats", 2)
-    elif preset == "mtn":
-        s.setdefault("desync_mode", "fakedsplit")
-        s.setdefault("split_pos", "2")
-        s.setdefault("desync_fooling", "badsum,badseq")
-        s.setdefault("desync_ttl", 3)
-        s.setdefault("repeats", 2)
-    elif preset == "fixed":
-        s.setdefault("desync_mode", "disorder2")
-        s.setdefault("split_pos", "2")
-        s.setdefault("desync_fooling", "badseq")
-        s.setdefault("desync_ttl", 5)
-        s.setdefault("repeats", 1)
-
-    if str(s.get("split_pos") or "").lower() in ("midsni", ""):
-        s["split_pos"] = "2"
-
     has_udp = bool(s.get("filter_udp"))
     has_tcp = bool(s.get("filter_tcp"))
-    if not has_udp and not has_tcp:
-        s.setdefault("filter_tcp", "443")
-        s.setdefault("filter_l7", "tls")
-    elif has_tcp and not has_udp:
-        s.setdefault("filter_l7", "tls")
 
-    s.setdefault("desync_mode", s.get("type") or "fake")
-    s.setdefault("desync_fooling", "badseq,ts")
+    if has_udp:
+        # UDP / WireGuard anti-DPI evasion
+        # TCP-only split modes (multisplit, fakedsplit, disorder2) destroy WireGuard UDP packets.
+        # Instead, use fake packet with invalid UDP checksum (badsum) or IP fragmentation (ipfrag2).
+        if preset == "mci":
+            s.setdefault("desync_mode", "fake")
+            s.setdefault("desync_fooling", "badsum")
+            s.setdefault("repeats", 2)
+        elif preset == "mtn":
+            s.setdefault("desync_mode", "fake")
+            s.setdefault("desync_fooling", "badsum")
+            s.setdefault("repeats", 3)
+        elif preset == "fixed":
+            s.setdefault("desync_mode", "ipfrag2")
+            s.setdefault("desync_fooling", "none")
+            s.setdefault("repeats", 1)
+            s.setdefault("extra_args", "--dpi-desync-ipfrag-pos-udp=8")
+        else:
+            s.setdefault("desync_mode", "fake")
+            s.setdefault("desync_fooling", "badsum")
+            s.setdefault("repeats", 2)
+
+        # Force safe mode if a TCP split mode was mistakenly set
+        if s.get("desync_mode") in ("multisplit", "fakedsplit", "fakeddisorder", "disorder", "disorder2", "split"):
+            s["desync_mode"] = "fake"
+        if "badseq" in str(s.get("desync_fooling", "")) or "ts" in str(s.get("desync_fooling", "")):
+            s["desync_fooling"] = "badsum"
+    else:
+        # TCP / TLS DPI evasion
+        if preset == "mci":
+            s.setdefault("desync_mode", "multisplit")
+            s.setdefault("split_pos", "2")
+            s.setdefault("desync_fooling", "badseq,ts")
+            s.setdefault("desync_ttl", 4)
+            s.setdefault("repeats", 2)
+        elif preset == "mtn":
+            s.setdefault("desync_mode", "fakedsplit")
+            s.setdefault("split_pos", "2")
+            s.setdefault("desync_fooling", "badsum,badseq")
+            s.setdefault("desync_ttl", 3)
+            s.setdefault("repeats", 2)
+        elif preset == "fixed":
+            s.setdefault("desync_mode", "disorder2")
+            s.setdefault("split_pos", "2")
+            s.setdefault("desync_fooling", "badseq")
+            s.setdefault("desync_ttl", 5)
+            s.setdefault("repeats", 1)
+
+        if str(s.get("split_pos") or "").lower() in ("midsni", ""):
+            s["split_pos"] = "2"
+
+        if not has_tcp:
+            s.setdefault("filter_tcp", "443")
+            s.setdefault("filter_l7", "tls")
+        elif has_tcp:
+            s.setdefault("filter_l7", "tls")
+
+        s.setdefault("desync_mode", s.get("type") or "fake")
+        s.setdefault("desync_fooling", "badseq,ts")
+
     s.setdefault("max_pkt", 10)
     s.setdefault("direction", "both")
     return s

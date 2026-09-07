@@ -2121,48 +2121,6 @@ class ZapretAdapter:
         repeats = str(spec.get("repeats") or spec.get("desync_repeats") or "").strip()
         ttl = spec.get("desync_ttl")
 
-        # Iranian ISP presets
-        if preset == "mci":
-            if not desync_mode:
-                desync_mode = "multisplit"
-            if not split_pos:
-                split_pos = "2"
-            if not desync_fooling:
-                desync_fooling = "badseq,ts"
-            if ttl in (None, "", 0, "0"):
-                ttl = 4
-            if not repeats:
-                repeats = "2"
-        elif preset == "mtn":
-            if not desync_mode:
-                desync_mode = "fakedsplit"
-            if not split_pos:
-                split_pos = "2"
-            if not desync_fooling:
-                desync_fooling = "badsum,badseq"
-            if ttl in (None, "", 0, "0"):
-                ttl = 3
-            if not repeats:
-                repeats = "2"
-        elif preset == "fixed":
-            if not desync_mode:
-                desync_mode = "disorder2"
-            if not split_pos:
-                split_pos = "2"
-            if not desync_fooling:
-                desync_fooling = "badseq"
-            if ttl in (None, "", 0, "0"):
-                ttl = 5
-            if not repeats:
-                repeats = "1"
-
-        if not desync_mode:
-            desync_mode = "fake"
-        if not desync_fooling:
-            desync_fooling = "badseq,ts"
-        if not split_pos or split_pos.lower() == "midsni":
-            split_pos = "2"
-
         filter_tcp = str(spec.get("filter_tcp") or "").strip()
         if filter_tcp.lower() in ("none", "null", "false", "0"):
             filter_tcp = ""
@@ -2174,6 +2132,90 @@ class ZapretAdapter:
         # Backwards compatibility: if neither is given, default to TCP 443
         if not filter_tcp and not filter_udp:
             filter_tcp = "443"
+
+        if filter_udp:
+            # WireGuard / UDP anti-DPI evasion:
+            # TCP-only split modes (multisplit, fakedsplit, disorder2, etc.) destroy UDP datagrams.
+            # TCP fooling (badseq, ts) does nothing for UDP.
+            # Must use fake packets with invalid checksum (badsum) or IP layer 3 fragmentation (ipfrag2).
+            if preset == "mci":
+                if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split"):
+                    desync_mode = "fake"
+                if not desync_fooling or "badseq" in desync_fooling or "ts" in desync_fooling:
+                    desync_fooling = "badsum"
+                if not repeats:
+                    repeats = "2"
+            elif preset == "mtn":
+                if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split"):
+                    desync_mode = "fake"
+                if not desync_fooling or "badseq" in desync_fooling:
+                    desync_fooling = "badsum"
+                if not repeats:
+                    repeats = "3"
+            elif preset == "fixed":
+                if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split"):
+                    desync_mode = "ipfrag2"
+                if not desync_fooling or "badseq" in desync_fooling:
+                    desync_fooling = "none"
+                if not repeats:
+                    repeats = "1"
+            elif preset == "hybrid":
+                if not desync_mode:
+                    desync_mode = "fake,ipfrag2"
+                if not desync_fooling:
+                    desync_fooling = "badsum"
+                if not repeats:
+                    repeats = "2"
+
+            if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split", "fakeddisorder"):
+                desync_mode = "fake"
+            if not desync_fooling or "badseq" in desync_fooling or "ts" in desync_fooling:
+                desync_fooling = "badsum"
+            if not repeats:
+                repeats = "2"
+            split_pos = ""
+        else:
+            # TCP / TLS DPI evasion
+            if preset == "mci":
+                if not desync_mode:
+                    desync_mode = "multisplit"
+                if not split_pos:
+                    split_pos = "2"
+                if not desync_fooling:
+                    desync_fooling = "badseq,ts"
+                if ttl in (None, "", 0, "0"):
+                    ttl = 4
+                if not repeats:
+                    repeats = "2"
+            elif preset == "mtn":
+                if not desync_mode:
+                    desync_mode = "fakedsplit"
+                if not split_pos:
+                    split_pos = "2"
+                if not desync_fooling:
+                    desync_fooling = "badsum,badseq"
+                if ttl in (None, "", 0, "0"):
+                    ttl = 3
+                if not repeats:
+                    repeats = "2"
+            elif preset == "fixed":
+                if not desync_mode:
+                    desync_mode = "disorder2"
+                if not split_pos:
+                    split_pos = "2"
+                if not desync_fooling:
+                    desync_fooling = "badseq"
+                if ttl in (None, "", 0, "0"):
+                    ttl = 5
+                if not repeats:
+                    repeats = "1"
+
+            if not desync_mode:
+                desync_mode = "fake"
+            if not desync_fooling:
+                desync_fooling = "badseq,ts"
+            if not split_pos or split_pos.lower() == "midsni":
+                split_pos = "2"
 
         filter_l7 = (spec.get("filter_l7") or "").strip()
         if not filter_l7 and filter_tcp and not filter_udp:
@@ -2218,22 +2260,22 @@ class ZapretAdapter:
         if filter_udp:
             cmd.append(f"--filter-udp={filter_udp}")
             cmd.append("--dpi-desync-any-protocol=1")
+            if "ipfrag" in desync_mode and "--dpi-desync-ipfrag-pos-udp" not in extra_args:
+                cmd.append("--dpi-desync-ipfrag-pos-udp=8")
 
         if filter_l7 and filter_l7.lower() not in ("none", "any", ""):
             cmd.append(f"--filter-l7={filter_l7}")
 
         cmd.append(f"--dpi-desync={desync_mode}")
 
-        if split_pos:
-            if filter_udp and any(c.isalpha() for c in split_pos):
-                split_pos = "2"
+        if split_pos and not filter_udp:
             cmd.append(f"--dpi-desync-split-pos={split_pos}")
-        if split_seqovl:
+        if split_seqovl and not filter_udp:
             cmd.append(f"--dpi-desync-split-seqovl={split_seqovl}")
         if repeats:
             cmd.append(f"--dpi-desync-repeats={repeats}")
 
-        if fake_tls_sni:
+        if fake_tls_sni and not filter_udp:
             cmd.append(f"--dpi-desync-fake-tls-mod=sni={fake_tls_sni}")
         if desync_fooling and desync_fooling.lower() not in ("none", ""):
             cmd.append(f"--dpi-desync-fooling={desync_fooling}")
@@ -3623,11 +3665,11 @@ class PortHoppingAdapter:
             # Relay / Iran node mode: enable forwarding and DNAT to foreign server
             subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            # 1. DNAT port_range to target_ip:target_port
+            # 1. DNAT port_range to target_ip (preserving original port in dynamic range so international DPI does not see static port)
             cmd_dnat_range = [
                 "iptables", "-t", "nat", "-A", "PREROUTING",
                 "-p", "udp", "--dport", port_range,
-                "-j", "DNAT", "--to-destination", f"{target_ip}:{target_port}",
+                "-j", "DNAT", "--to-destination", target_ip,
                 "-m", "comment", "--comment", comment
             ]
             logger.info(f"Applying PortHopping range DNAT rule: {' '.join(cmd_dnat_range)}")
@@ -3643,10 +3685,10 @@ class PortHoppingAdapter:
             logger.info(f"Applying PortHopping target DNAT rule: {' '.join(cmd_dnat_target)}")
             subprocess.run(cmd_dnat_target, check=False)
             
-            # 3. MASQUERADE outbound UDP to foreign server
+            # 3. MASQUERADE outbound UDP to foreign server for all hopped traffic
             cmd_masq = [
                 "iptables", "-t", "nat", "-A", "POSTROUTING",
-                "-p", "udp", "-d", target_ip, "--dport", str(target_port),
+                "-p", "udp", "-d", target_ip,
                 "-j", "MASQUERADE",
                 "-m", "comment", "--comment", comment
             ]
@@ -3654,6 +3696,7 @@ class PortHoppingAdapter:
             subprocess.run(cmd_masq, check=False)
         else:
             # Endpoint / Foreign node mode: REDIRECT port_range to local WireGuard port
+            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             cmd_redirect = [
                 "iptables", "-t", "nat", "-A", "PREROUTING",
                 "-p", "udp", "--dport", port_range,
@@ -3662,6 +3705,14 @@ class PortHoppingAdapter:
             ]
             logger.info(f"Applying PortHopping REDIRECT rule: {' '.join(cmd_redirect)}")
             subprocess.run(cmd_redirect, check=False)
+
+            cmd_input = [
+                "iptables", "-I", "INPUT",
+                "-p", "udp", "--dport", str(target_port),
+                "-j", "ACCEPT",
+                "-m", "comment", "--comment", comment
+            ]
+            subprocess.run(cmd_input, check=False)
 
         self.active_ranges[tunnel_id] = {
             "target_port": target_port,
@@ -3675,7 +3726,7 @@ class PortHoppingAdapter:
     def remove(self, tunnel_id: str) -> bool:
         comment = f"smite_hop_{tunnel_id[:8]}"
         is_bench = tunnel_id.startswith("bench-")
-        for table_chain in [("nat", "PREROUTING"), ("nat", "POSTROUTING")]:
+        for table_chain in [("nat", "PREROUTING"), ("nat", "POSTROUTING"), ("filter", "INPUT")]:
             try:
                 out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
                 for line in out.splitlines():

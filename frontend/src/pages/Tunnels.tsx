@@ -665,19 +665,28 @@ const createDefaultZapretState = (): ZapretFormState => ({
 })
 
 const buildZapretSpec = (state: ZapretFormState, desyncOverride?: string): Record<string, any> => {
-  const modeCandidate = (desyncOverride || state.desync_mode || 'fake')
+  const isUdp = !!state.filter_udp.trim()
+  let modeCandidate = (desyncOverride || state.desync_mode || 'fake')
+  if (isUdp && ['multisplit', 'fakedsplit', 'fakeddisorder', 'disorder', 'disorder2', 'split', 'split2'].includes(modeCandidate)) {
+    modeCandidate = 'fake'
+  }
   const mode = ZAPRET_DESYNC_MODES.includes(modeCandidate) ? modeCandidate : 'fake'
+
+  let fooling = state.desync_fooling.trim()
+  if (isUdp && (!fooling || fooling.includes('badseq') || fooling.includes('ts'))) {
+    fooling = 'badsum'
+  }
 
   const spec: Record<string, any> = {
     preset: state.preset && state.preset !== 'none' ? state.preset : undefined,
     desync_mode: mode,
     filter_tcp: state.filter_tcp.trim(),
     filter_udp: state.filter_udp.trim(),
-    filter_l7: state.filter_l7 || '',
-    split_pos: state.split_pos.trim() || undefined,
+    filter_l7: isUdp ? '' : (state.filter_l7 || ''),
+    split_pos: isUdp ? undefined : (state.split_pos.trim() || undefined),
     desync_ttl: state.desync_ttl.trim() ? parseInt(state.desync_ttl.trim(), 10) : undefined,
-    repeats: state.repeats.trim() ? parseInt(state.repeats.trim(), 10) : undefined,
-    desync_fooling: state.desync_fooling.trim(),
+    repeats: state.repeats.trim() ? parseInt(state.repeats.trim(), 10) : (isUdp ? 2 : undefined),
+    desync_fooling: fooling,
     direction: ZAPRET_DIRECTIONS.includes(state.direction) ? state.direction : 'both',
     max_pkt: 10,
   }
@@ -5590,6 +5599,48 @@ function ZapretForm({
   const { t } = useLanguage()
 
   const handlePresetChange = (preset: string) => {
+    const isUdp = !!state.filter_udp.trim()
+    if (isUdp) {
+      if (preset === 'mci') {
+        onChange({
+          preset,
+          desync_mode: 'fake',
+          desync_fooling: 'badsum',
+          repeats: '2',
+          split_pos: '',
+        })
+      } else if (preset === 'mtn') {
+        onChange({
+          preset,
+          desync_mode: 'fake',
+          desync_fooling: 'badsum',
+          repeats: '3',
+          split_pos: '',
+        })
+      } else if (preset === 'fixed') {
+        onChange({
+          preset,
+          desync_mode: 'ipfrag2',
+          desync_fooling: 'none',
+          repeats: '1',
+          split_pos: '',
+          extra_args: '--dpi-desync-ipfrag-pos-udp=8',
+        })
+      } else if (preset === 'hybrid') {
+        onChange({
+          preset,
+          desync_mode: 'fake,ipfrag2',
+          desync_fooling: 'badsum',
+          repeats: '2',
+          split_pos: '',
+          extra_args: '--dpi-desync-ipfrag-pos-udp=8',
+        })
+      } else {
+        onChange({ preset: 'none' })
+      }
+      return
+    }
+
     if (preset === 'mci') {
       onChange({
         preset,

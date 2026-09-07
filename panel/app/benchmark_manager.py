@@ -379,11 +379,9 @@ ZAPRET_SCENARIOS: List[Dict[str, Any]] = [
         "name": "Hamrah-e Avval (MCI)",
         "name_fa": "همراه اول (MCI)",
         "icon": "📱",
-        "description": "Multisplit midsni + Badseq,TS + TTL 4",
-        "desync_mode": "multisplit",
-        "split_pos": "2",
-        "desync_fooling": "badseq,ts",
-        "desync_ttl": 4,
+        "description": "Fake UDP + Badsum Checksum Fooling x2",
+        "desync_mode": "fake",
+        "desync_fooling": "badsum",
         "repeats": 2,
     },
     {
@@ -392,38 +390,34 @@ ZAPRET_SCENARIOS: List[Dict[str, Any]] = [
         "name": "Irancell (MTN)",
         "name_fa": "ایرانسل (MTN)",
         "icon": "📱",
-        "description": "Fakedsplit midsni + Badsum,Badseq + TTL 3",
-        "desync_mode": "fakedsplit",
-        "split_pos": "2",
-        "desync_fooling": "badsum,badseq",
-        "desync_ttl": 3,
-        "repeats": 2,
+        "description": "Aggressive Fake UDP + Badsum x3",
+        "desync_mode": "fake",
+        "desync_fooling": "badsum",
+        "repeats": 3,
     },
     {
         "preset": "fixed",
         "mode": "fixed",
-        "name": "Fixed-Line (Mokhaberat)",
+        "name": "Fixed-Line (Mokhaberat/Shatel)",
         "name_fa": "اینترنت ثابت و مخابرات",
         "icon": "🏠",
-        "description": "Disorder2 midsni + Badseq + TTL 5",
-        "desync_mode": "disorder2",
-        "split_pos": "2",
-        "desync_fooling": "badseq",
-        "desync_ttl": 5,
+        "description": "IP Layer 3 Fragmentation (ipfrag2 pos=8)",
+        "desync_mode": "ipfrag2",
+        "desync_fooling": "none",
         "repeats": 1,
+        "extra_args": "--dpi-desync-ipfrag-pos-udp=8",
     },
     {
-        "preset": "fake",
-        "mode": "fake",
-        "name": "Standard Fake Packet",
-        "name_fa": "پکت جعلی استاندارد (Fake)",
+        "preset": "hybrid",
+        "mode": "hybrid",
+        "name": "Hybrid Defense (All Networks)",
+        "name_fa": "ترکیب فیک و فرگمنت (ضد DPI پیشرفته)",
         "icon": "🛡️",
-        "description": "Standard Fake ClientHello + TTL 4",
-        "desync_mode": "fake",
-        "split_pos": "2",
-        "desync_fooling": "badseq,ts",
-        "desync_ttl": 4,
-        "repeats": 1,
+        "description": "Combined Fake Badsum + IP Fragmentation",
+        "desync_mode": "fake,ipfrag2",
+        "desync_fooling": "badsum",
+        "repeats": 2,
+        "extra_args": "--dpi-desync-ipfrag-pos-udp=8",
     },
 ]
 
@@ -652,22 +646,44 @@ def _build_specs(
 
     if core == "zapret":
         preset = (extra_spec.get("preset") if extra_spec else None) or mode or "mci"
-        desync_mode = (extra_spec.get("desync_mode") if extra_spec else None) or ("multisplit" if preset == "mci" else ("fakedsplit" if preset == "mtn" else ("disorder2" if preset == "fixed" else preset)))
-        split_pos = str((extra_spec.get("split_pos") if extra_spec else None) or "2")
-        fooling = (extra_spec.get("desync_fooling") if extra_spec else None) or ("badseq,ts" if preset in ("mci", "fake") else ("badsum,badseq" if preset == "mtn" else "badseq"))
-        ttl = (extra_spec.get("desync_ttl") if extra_spec else None) or (4 if preset in ("mci", "fake") else (3 if preset == "mtn" else 5))
-        repeats = (extra_spec.get("repeats") if extra_spec else None) or (2 if preset in ("mci", "mtn") else 1)
+        if preset == "fixed":
+            default_mode = "ipfrag2"
+            default_fooling = "none"
+            default_repeats = 1
+        elif preset == "mtn":
+            default_mode = "fake"
+            default_fooling = "badsum"
+            default_repeats = 3
+        elif preset == "hybrid":
+            default_mode = "fake,ipfrag2"
+            default_fooling = "badsum"
+            default_repeats = 2
+        else:
+            default_mode = "fake"
+            default_fooling = "badsum"
+            default_repeats = 2
+
+        desync_mode = (extra_spec.get("desync_mode") if extra_spec else None) or default_mode
+        fooling = (extra_spec.get("desync_fooling") if extra_spec else None) or default_fooling
+        repeats = (extra_spec.get("repeats") if extra_spec else None) or default_repeats
+        extra_args = (extra_spec.get("extra_args") if extra_spec else "") or ("--dpi-desync-ipfrag-pos-udp=8" if "ipfrag" in desync_mode else "")
+
+        # Fallbacks for safe UDP
+        if desync_mode in ("multisplit", "fakedsplit", "disorder2", "split"):
+            desync_mode = "fake"
+        if "badseq" in str(fooling) or "ts" in str(fooling):
+            fooling = "badsum"
+
         spec_dict = {
             "mode": "server",
             "preset": preset,
             "desync_mode": desync_mode,
-            "split_pos": split_pos,
             "desync_fooling": fooling,
-            "desync_ttl": ttl,
             "repeats": repeats,
             "filter_udp": str(test_port),
             "filter_tcp": str(test_port),
             "ports": [test_port],
+            "extra_args": extra_args,
         }
         return dict(spec_dict), dict(spec_dict)
 

@@ -484,8 +484,7 @@ const parseTuicSpec = (spec: Record<string, any> | undefined, currentType?: stri
   return state
 }
 
-// ---- In-place core/type change (reverse cores only) ----
-const CHANGEABLE_CORES = ['awg_ws', 'mport_hop', 'fec_faketcp', 'rathole', 'backhaul', 'chisel', 'frp', 'udp2raw', 'trusttunnel', 'hysteria2', 'tuic']
+const CHANGEABLE_CORES = ['awg_ws', 'mport_hop', 'fec_faketcp', 'zapret', 'rathole', 'backhaul', 'chisel', 'frp', 'udp2raw', 'trusttunnel', 'hysteria2', 'tuic']
 
 const CORE_LABELS: Record<string, string> = {
   awg_ws: '👑 AWG-over-WebSocket (Digikala TLS)',
@@ -650,14 +649,14 @@ interface ZapretFormState {
 const createDefaultZapretState = (): ZapretFormState => ({
   preset: 'none',
   desync_mode: 'fake',
-  filter_tcp: '443',
-  filter_udp: '',
-  filter_l7: 'tls',
+  filter_tcp: '',
+  filter_udp: '8863',
+  filter_l7: 'none',
   split_pos: '',
   desync_ttl: '',
-  repeats: '',
-  fake_tls_sni: 'hcaptcha.com',
-  desync_fooling: 'badseq,ts',
+  repeats: '2',
+  fake_tls_sni: '',
+  desync_fooling: 'badsum',
   direction: 'both',
   queue_num: '',
   extra_args: '',
@@ -680,7 +679,7 @@ const buildZapretSpec = (state: ZapretFormState, desyncOverride?: string): Recor
   const spec: Record<string, any> = {
     preset: state.preset && state.preset !== 'none' ? state.preset : undefined,
     desync_mode: mode,
-    filter_tcp: state.filter_tcp.trim(),
+    filter_tcp: isUdp ? '' : state.filter_tcp.trim(),
     filter_udp: state.filter_udp.trim(),
     filter_l7: isUdp ? '' : (state.filter_l7 || ''),
     split_pos: isUdp ? undefined : (state.split_pos.trim() || undefined),
@@ -1309,7 +1308,32 @@ const Tunnels = () => {
           // Extract ports from spec
           const getPorts = (): string => {
             if (tunnel.core === 'zapret') {
-              return (tunnel.spec?.filter_tcp || '443').toString()
+              const filterUdp = (tunnel.spec?.filter_udp || '').toString().trim()
+              const filterTcp = (tunnel.spec?.filter_tcp || '').toString().trim()
+              if (filterUdp && !filterTcp) {
+                return filterUdp
+              }
+              if (filterUdp && filterTcp) {
+                return `${filterTcp}, ${filterUdp}`
+              }
+              if (filterTcp) {
+                return filterTcp
+              }
+              if (tunnel.spec?.target_port) {
+                return tunnel.spec.target_port.toString()
+              }
+              if (tunnel.spec?.ports) {
+                if (Array.isArray(tunnel.spec.ports)) {
+                  return tunnel.spec.ports.map(p => typeof p === 'object' && p.local ? p.local : p).join(', ')
+                }
+                return String(tunnel.spec.ports)
+              }
+              return '443'
+            }
+            if (tunnel.core === 'mport_hop') {
+              if (tunnel.spec?.port_range) {
+                return `${tunnel.spec.port_range} → ${tunnel.spec.target_port || '8863'}`
+              }
             }
             if (tunnel.core === 'snispoof') {
               return (tunnel.spec?.local_port || 'N/A').toString()
@@ -1334,7 +1358,7 @@ const Tunnels = () => {
               }
             }
             // Fallback to single port
-            const port = tunnel.spec?.listen_port || tunnel.spec?.remote_port
+            const port = tunnel.spec?.listen_port || tunnel.spec?.remote_port || tunnel.spec?.target_port
             return port ? port.toString() : 'N/A'
           }
 
@@ -2585,6 +2609,11 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
                                     foreign_node_id: foreignId,
                                     name: language === 'fa' ? 'پرش پورت پویا (وایرگارد)' : 'Multi-Port Hopping',
                                     ports: wgPort,
+                                    spec: {
+                                      target_port: parseInt(wgPort, 10) || 8863,
+                                      port_range: '20000:40000',
+                                      ports: [parseInt(wgPort, 10) || 8863],
+                                    }
                                   })
                                   return
                                 }

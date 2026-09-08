@@ -27,9 +27,11 @@ progress() { echo -e "${GREEN}OK${NC} $1"; }
 warn() { echo -e "${YELLOW}!${NC} $1"; }
 
 NONINTERACTIVE="${SMITE_NONINTERACTIVE:-0}"
+CLEAN_TAKEOVER="${CLEAN_TAKEOVER:-0}"
 for arg in "$@"; do
     case "$arg" in
         --yes|-y|--non-interactive) NONINTERACTIVE=1 ;;
+        --clean-takeover) CLEAN_TAKEOVER=1 ;;
     esac
 done
 
@@ -79,6 +81,11 @@ if ! python3 -c 'import ensurepip, venv' >/dev/null 2>&1; then
     need_pkgs="$need_pkgs python3-venv"
     [ -n "$PYVER" ] && need_pkgs="$need_pkgs python${PYVER}-venv"
 fi
+command -v iptables >/dev/null 2>&1 || need_pkgs="$need_pkgs iptables"
+command -v ip >/dev/null 2>&1 || need_pkgs="$need_pkgs iproute2"
+command -v pkill >/dev/null 2>&1 || need_pkgs="$need_pkgs procps"
+command -v modprobe >/dev/null 2>&1 || need_pkgs="$need_pkgs kmod"
+command -v gcc >/dev/null 2>&1 || need_pkgs="$need_pkgs gcc"
 if [ -n "$need_pkgs" ]; then
     warn "Missing prerequisites:$need_pkgs - attempting local install"
     if command -v apt-get >/dev/null 2>&1; then
@@ -103,6 +110,15 @@ progress "Prerequisites present (python ${PYVER:-unknown})"
 # the configuration (and CA) instead of prompting again.
 KEEP_ENV=0
 RECONFIGURE=0
+if [ "$CLEAN_TAKEOVER" = "1" ]; then
+    warn "Clean takeover mode enabled: wiping prior panel identity and state..."
+    rm -f "$CONFIG_DIR/.env" 2>/dev/null || true
+    rm -rf "$CONFIG_DIR/certs"/* 2>/dev/null || true
+    rm -f "$DATA_DIR/node_id" "$DATA_DIR/node.json" "$DATA_DIR/health.json" 2>/dev/null || true
+    mkdir -p "$DATA_DIR"
+    echo "{}" > "$DATA_DIR/tunnels.json"
+fi
+
 if [ -f "$CONFIG_DIR/.env" ]; then
     if [ "$NONINTERACTIVE" = "1" ]; then
         if [ -n "$PANEL_ADDRESS" ]; then
@@ -259,6 +275,9 @@ rm -rf "$INSTALL_DIR/app" "$INSTALL_DIR/main.py" "$INSTALL_DIR/requirements.txt"
 cp -r "$BUNDLE_DIR/node/app" "$INSTALL_DIR/app"
 cp "$BUNDLE_DIR/node/main.py" "$INSTALL_DIR/main.py"
 cp "$BUNDLE_DIR/node/requirements.txt" "$INSTALL_DIR/requirements.txt"
+if [ -f "$BUNDLE_DIR/node/smite-udp-relay.c" ]; then
+    cp "$BUNDLE_DIR/node/smite-udp-relay.c" "$INSTALL_DIR/smite-udp-relay.c"
+fi
 rm -rf "$INSTALL_DIR/cli"
 cp -r "$BUNDLE_DIR/cli" "$INSTALL_DIR/cli"
 # Version marker so the node reports the installed bundle version
@@ -273,10 +292,24 @@ if [ -d "$BUNDLE_DIR/bin" ]; then
         [ -f "$b" ] || continue
         install -m 0755 "$b" "/usr/local/bin/$(basename "$b")"
     done
-    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws, rstund, rstunc, xray, hysteria, tuic-server, tuic-client, usque)"
+    progress "Tunnel binaries installed to /usr/local/bin (gost, rathole, chisel, frpc, frps, backhaul, udp2raw, nfqws, smite-udp-relay, rstund, rstunc, xray, hysteria, tuic-server, tuic-client, usque)"
 else
     echo -e "${RED}No bin/ directory in bundle; node cannot run tunnels without binaries.${NC}"
     exit 1
+fi
+
+# Ensure smite-udp-relay is compiled and executable in /usr/local/bin
+if [ ! -x "/usr/local/bin/smite-udp-relay" ]; then
+    relay_src=""
+    if [ -f "$INSTALL_DIR/smite-udp-relay.c" ]; then
+        relay_src="$INSTALL_DIR/smite-udp-relay.c"
+    elif [ -f "$BUNDLE_DIR/node/smite-udp-relay.c" ]; then
+        relay_src="$BUNDLE_DIR/node/smite-udp-relay.c"
+    fi
+    if [ -n "$relay_src" ] && command -v gcc >/dev/null 2>&1; then
+        gcc -O3 -o /usr/local/bin/smite-udp-relay "$relay_src" 2>/dev/null && chmod 0755 /usr/local/bin/smite-udp-relay || true
+        progress "smite-udp-relay compiled into /usr/local/bin/smite-udp-relay"
+    fi
 fi
 
 # --- Python virtual environment (offline-first, PyPI fallback if reachable) ---
@@ -405,6 +438,14 @@ if [ ! -e /dev/net/tun ]; then
     chmod 600 /dev/net/tun 2>/dev/null || true
 fi
 modprobe tun 2>/dev/null || true
+
+# Ensure netfilter and queue modules for zapret and nextgen tunnels
+for mod in nfnetlink nfnetlink_queue xt_NFQUEUE xt_mark ip_tables iptable_nat iptable_mangle; do
+    modprobe "$mod" 2>/dev/null || true
+    if ! grep -q "^${mod}$" /etc/modules-load.d/*.conf 2>/dev/null && ! grep -q "^${mod}$" /etc/modules 2>/dev/null; then
+        echo "$mod" | tee -a /etc/modules-load.d/smite.conf > /dev/null 2>&1 || echo "$mod" >> /etc/modules 2>/dev/null || true
+    fi
+done
 
 # --- CLI ---
 echo ""

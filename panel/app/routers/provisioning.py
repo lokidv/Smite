@@ -176,6 +176,7 @@ class ProvisionRequest(BaseModel):
     bundle_artifact: Optional[str] = None
     xui_artifact: Optional[str] = None
     system_upgrade: bool = True
+    clean_takeover: bool = False
 
 
 @router.post("/install")
@@ -286,6 +287,7 @@ async def start_install(req: ProvisionRequest, _user=Depends(get_current_user)):
         xui_tarball_path=xui_tarball_path,
         ca_pem=ca_pem,
         system_upgrade=req.system_upgrade,
+        clean_takeover=req.clean_takeover,
         bundle_candidates=bundle_candidates,
     )
 
@@ -298,11 +300,18 @@ async def start_install(req: ProvisionRequest, _user=Depends(get_current_user)):
         import hashlib
         from sqlalchemy import delete as _sa_delete
         from app.database import AsyncSessionLocal as _Session
-        from app.models import RevokedNode as _Revoked
+        from app.models import RevokedNode as _Revoked, Node as _Node
         _fp = hashlib.sha256(f"{req.host}:8888".encode()).hexdigest()[:16]
         try:
             async with _Session() as _s:
-                await _s.execute(_sa_delete(_Revoked).where(_Revoked.fingerprint == _fp))
+                await _s.execute(_sa_delete(_Revoked).where((_Revoked.fingerprint == _fp) | (_Revoked.name == req.node_name)))
+                if req.clean_takeover:
+                    # Reset existing node record with this fingerprint so it re-registers cleanly
+                    _res = await _s.execute(select(_Node).where(_Node.fingerprint == _fp))
+                    _existing = _res.scalar_one_or_none()
+                    if _existing:
+                        _existing.name = req.node_name
+                        _existing.status = "pending"
                 await _s.commit()
         except Exception:
             pass

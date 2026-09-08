@@ -77,7 +77,11 @@ for tool in curl tar unzip gzip python3; do
     command -v "$tool" >/dev/null 2>&1 || fail "Required tool not found: $tool"
 done
 
-VERSION="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || echo "offline")"
+if [ -f "$REPO_ROOT/VERSION" ]; then
+    VERSION="$(cat "$REPO_ROOT/VERSION" | tr -d '[:space:]')"
+else
+    VERSION="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || echo "offline")"
+fi
 
 STAGE_NAME="smite-offline-${ARCH}"
 STAGE="$(mktemp -d)/${STAGE_NAME}"
@@ -218,6 +222,17 @@ NFQWS_BIN="$(find "$DL/zapret" -type f -path "*/binaries/${ZAPRET_ARCH}/nfqws" |
 [ -n "$NFQWS_BIN" ] || fail "nfqws asset for ${ZAPRET_ARCH} not found in zapret release archive"
 install -m 0755 "$NFQWS_BIN" "$STAGE/bin/nfqws"
 progress "zapret/nfqws ${ZAPRET_VERSION}"
+
+# smite-udp-relay (Multi-Port Hopping high-performance userspace UDP relay)
+if command -v gcc >/dev/null 2>&1 && [ -f "$REPO_ROOT/node/smite-udp-relay.c" ]; then
+    gcc -O3 -o "$STAGE/bin/smite-udp-relay" "$REPO_ROOT/node/smite-udp-relay.c"
+    chmod 0755 "$STAGE/bin/smite-udp-relay"
+    progress "smite-udp-relay compiled"
+elif [ -f "$REPO_ROOT/bin/smite-udp-relay" ]; then
+    cp "$REPO_ROOT/bin/smite-udp-relay" "$STAGE/bin/smite-udp-relay"
+    chmod 0755 "$STAGE/bin/smite-udp-relay"
+    progress "smite-udp-relay copied from repo bin/"
+fi
 
 # rstun / TrustTunnel (rstund server + rstunc client, QUIC reverse tunnel)
 # Self-hosted mirror: upstream neevek/rstun was deleted, so the original v0.7.4

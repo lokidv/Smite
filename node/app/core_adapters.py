@@ -1898,6 +1898,47 @@ class TrustTunnelAdapter:
         }
 
 
+def ensure_udp_relay_binary() -> Path:
+    """Ensure /usr/local/bin/smite-udp-relay exists. If missing, compile from source."""
+    bin_path = Path("/usr/local/bin/smite-udp-relay")
+    if bin_path.exists() and os.access(str(bin_path), os.X_OK):
+        return bin_path
+
+    candidates = [
+        Path(__file__).resolve().parent.parent / "smite-udp-relay.c",
+        Path("/opt/smite-node/smite-udp-relay.c"),
+        Path("/tmp/smite-udp-relay.c"),
+    ]
+    src_file = None
+    for c in candidates:
+        if c.exists():
+            src_file = c
+            break
+
+    gcc = shutil.which("gcc")
+    if not gcc and shutil.which("apt-get"):
+        try:
+            logger.info("gcc not found, attempting to install gcc via apt-get...")
+            subprocess.run(["apt-get", "update", "-y"], capture_output=True, timeout=60)
+            subprocess.run(["apt-get", "install", "-y", "gcc"], capture_output=True, timeout=120)
+            gcc = shutil.which("gcc")
+        except Exception as e:
+            logger.warning(f"Could not auto-install gcc: {e}")
+
+    if gcc and src_file:
+        try:
+            res = subprocess.run([gcc, "-O3", "-o", str(bin_path), str(src_file)], capture_output=True, text=True)
+            if res.returncode == 0:
+                bin_path.chmod(0o755)
+                logger.info(f"Compiled smite-udp-relay binary at {bin_path}")
+                return bin_path
+            else:
+                logger.error(f"Failed to compile smite-udp-relay: {res.stderr}")
+        except Exception as e:
+            logger.error(f"Error compiling smite-udp-relay: {e}")
+    return bin_path
+
+
 class ZapretAdapter:
     """zapret DPI-desync adapter (nfqws + NFQUEUE).
 
@@ -1990,7 +2031,7 @@ class ZapretAdapter:
         tunnel_id: str = "",
         target_port: int = 0
     ):
-        # Relay DNAT forwarding: if target_ip is remote and filter_udp is specified, forward incoming UDP to target_ip:target_port
+        # Relay mode: if target_ip is remote and filter_udp is specified, run smite-udp-relay
         if target_ip and filter_udp and tunnel_id:
             import ipaddress
             try:
@@ -1999,40 +2040,45 @@ class ZapretAdapter:
                 is_v4 = True
             if is_v4 and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
                 subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                relay_bin = ensure_udp_relay_binary()
+                actual_tgt_port = target_port or int(str(filter_udp).split(",")[0].split("-")[0].strip())
                 nat_comment = f"smite_zapret_nat_{tunnel_id[:8]}"
-                actual_tgt_port = target_port or int(filter_udp.split(",")[0].split("-")[0])
-                for p in filter_udp.split(","):
-                    p = p.strip()
-                    if p:
-                        cmd_dnat = [
-                            "iptables", "-t", "nat", "-A", "PREROUTING",
-                            "!", "-s", target_ip,
-                            "-p", "udp", "--dport", p,
-                            "-j", "DNAT", "--to-destination", f"{target_ip}:{actual_tgt_port}",
-                            "-m", "comment", "--comment", nat_comment
-                        ]
-                        logger.info(f"Applying zapret DNAT rule: {' '.join(cmd_dnat)}")
-                        self._run_ipt(cmd_dnat)
-                cmd_masq = [
-                    "iptables", "-t", "nat", "-A", "POSTROUTING",
-                    "-p", "udp", "-d", target_ip, "--dport", str(actual_tgt_port),
-                    "-j", "MASQUERADE",
-                    "-m", "comment", "--comment", nat_comment
-                ]
-                logger.info(f"Applying zapret MASQUERADE rule: {' '.join(cmd_masq)}")
-                self._run_ipt(cmd_masq)
+                
+                try:
+                    subprocess.run(["pkill", "-f", f"smite-udp-relay.*{actual_tgt_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+
+                log_file = self.config_dir / f"zap_relay_{tunnel_id}.log"
+                try:
+                    log_f = open(log_file, "w", buffering=1)
+                    proc_relay = subprocess.Popen(
+                        [str(relay_bin), str(actual_tgt_port), target_ip, str(actual_tgt_port)],
+                        stdout=log_f,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True
+                    )
+                    self.processes[f"{tunnel_id}_relay"] = proc_relay
+                    logger.info(f"zapret smite-udp-relay started: {actual_tgt_port} -> {target_ip}:{actual_tgt_port}")
+                except Exception as e:
+                    logger.error(f"Failed to start smite-udp-relay for zapret {tunnel_id}: {e}")
+
                 self._run_ipt([
-                    "iptables", "-I", "FORWARD",
-                    "-p", "udp", "-d", target_ip,
+                    "iptables", "-I", "INPUT",
+                    "-p", "udp", "--dport", str(actual_tgt_port),
                     "-j", "ACCEPT",
                     "-m", "comment", "--comment", nat_comment
                 ])
+
+                # Route outbound packets to NFQUEUE on OUTPUT chain
                 self._run_ipt([
-                    "iptables", "-I", "FORWARD",
-                    "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED",
-                    "-j", "ACCEPT",
+                    "iptables", "-t", "mangle", "-I", "OUTPUT",
+                    "-d", target_ip, "-p", "udp", "--dport", str(actual_tgt_port),
+                    "-m", "mark", "!", "--mark", "0x40000000/0x40000000",
+                    "-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass",
                     "-m", "comment", "--comment", nat_comment
                 ])
+                return
 
         jnfq = ["-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass"]
         cb_orig = ["-m", "connbytes", "--connbytes-dir=original", "--connbytes-mode=packets", "--connbytes", f"1:{max_pkt}"]
@@ -2102,11 +2148,16 @@ class ZapretAdapter:
                 self._run_ipt([ipt, "-t", "mangle", "-X", chain])
         if tunnel_id:
             nat_comment = f"smite_zapret_nat_{tunnel_id[:8]}"
-            for table_chain in [("nat", "PREROUTING"), ("nat", "POSTROUTING")]:
+            zap_comment = f"smite_zap_{tunnel_id[:8]}"
+            for table_chain in [
+                ("nat", "PREROUTING"), ("nat", "POSTROUTING"),
+                ("filter", "FORWARD"), ("filter", "INPUT"),
+                ("mangle", "OUTPUT"), ("mangle", "PREROUTING"), ("mangle", "POSTROUTING")
+            ]:
                 try:
                     out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
                     for line in out.splitlines():
-                        if nat_comment in line and line.startswith("-A"):
+                        if (nat_comment in line or zap_comment in line) and line.startswith("-A"):
                             d_cmd = ["iptables", "-t", table_chain[0], "-D"] + line.split()[1:]
                             subprocess.run(d_cmd, check=False)
                 except Exception:
@@ -2121,10 +2172,78 @@ class ZapretAdapter:
                 pass
 
     def apply(self, tunnel_id: str, spec: Dict[str, Any]):
-        """Apply zapret DPI-desync on a single node (nfqws + NFQUEUE rules)."""
+        """Apply zapret DPI-desync on a single node (nfqws + NFQUEUE rules) or foreign return normalizer."""
         if tunnel_id in self.processes or tunnel_id in self.chains:
             logger.info(f"zapret tunnel {tunnel_id} already exists, removing it first")
             self.remove(tunnel_id)
+
+        mode = spec.get("mode", "client")
+        if mode == "server":
+            # Endpoint / Foreign node mode: accept input on target_port and run return nfqws desync
+            target_port = spec.get("target_port") or 8863
+            try:
+                target_port = int(target_port)
+            except (TypeError, ValueError):
+                target_port = 8863
+            comment = f"smite_zap_{tunnel_id[:8]}"
+            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([
+                "iptables", "-I", "INPUT",
+                "-p", "udp", "--dport", str(target_port),
+                "-j", "ACCEPT",
+                "-m", "comment", "--comment", comment
+            ], check=False)
+
+            # Return desync with nfqws on Foreign node for WireGuard replies
+            import hashlib
+            queue = 300 + (int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16) % 200)
+            try:
+                binary_path = self._resolve_binary_path()
+                cmd_nfqws = [
+                    str(binary_path),
+                    "-q", str(queue),
+                    "--user=root",
+                    f"--filter-udp={target_port}",
+                    "--dpi-desync-any-protocol=1",
+                    "--dpi-desync=ipfrag2",
+                    "--dpi-desync-repeats=2",
+                    "--dpi-desync-ipfrag-pos-udp=8"
+                ]
+                proc = subprocess.Popen(cmd_nfqws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                self.processes[f"{tunnel_id}_nfqws"] = proc
+
+                out_rule = [
+                    "iptables", "-t", "mangle", "-I", "OUTPUT",
+                    "-p", "udp", "--sport", str(target_port),
+                ]
+                client_ip = (spec.get("client_ip") or spec.get("iran_ip") or "").strip()
+                if client_ip and client_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
+                    out_rule.extend(["-d", client_ip])
+                out_rule.extend([
+                    "-m", "mark", "!", "--mark", "0x40000000/0x40000000",
+                    "-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass",
+                    "-m", "comment", "--comment", comment
+                ])
+                subprocess.run(out_rule, check=False)
+                logger.info(f"Zapret Foreign return desync started on sport {target_port}, queue {queue}")
+            except Exception as e:
+                logger.warning(f"Zapret Foreign nfqws failed: {e}")
+
+            subprocess.run([
+                "iptables", "-t", "mangle", "-A", "POSTROUTING",
+                "-p", "udp", "--sport", str(target_port),
+                "-j", "TOS", "--set-tos", "0x00/0xff",
+                "-m", "comment", "--comment", comment
+            ], check=False)
+            subprocess.run([
+                "iptables", "-t", "mangle", "-A", "POSTROUTING",
+                "-p", "udp", "--sport", str(target_port),
+                "-j", "CHECKSUM", "--checksum-fill",
+                "-m", "comment", "--comment", comment
+            ], check=False)
+            self.processes[f"{tunnel_id}_server"] = True
+            logger.info(f"Zapret Foreign server mode applied for tunnel {tunnel_id} on port {target_port}")
+            return True
 
         preset = (spec.get("preset") or "").lower()
         desync_mode = (spec.get("desync_mode") or spec.get("type") or "").lower()
@@ -2142,8 +2261,10 @@ class ZapretAdapter:
         if filter_udp.lower() in ("none", "null", "false", "0"):
             filter_udp = ""
 
-        # Backwards compatibility: if neither is given, default to TCP 443
-        if not filter_tcp and not filter_udp:
+        # If filter_udp is set for WireGuard, do NOT default to TCP 443
+        if filter_udp and spec.get("filter_tcp") in (None, "", "443"):
+            filter_tcp = ""
+        elif not filter_tcp and not filter_udp:
             filter_tcp = "443"
 
         if filter_udp:
@@ -2151,41 +2272,13 @@ class ZapretAdapter:
             # TCP-only split modes (multisplit, fakedsplit, disorder2, etc.) destroy UDP datagrams.
             # TCP fooling (badseq, ts) does nothing for UDP.
             # Must use fake packets with invalid checksum (badsum) or IP layer 3 fragmentation (ipfrag2).
-            if preset == "mci":
-                if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split"):
-                    desync_mode = "fake"
-                if not desync_fooling or "badseq" in desync_fooling or "ts" in desync_fooling:
-                    desync_fooling = "badsum"
-                if not repeats:
-                    repeats = "2"
-            elif preset == "mtn":
-                if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split"):
-                    desync_mode = "fake"
-                if not desync_fooling or "badseq" in desync_fooling:
-                    desync_fooling = "badsum"
-                if not repeats:
-                    repeats = "3"
-            elif preset == "fixed":
-                if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split"):
+            if preset in ("mci", "mtn", "fixed", "hybrid") or not desync_mode:
+                if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split", "fakeddisorder", "fake"):
                     desync_mode = "ipfrag2"
-                if not desync_fooling or "badseq" in desync_fooling:
+                if not desync_fooling or "badseq" in desync_fooling or "ts" in desync_fooling:
                     desync_fooling = "none"
                 if not repeats:
-                    repeats = "1"
-            elif preset == "hybrid":
-                if not desync_mode:
-                    desync_mode = "fake,ipfrag2"
-                if not desync_fooling:
-                    desync_fooling = "badsum"
-                if not repeats:
                     repeats = "2"
-
-            if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split", "fakeddisorder"):
-                desync_mode = "fake"
-            if not desync_fooling or "badseq" in desync_fooling or "ts" in desync_fooling:
-                desync_fooling = "badsum"
-            if not repeats:
-                repeats = "2"
             split_pos = ""
         else:
             # TCP / TLS DPI evasion
@@ -2269,7 +2362,7 @@ class ZapretAdapter:
         extra_args = spec.get("extra_args") or ""
 
         binary_path = self._resolve_binary_path()
-        cmd = [str(binary_path), "-q", str(queue)]
+        cmd = [str(binary_path), "-q", str(queue), "--user=root"]
         if filter_tcp:
             cmd.append(f"--filter-tcp={filter_tcp}")
         if filter_udp:
@@ -2371,29 +2464,51 @@ class ZapretAdapter:
         # Always attempt teardown (idempotent) so leftover rules never accumulate.
         self._teardown_iptables(post_chain, pre_chain, tunnel_id=tunnel_id)
 
-        proc = self.processes.pop(tunnel_id, None)
-        if proc:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            except Exception:
-                pass
+        keys_to_kill = [k for k in self.processes if k == tunnel_id or k.startswith(f"{tunnel_id}_")]
+        for k in keys_to_kill:
+            proc = self.processes.pop(k, None)
+            if proc and hasattr(proc, "terminate"):
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                except Exception:
+                    pass
 
         self._close_log(tunnel_id)
 
     def status(self, tunnel_id: str) -> Dict[str, Any]:
         """Get status"""
         is_running = False
-        proc = self.processes.get(tunnel_id)
-        if proc:
-            is_running = proc.poll() is None
+        if self.processes.get(f"{tunnel_id}_server"):
+            nfq = self.processes.get(f"{tunnel_id}_nfqws")
+            is_running = (nfq is None or (hasattr(nfq, "poll") and nfq.poll() is None))
+        else:
+            procs = [self.processes.get(tunnel_id), self.processes.get(f"{tunnel_id}_relay")]
+            active_procs = [p for p in procs if p is not None and hasattr(p, "poll")]
+            if active_procs:
+                is_running = all(p.poll() is None for p in active_procs)
+            else:
+                proc = self.processes.get(tunnel_id) or self.processes.get(f"{tunnel_id}_relay") or self.processes.get(f"{tunnel_id}_nfqws")
+                if proc and hasattr(proc, "poll"):
+                    is_running = proc.poll() is None
         return {
             "active": is_running,
             "type": "zapret",
             "process_running": is_running
+        }
+
+    def health(self, tunnel_id: str) -> Dict[str, Any]:
+        st = self.status(tunnel_id)
+        is_running = bool(st.get("process_running", False))
+        return {
+            "type": "zapret",
+            "process_running": is_running,
+            "connection_state": "connected" if is_running else "stopped",
+            "recent_errors": 0,
+            "last_event": "",
         }
 
 
@@ -3655,9 +3770,11 @@ class PortHoppingAdapter:
     """Dynamic Multi-Port Hopping adapter for WireGuard UDP.
     
     In dual-node setup (Iran -> Foreign):
-      - Iran node: DNAT forwards port_range and target_port directly to Foreign WireGuard with MASQUERADE.
-      - Foreign node: REDIRECTs port_range directly into target WireGuard listen port.
-    In single-node setup (Direct to Foreign):
+      - Iran node: Runs smite-udp-relay to forward traffic from local port and redirected port_range
+        to Foreign WireGuard, with nfqws ipfrag2 layer-3 desync on outbound UDP to defeat DPI.
+      - Foreign node: Accepts WireGuard traffic on target_port and uses nfqws ipfrag2 desync on
+        outbound WireGuard replies so return packets pass DPI back into Iran.
+    In single-node setup:
       - REDIRECTs port_range directly into target WireGuard listen port.
     Zero userspace CPU overhead, zero extra latency, and wire-speed packet processing.
     """
@@ -3666,68 +3783,185 @@ class PortHoppingAdapter:
     def __init__(self):
         self.state_dir = Path("/var/lib/smite-node")
         self.active_ranges: Dict[str, Dict[str, Any]] = {}
+        self.processes: Dict[str, subprocess.Popen] = {}
 
     def apply(self, tunnel_id: str, spec: Dict[str, Any]):
         self.remove(tunnel_id)
-        target_port = spec.get("target_port") or spec.get("listen_port") or (spec.get("ports", [8581])[0] if isinstance(spec.get("ports"), list) else 8581)
+        target_port = spec.get("target_port") or spec.get("listen_port") or (spec.get("ports", [8863])[0] if isinstance(spec.get("ports"), list) else 8863)
+        try:
+            target_port = int(target_port)
+        except (TypeError, ValueError):
+            target_port = 8863
+
         raw_range = str(spec.get("port_range") or "20000:40000")
         port_range = raw_range.replace("-", ":")
         target_ip = (spec.get("target_ip") or spec.get("foreign_ip") or spec.get("remote_host") or "").strip()
-        
+        mode = spec.get("mode") or ("client" if target_ip and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0") else "server")
         comment = f"smite_hop_{tunnel_id[:8]}"
-        
-        if target_ip and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
-            # Relay / Iran node mode: enable forwarding and DNAT directly to foreign server target_port
-            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            # 1. DNAT port_range directly to target_ip:target_port (with ! -s target_ip to avoid return loops)
-            cmd_dnat_range = [
-                "iptables", "-t", "nat", "-A", "PREROUTING",
-                "!", "-s", target_ip,
-                "-p", "udp", "--dport", port_range,
-                "-j", "DNAT", "--to-destination", f"{target_ip}:{target_port}",
-                "-m", "comment", "--comment", comment
-            ]
-            logger.info(f"Applying PortHopping range DNAT rule: {' '.join(cmd_dnat_range)}")
-            subprocess.run(cmd_dnat_range, check=False)
-            
-            # 2. DNAT target_port to target_ip:target_port
-            cmd_dnat_target = [
-                "iptables", "-t", "nat", "-A", "PREROUTING",
-                "!", "-s", target_ip,
-                "-p", "udp", "--dport", str(target_port),
-                "-j", "DNAT", "--to-destination", f"{target_ip}:{target_port}",
-                "-m", "comment", "--comment", comment
-            ]
-            logger.info(f"Applying PortHopping target DNAT rule: {' '.join(cmd_dnat_target)}")
-            subprocess.run(cmd_dnat_target, check=False)
-            
-            # 3. MASQUERADE outbound UDP to foreign server for target_port
-            cmd_masq = [
-                "iptables", "-t", "nat", "-A", "POSTROUTING",
-                "-p", "udp", "-d", target_ip, "--dport", str(target_port),
-                "-j", "MASQUERADE",
-                "-m", "comment", "--comment", comment
-            ]
-            logger.info(f"Applying PortHopping MASQUERADE rule: {' '.join(cmd_masq)}")
-            subprocess.run(cmd_masq, check=False)
 
-            # 4. FORWARD accept rules for relayed traffic
-            subprocess.run(["iptables", "-I", "FORWARD", "-p", "udp", "-d", target_ip, "-j", "ACCEPT", "-m", "comment", "--comment", comment], check=False)
-            subprocess.run(["iptables", "-I", "FORWARD", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT", "-m", "comment", "--comment", comment], check=False)
-        else:
-            # Endpoint / Foreign node mode: accept input on target_port and normalize return TOS/checksum
-            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            cmd_input = [
+        subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        import hashlib
+        queue = 300 + (int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16) % 200)
+        nfqws_bin = shutil.which("nfqws") or ("/usr/local/bin/nfqws" if os.path.exists("/usr/local/bin/nfqws") else None)
+
+        # Release any leftover socket and stale nfqws on target_port / queue
+        try:
+            subprocess.run(["pkill", "-9", "-f", f"smite-udp-relay.*{target_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-9", "-f", f"nfqws.*filter-udp={target_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-9", "-f", f"nfqws.*-q {queue}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+        # Clean any stale iptables rules targeting this port before adding new ones
+        for table_chain in [("mangle", "OUTPUT"), ("nat", "PREROUTING"), ("filter", "INPUT"), ("mangle", "POSTROUTING")]:
+            try:
+                out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
+                for line in out.splitlines():
+                    if f"{target_port}" in line and ("smite_hop" in line or "smite_zap" in line) and line.startswith("-A"):
+                        subprocess.run(["iptables", "-t", table_chain[0], "-D"] + line.split()[1:], check=False)
+            except Exception:
+                pass
+
+        if mode == "client" and target_ip and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
+            # === IRAN NODE (Relay Mode) ===
+            relay_bin = ensure_udp_relay_binary()
+            log_file = self.state_dir / f"hop_relay_{tunnel_id}.log"
+            proc_relay = None
+            try:
+                log_f = open(log_file, "a", buffering=1)
+                for attempt in range(3):
+                    proc_relay = subprocess.Popen(
+                        [str(relay_bin), str(target_port), target_ip, str(target_port)],
+                        stdout=log_f,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True
+                    )
+                    time.sleep(0.2)
+                    if proc_relay.poll() is None:
+                        self.processes[f"{tunnel_id}_relay"] = proc_relay
+                        logger.info(f"PortHopping smite-udp-relay started: {target_port} -> {target_ip}:{target_port} (PID {proc_relay.pid})")
+                        break
+                    else:
+                        logger.warning(f"smite-udp-relay exited immediately with code {proc_relay.returncode} on attempt {attempt + 1}, retrying...")
+                        time.sleep(0.4)
+            except Exception as e:
+                logger.error(f"Failed to start smite-udp-relay for PortHopping {tunnel_id}: {e}")
+
+            # 1. INPUT accept for target_port
+            subprocess.run([
                 "iptables", "-I", "INPUT",
                 "-p", "udp", "--dport", str(target_port),
                 "-j", "ACCEPT",
                 "-m", "comment", "--comment", comment
-            ]
-            subprocess.run(cmd_input, check=False)
+            ], check=False)
 
-            # International transit drop fix: WireGuard default TOS (0x88) is dropped by upstream transit/firewalls.
-            # Normalizing TOS to 0x00 and filling checksum ensures 100% reliable return delivery.
+            # 2. PREROUTING REDIRECT for port_range -> target_port
+            if port_range:
+                subprocess.run([
+                    "iptables", "-t", "nat", "-A", "PREROUTING",
+                    "-p", "udp", "--dport", port_range,
+                    "-j", "REDIRECT", "--to-ports", str(target_port),
+                    "-m", "comment", "--comment", comment
+                ], check=False)
+
+            # 3. Anti-DPI desync (ipfrag2) on mangle OUTPUT for outbound UDP to foreign server
+            if nfqws_bin:
+                try:
+                    cmd_nfqws = [
+                        str(nfqws_bin),
+                        "-q", str(queue),
+                        "--user=root",
+                        f"--filter-udp={target_port}",
+                        "--dpi-desync-any-protocol=1",
+                        "--dpi-desync=ipfrag2",
+                        "--dpi-desync-repeats=2",
+                        "--dpi-desync-ipfrag-pos-udp=8"
+                    ]
+                    for attempt in range(3):
+                        proc_nfqws = subprocess.Popen(cmd_nfqws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                        time.sleep(0.2)
+                        if proc_nfqws.poll() is None:
+                            self.processes[f"{tunnel_id}_nfqws"] = proc_nfqws
+                            logger.info(f"PortHopping nfqws running on queue {queue} (PID {proc_nfqws.pid})")
+                            break
+                        else:
+                            logger.warning(f"nfqws exited with code {proc_nfqws.returncode} on attempt {attempt + 1}, retrying...")
+                            time.sleep(0.4)
+
+                    subprocess.run([
+                        "iptables", "-t", "mangle", "-I", "OUTPUT",
+                        "-d", target_ip, "-p", "udp", "--dport", str(target_port),
+                        "-m", "mark", "!", "--mark", "0x40000000/0x40000000",
+                        "-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass",
+                        "-m", "comment", "--comment", comment
+                    ], check=False)
+                    logger.info(f"Attached nfqws anti-DPI desync on queue {queue} for PortHopping {tunnel_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to attach nfqws to PortHopping {tunnel_id}: {e}")
+
+        else:
+            # === FOREIGN NODE (Endpoint Mode) ===
+            # 1. Accept input on target_port
+            subprocess.run([
+                "iptables", "-I", "INPUT",
+                "-p", "udp", "--dport", str(target_port),
+                "-j", "ACCEPT",
+                "-m", "comment", "--comment", comment
+            ], check=False)
+
+            # 2. In single-node / direct hop mode, redirect port_range -> target_port
+            if port_range:
+                subprocess.run([
+                    "iptables", "-t", "nat", "-A", "PREROUTING",
+                    "-p", "udp", "--dport", port_range,
+                    "-j", "REDIRECT", "--to-ports", str(target_port),
+                    "-m", "comment", "--comment", comment
+                ], check=False)
+
+            # 3. Attach return desync with nfqws on mangle OUTPUT
+            if nfqws_bin:
+                try:
+                    cmd_nfqws = [
+                        str(nfqws_bin),
+                        "-q", str(queue),
+                        "--user=root",
+                        f"--filter-udp={target_port}",
+                        "--dpi-desync-any-protocol=1",
+                        "--dpi-desync=ipfrag2",
+                        "--dpi-desync-repeats=2",
+                        "--dpi-desync-ipfrag-pos-udp=8"
+                    ]
+                    for attempt in range(3):
+                        proc_nfqws = subprocess.Popen(cmd_nfqws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                        time.sleep(0.2)
+                        if proc_nfqws.poll() is None:
+                            self.processes[f"{tunnel_id}_nfqws"] = proc_nfqws
+                            logger.info(f"PortHopping return nfqws running on queue {queue} (PID {proc_nfqws.pid})")
+                            break
+                        else:
+                            logger.warning(f"Return nfqws exited with code {proc_nfqws.returncode} on attempt {attempt + 1}, retrying...")
+                            time.sleep(0.4)
+
+                    out_rule = [
+                        "iptables", "-t", "mangle", "-I", "OUTPUT",
+                        "-p", "udp", "--sport", str(target_port),
+                    ]
+                    client_ip = (spec.get("client_ip") or spec.get("iran_ip") or "").strip()
+                    if client_ip and client_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
+                        out_rule.extend(["-d", client_ip])
+                    out_rule.extend([
+                        "-m", "mark", "!", "--mark", "0x40000000/0x40000000",
+                        "-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass",
+                        "-m", "comment", "--comment", comment
+                    ])
+                    subprocess.run(out_rule, check=False)
+                    logger.info(f"Attached return nfqws on Foreign sport {target_port}, queue {queue}")
+                except Exception as e:
+                    logger.warning(f"Failed to attach return nfqws on Foreign: {e}")
+
+            # 4. TOS and CHECKSUM fix
             subprocess.run([
                 "iptables", "-t", "mangle", "-A", "POSTROUTING",
                 "-p", "udp", "--sport", str(target_port),
@@ -3751,13 +3985,30 @@ class PortHoppingAdapter:
         return True
 
     def remove(self, tunnel_id: str) -> bool:
+        keys_to_kill = [k for k in list(self.processes.keys()) if k == tunnel_id or k.startswith(f"{tunnel_id}_")]
+        for k in keys_to_kill:
+            proc = self.processes.pop(k, None)
+            if proc:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=1.5)
+                except Exception:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
         comment = f"smite_hop_{tunnel_id[:8]}"
         is_bench = tunnel_id.startswith("bench-")
-        for table_chain in [("nat", "PREROUTING"), ("nat", "POSTROUTING"), ("filter", "INPUT"), ("filter", "FORWARD"), ("mangle", "POSTROUTING")]:
+        for table_chain in [
+            ("nat", "PREROUTING"), ("nat", "POSTROUTING"),
+            ("filter", "INPUT"), ("filter", "FORWARD"),
+            ("mangle", "OUTPUT"), ("mangle", "PREROUTING"), ("mangle", "POSTROUTING")
+        ]:
             try:
                 out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
                 for line in out.splitlines():
-                    matches_comment = comment in line
+                    matches_comment = comment in line or (not is_bench and "smite_hop_" in line)
                     matches_bench = is_bench and ("smite_hop_bench" in line or f"{tunnel_id[:12]}" in line)
                     if (matches_comment or matches_bench) and line.startswith("-A"):
                         d_cmd = ["iptables", "-t", table_chain[0], "-D"] + line.split()[1:]
@@ -3777,11 +4028,38 @@ class PortHoppingAdapter:
                 active = True
         except Exception:
             active = tunnel_id in self.active_ranges
+        if not active:
+            active = any(k.startswith(f"{tunnel_id}_") for k in self.processes)
+
+        relay_proc = self.processes.get(f"{tunnel_id}_relay")
+        if relay_proc is not None and relay_proc.poll() is not None:
+            active = False
+
         return {
             "active": active,
             "type": "mport_hop",
             "process_running": active,
             "info": self.active_ranges.get(tunnel_id, {})
+        }
+
+    def health(self, tunnel_id: str) -> Dict[str, Any]:
+        st = self.status(tunnel_id)
+        relay_proc = self.processes.get(f"{tunnel_id}_relay")
+        relay_alive = relay_proc.poll() is None if relay_proc is not None else True
+        nfqws_proc = self.processes.get(f"{tunnel_id}_nfqws")
+        nfqws_alive = nfqws_proc.poll() is None if nfqws_proc is not None else True
+        is_healthy = st.get("active", False) and relay_alive and nfqws_alive
+        is_running = bool(st.get("process_running", st.get("active", False)))
+        return {
+            **st,
+            "type": "mport_hop",
+            "healthy": is_healthy,
+            "connected": is_healthy,
+            "connection_state": "connected" if is_healthy else "stopped",
+            "process_running": is_running,
+            "relay_running": relay_alive,
+            "recent_errors": 0,
+            "last_event": "",
         }
 
 
@@ -3803,6 +4081,15 @@ class AwgWsAdapter:
         ws_spec["service_type"] = "udp"
         if not ws_spec.get("sni"):
             ws_spec["sni"] = "www.digikala.com"
+        ports = ws_spec.get("ports", [])
+        if not ws_spec.get("target_port") and ports:
+            ws_spec["target_port"] = ports[0]
+        tp = ws_spec.get("target_port") or (ports[0] if ports else None)
+        if tp:
+            try:
+                subprocess.run(["pkill", "-f", f"smite-udp-relay.*{tp}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
         return self._inner.apply(tunnel_id, ws_spec)
 
     def remove(self, tunnel_id: str) -> bool:
@@ -3839,6 +4126,13 @@ class FecFakeTcpAdapter:
         fec_spec["cipher_mode"] = cipher
         fec_spec["auth_mode"] = fec_spec.get("auth_mode") or "md5"
         fec_spec["seq_mode"] = fec_spec.get("seq_mode") or 1
+        ports = fec_spec.get("ports", [])
+        tp = fec_spec.get("target_port") or fec_spec.get("listen_port") or (ports[0] if ports else None)
+        if tp:
+            try:
+                subprocess.run(["pkill", "-f", f"smite-udp-relay.*{tp}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
         return self._inner.apply(tunnel_id, fec_spec)
 
     def remove(self, tunnel_id: str) -> bool:
@@ -4042,13 +4336,16 @@ class AdapterManager:
         adapter.apply(tunnel_id, spec)
         self.active_tunnels[tunnel_id] = adapter
         
-        self.tunnel_configs[tunnel_id] = {
-            "core": tunnel_core,
-            "spec": spec.copy()
-        }
-        logger.info(f"Saving tunnel {tunnel_id} to persistent storage (core={tunnel_core}, mode={spec.get('mode', 'N/A')})")
-        self._save_tunnels()
-        logger.info(f"Tunnel {tunnel_id} applied and saved successfully (core={tunnel_core}, mode={spec.get('mode', 'N/A')}, total_saved={len(self.tunnel_configs)})")
+        if not (tunnel_id.startswith("bench-") or tunnel_id.startswith("test-")):
+            self.tunnel_configs[tunnel_id] = {
+                "core": tunnel_core,
+                "spec": spec.copy()
+            }
+            logger.info(f"Saving tunnel {tunnel_id} to persistent storage (core={tunnel_core}, mode={spec.get('mode', 'N/A')})")
+            self._save_tunnels()
+            logger.info(f"Tunnel {tunnel_id} applied and saved successfully (core={tunnel_core}, mode={spec.get('mode', 'N/A')}, total_saved={len(self.tunnel_configs)})")
+        else:
+            logger.info(f"Ephemeral tunnel {tunnel_id} applied (skipping persistent storage save)")
     
     async def remove_tunnel(self, tunnel_id: str):
         """Remove tunnel"""
@@ -4155,10 +4452,16 @@ class AdapterManager:
             alive = True
             try:
                 procs = getattr(adapter, "processes", None)
-                if isinstance(procs, dict) and tid in procs:
-                    alive = procs[tid].poll() is None
+                if isinstance(procs, dict):
+                    # Check all subprocesses tracked for this tunnel ID (e.g. {tid}, {tid}_relay, {tid}_nfqws)
+                    subprocs = [p for k, p in procs.items() if (k == tid or k.startswith(f"{tid}_")) and hasattr(p, "poll")]
+                    if subprocs:
+                        alive = all(p.poll() is None for p in subprocs)
+                    elif tid in procs and hasattr(procs[tid], "poll"):
+                        alive = procs[tid].poll() is None
+                    else:
+                        alive = True
                 else:
-                    # Process handle not tracked in memory; don't guess it's dead.
                     alive = True
             except Exception:
                 alive = True
@@ -4182,7 +4485,14 @@ class AdapterManager:
         return restarted
 
     async def cleanup(self):
-        """Cleanup all tunnels"""
+        """Cleanup running tunnel processes on agent shutdown WITHOUT erasing persisted configs."""
         for tunnel_id in list(self.active_tunnels.keys()):
-            await self.remove_tunnel(tunnel_id)
+            adapter = self.active_tunnels.pop(tunnel_id, None)
+            if adapter:
+                try:
+                    adapter.remove(tunnel_id)
+                except Exception as e:
+                    logger.warning(f"Error stopping adapter {getattr(adapter, 'name', 'unknown')} for {tunnel_id}: {e}")
+        # Note: Do NOT delete self.tunnel_configs and do NOT call self._save_tunnels() here!
+        # Persisted configs in tunnels.json must be preserved across restarts so restore_tunnels() works on startup.
 

@@ -96,6 +96,7 @@ class ProvisionParams:
     ca_pem: str = ""
     # Run apt-get update + upgrade on the target before installing.
     system_upgrade: bool = True
+    clean_takeover: bool = False
     # All uploaded Smite offline bundles (the panel auto-picks the one matching
     # the target's arch + Python version).
     bundle_candidates: List[str] = field(default_factory=list)
@@ -144,6 +145,7 @@ class ProvisioningJob:
                     "install_wireguard": self.params.install_wireguard,
                     "install_openvpn": self.params.install_openvpn,
                     "install_warp": self.params.install_warp,
+                    "clean_takeover": self.params.clean_takeover,
                 },
             }
 
@@ -283,6 +285,14 @@ def _execute(job: ProvisioningJob) -> None:
         # interpreter (used to pick the matching offline bundle).
         py = _detect_python(ssh, job)
         job.results["target"]["python"] = py
+
+        if p.clean_takeover:
+            _step(
+                job,
+                "clean_takeover",
+                "Clean takeover from previous panel",
+                lambda: _clean_takeover_target(ssh, job),
+            )
 
         if p.install_node:
             _step(job, "node", "Install Smite node", lambda: _install_node(ssh, job, arch, py))
@@ -530,6 +540,69 @@ def _fetch_and_push_bundle(job: ProvisioningJob, ssh: SSHSession, url: str, asse
             pass
 
 
+# -- step: clean takeover ----------------------------------------------------
+def _clean_takeover_target(ssh: SSHSession, job: ProvisioningJob) -> Dict[str, Any]:
+    """Purge legacy services, tunnel processes, network interfaces, iptables rules,
+    old CA certs and stale tunnel configs left over from an old panel (e.g. v7.2)."""
+    job.log("Starting clean takeover: purging old panel connections, legacy services & stale tunnels...", "info")
+    clean_script = """#!/bin/bash
+set +e
+echo "1. Stopping and disabling legacy systemd services..."
+systemctl stop smite-node smite smite-agent 2>/dev/null || true
+systemctl disable smite-node smite smite-agent 2>/dev/null || true
+
+echo "2. Removing legacy Docker containers..."
+if command -v docker >/dev/null 2>&1; then
+    docker rm -f smite-node smite smite-panel 2>/dev/null || true
+    docker rm -f $(docker ps -aq --filter name=smite) 2>/dev/null || true
+    docker compose -f /opt/smite/docker-compose.yml down 2>/dev/null || true
+    docker compose -f /root/smite/docker-compose.yml down 2>/dev/null || true
+fi
+
+echo "3. Terminating lingering tunnel processes..."
+for proc in smite-node gost rathole chisel frpc frps udp2raw backhaul awg nfqws wsproxy mport-relay faketcp-relay speeder amneziawg-go wireguard-go; do
+    pkill -9 -f "$proc" 2>/dev/null || true
+done
+
+echo "4. Removing legacy WireGuard / TUN network interfaces..."
+for dev in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -E '^(awg|wg[0-9]|tun_smite)'); do
+    ip link set down dev "$dev" 2>/dev/null || true
+    ip link delete dev "$dev" 2>/dev/null || true
+done
+
+echo "5. Cleaning stale iptables redirect & NFQUEUE rules..."
+if command -v iptables >/dev/null 2>&1; then
+    iptables -S INPUT 2>/dev/null | grep -E 'NFQUEUE' | while read -r line; do
+        iptables -D ${line#-A } 2>/dev/null || true
+    done
+    iptables -t mangle -S OUTPUT 2>/dev/null | grep -E 'NFQUEUE' | while read -r line; do
+        iptables -t mangle -D ${line#-A } 2>/dev/null || true
+    done
+    iptables -t nat -S PREROUTING 2>/dev/null | grep -E '127\\.0\\.0\\.1|REDIRECT|NFQUEUE' | while read -r line; do
+        iptables -t nat -D ${line#-A } 2>/dev/null || true
+    done
+    iptables -S INPUT 2>/dev/null | grep -E '\\-j DROP' | grep -E 'tcp' | while read -r line; do
+        iptables -D ${line#-A } 2>/dev/null || true
+    done
+fi
+
+echo "6. Wiping old panel credentials, CA certificates and stale tunnel database..."
+rm -rf /etc/smite-node/certs/* 2>/dev/null || true
+rm -f /etc/smite-node/.env 2>/dev/null || true
+rm -f /var/lib/smite-node/tunnels.json /var/lib/smite-node/node_id /var/lib/smite-node/node.json /var/lib/smite-node/health.json 2>/dev/null || true
+mkdir -p /var/lib/smite-node
+echo "{}" > /var/lib/smite-node/tunnels.json
+
+echo "Clean takeover preparation completed successfully."
+"""
+    remote_clean_script = "/tmp/smite_clean_takeover.sh"
+    ssh.put_text(clean_script, remote_clean_script, mode=0o755)
+    _run(job, ssh, f"bash {remote_clean_script}", timeout=180, allow_fail=True)
+    _run(job, ssh, f"rm -f {remote_clean_script}", timeout=30, allow_fail=True)
+    job.log("Clean takeover completed: server is ready for fresh enrollment.", "info")
+    return {"cleaned": True}
+
+
 # -- step: node --------------------------------------------------------------
 def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str, py: str) -> Dict[str, Any]:
     p = job.params
@@ -562,7 +635,8 @@ def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str, py: str) -> 
         f"NODE_API_PORT=8888 "
         f"NODE_NAME={shlex.quote(p.node_name)} "
         f"NODE_ROLE={shlex.quote(p.role)} "
-        f"PANEL_CA_FILE={REMOTE_CA}"
+        f"PANEL_CA_FILE={REMOTE_CA} "
+        f"CLEAN_TAKEOVER={'1' if p.clean_takeover else '0'}"
     )
 
     if bundle:

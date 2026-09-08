@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
     "monitor_enabled": True,
     "auto_heal_enabled": True,
     "interval_seconds": 45,
-    "unhealthy_threshold": 2,       # consecutive bad cycles before auto-heal
+    "unhealthy_threshold": 5,       # consecutive bad cycles before auto-heal (~3.5 mins)
     "heal_cooldown_seconds": 180,   # min seconds between heals of one tunnel
     "max_heals_per_cycle": 5,
     "max_removes_per_cycle": 25,
@@ -126,10 +126,10 @@ class HealthMonitor:
     # ---- helpers ----
     @staticmethod
     def _required_ends(t: Tunnel) -> List[str]:
-        if t.core in {"zapret", "snispoof", "warp"}:
+        if t.core in {"snispoof", "warp"}:
             iran = t.iran_node_id or t.node_id
             return [iran] if iran else []
-        if t.core == "mport_hop":
+        if t.core in {"zapret", "mport_hop"}:
             ends = []
             iran = t.iran_node_id or t.node_id
             if iran:
@@ -207,6 +207,9 @@ class HealthMonitor:
                 desired = self._desired_tids_for_node(n.id, tunnels)
                 orphans = running - desired
                 for tid in orphans:
+                    # Ephemeral benchmark and test tunnels are managed exclusively by BenchmarkManager.
+                    if tid.startswith("bench-") or tid.startswith("test-"):
+                        continue
                     # Don't disturb a brand-new tunnel still being provisioned on
                     # its correct node (it would be in `desired` there anyway).
                     if tid in tunnels_by_id and tid in young_ids:
@@ -286,6 +289,7 @@ class HealthMonitor:
                     can_heal = (
                         auto_heal
                         and t.id not in young_ids
+                        and health in ("disconnected", "stopped")
                         and self._bad_counts[t.id] >= threshold
                         and (now - self._last_heal.get(t.id, 0)) >= cooldown
                         and heals_done < int(cfg.get("max_heals_per_cycle", 5))

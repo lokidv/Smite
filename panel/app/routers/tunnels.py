@@ -199,6 +199,18 @@ def normalize_zapret_spec(spec: dict) -> dict:
         # UDP / WireGuard anti-DPI evasion
         # TCP-only split modes (multisplit, fakedsplit, disorder2) destroy WireGuard UDP packets.
         # Instead, use fake packet with invalid UDP checksum (badsum) or IP fragmentation (ipfrag2).
+        if s.get("filter_tcp") in (None, "", "443"):
+            s["filter_tcp"] = ""
+        s.setdefault("direction", "out")
+        s.setdefault("filter_l7", "")
+
+        try:
+            udp_p = int(str(s.get("filter_udp")).split(",")[0].split("-")[0].strip())
+            s.setdefault("target_port", udp_p)
+            s.setdefault("ports", [udp_p])
+        except (TypeError, ValueError):
+            pass
+
         if preset == "mci":
             s.setdefault("desync_mode", "fake")
             s.setdefault("desync_fooling", "badsum")
@@ -597,9 +609,15 @@ def build_obfs4_specs(spec: dict, tunnel_id: str, iran_ip: str, foreign_ip: str)
 
 def normalize_mport_hop_spec(spec: dict) -> dict:
     s = dict(spec or {})
-    s.setdefault("target_port", 8581)
+    ports_list = s.get("ports", [])
+    p0 = ports_list[0] if isinstance(ports_list, list) and ports_list else 8863
+    try:
+        p0 = int(p0)
+    except (ValueError, TypeError):
+        p0 = 8863
+    s.setdefault("target_port", p0)
     s.setdefault("port_range", "20000:40000")
-    s.setdefault("ports", [int(s["target_port"]) if str(s["target_port"]).isdigit() else 8581])
+    s.setdefault("ports", [int(s["target_port"]) if str(s["target_port"]).isdigit() else p0])
     return s
 
 
@@ -617,12 +635,14 @@ SINGLE_NODE_NORMALIZERS = {
 # Cores that support in-place core/type change (dual-node reverse cores).
 # zapret (single-node DPI bypass) and gost (panel-side forwarder) are excluded
 # because their semantics/topology differ from the reverse cores.
-CHANGEABLE_CORES = {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "awg_ws", "fec_faketcp"}
+CHANGEABLE_CORES = {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "awg_ws", "fec_faketcp", "mport_hop", "zapret"}
 
 # Valid tunnel types per changeable core (first entry = default).
 CORE_TYPE_OPTIONS = {
     "awg_ws": ["tls", "ws"],
     "fec_faketcp": ["faketcp", "icmp", "udp"],
+    "mport_hop": ["udp"],
+    "zapret": ["mci", "mtn", "fixed", "hybrid"],
     "rathole": ["tcp", "ws", "tls"],
     "backhaul": ["tcp", "udp", "ws", "wsmux", "tcpmux"],
     "chisel": ["chisel"],
@@ -671,8 +691,12 @@ def extract_exposed_ports(core: str, spec: dict) -> list:
         if listen_port:
             add(listen_port, spec.get("target_host"), spec.get("target_port"))
     elif core == "mport_hop":
-        target_port = spec.get("target_port") or 8581
+        target_port = spec.get("target_port") or 8863
         add(target_port, spec.get("target_host"), target_port)
+    elif core == "zapret":
+        p = spec.get("target_port") or spec.get("filter_udp") or (ports[0] if ports else 8863)
+        if str(p).isdigit():
+            add(int(p), spec.get("target_ip"), int(p))
     elif ports:
         for p in ports:
             if isinstance(p, dict):
@@ -750,9 +774,12 @@ def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: 
             "transport": new_type,
             "type": new_type,
             "token": generate_token(),
+            "control_port": 23333 + (port_hash % 1000),
             "remote_addr": f"0.0.0.0:{23333 + (port_hash % 1000)}",
             "remote_port": primary["port"],
             "ports": ports_int,
+            "target_host": target_host,
+            "target_port": primary["port"],
             "service_type": "udp" if (new_type == "tls" or new_core == "awg_ws") else "tcp",
         }
         if new_type == "tls" or new_core == "awg_ws":
@@ -798,6 +825,26 @@ def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: 
             "target_port": int(primary.get("target_port") or primary["port"]),
             "control_port": 443,
             "ports": ports_int,
+        }
+    if new_core == "mport_hop":
+        return {
+            "type": new_type or "udp",
+            "target_port": primary["port"],
+            "port_range": "20000:40000",
+            "ports": [primary["port"]],
+        }
+    if new_core == "zapret":
+        preset = new_type if new_type in ("mci", "mtn", "fixed", "hybrid") else "mci"
+        return {
+            "preset": preset,
+            "filter_udp": str(primary["port"]),
+            "filter_tcp": "",
+            "target_port": primary["port"],
+            "ports": [primary["port"]],
+            "desync_mode": "ipfrag2",
+            "desync_fooling": "none",
+            "repeats": 2,
+            "direction": "out",
         }
     raise HTTPException(status_code=400, detail=f"Unsupported core for change: {new_core}")
 
@@ -989,11 +1036,13 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
         port_range = spec_for_node.get("port_range") or "20000:40000"
 
         # 1. Apply on Foreign node (server mode: REDIRECT port_range -> target_port)
+        iran_ip = iran_node.node_metadata.get("ip_address")
         foreign_spec = {
             "mode": "server",
             "target_port": target_port,
             "port_range": port_range,
-            "ports": [target_port]
+            "ports": [target_port],
+            "client_ip": iran_ip,
         }
         client = NodeClient()
         resp_f = await client.send_to_node(
@@ -1044,19 +1093,44 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
         await db.refresh(db_tunnel)
         return db_tunnel
 
-    # If zapret target_ip was omitted, empty, or default, auto-populate from foreign_node_id
+    # Dual-node Zapret: if foreign_node_id is provided, orchestrate both nodes
     if core == "zapret" and getattr(db_tunnel, "foreign_node_id", None):
         tgt = (spec_for_node.get("target_ip") or "").strip()
-        if not tgt or tgt == "104.19.229.21":
-            f_res = await db.execute(select(Node).where(Node.id == db_tunnel.foreign_node_id))
-            f_node = f_res.scalar_one_or_none()
-            if f_node and f_node.node_metadata.get("ip_address"):
+        f_res = await db.execute(select(Node).where(Node.id == db_tunnel.foreign_node_id))
+        f_node = f_res.scalar_one_or_none()
+        if f_node and f_node.node_metadata.get("ip_address"):
+            if not tgt or tgt == "104.19.229.21":
                 spec_for_node["target_ip"] = f_node.node_metadata.get("ip_address")
         if not spec_for_node.get("target_port") and spec_for_node.get("filter_udp"):
             try:
                 spec_for_node["target_port"] = int(str(spec_for_node["filter_udp"]).split(",")[0].split("-")[0].strip())
             except (TypeError, ValueError):
                 pass
+
+        # Apply endpoint mode on Foreign node (accept input and normalize return TOS/checksum)
+        if f_node:
+            f_target_port = spec_for_node.get("target_port") or 8863
+            if not f_node.node_metadata.get("api_address"):
+                f_node.node_metadata["api_address"] = f"http://{f_node.node_metadata.get('ip_address', f_node.fingerprint)}:{f_node.node_metadata.get('api_port', 8888)}"
+                await db.commit()
+            client_f = NodeClient()
+            try:
+                await client_f.send_to_node(
+                    node_id=f_node.id,
+                    endpoint="/api/agent/tunnels/apply",
+                    data={
+                        "tunnel_id": db_tunnel.id,
+                        "core": "zapret",
+                        "type": db_tunnel.type or "mci",
+                        "spec": {
+                            "mode": "server",
+                            "target_port": f_target_port,
+                            "client_ip": node.node_metadata.get("ip_address"),
+                        },
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Zapret: failed to apply return normalizer on foreign node: {e}")
 
     # Persist normalized fields (e.g. the auto-generated snispoof inbound_uuid)
     # so re-applies and the UI always see the same values.
@@ -1298,6 +1372,36 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     
     foreign_node_id_to_store = (foreign_node.id if foreign_node else None) or tunnel.foreign_node_id or None
     iran_node_id_to_store = (iran_node.id if iran_node else None) or tunnel.iran_node_id or None
+
+    # Defensive check: detect port collisions with active tunnels on the same Iran node
+    target_iran_id = iran_node_id_to_store or tunnel_node_id
+    if target_iran_id and tunnel.spec:
+        candidate_ports = set()
+        p_list = tunnel.spec.get("ports") or []
+        for p in p_list:
+            if isinstance(p, (int, str)) and str(p).isdigit():
+                candidate_ports.add(int(p))
+        single_p = tunnel.spec.get("listen_port") or tunnel.spec.get("target_port") or tunnel.spec.get("remote_port") or tunnel.spec.get("filter_udp")
+        if single_p and str(single_p).isdigit():
+            candidate_ports.add(int(single_p))
+
+        if candidate_ports:
+            res_active = await db.execute(
+                select(Tunnel).where(
+                    Tunnel.status.in_(["active", "pending"]),
+                    (Tunnel.iran_node_id == target_iran_id) | (Tunnel.node_id == target_iran_id)
+                )
+            )
+            for active_t in res_active.scalars().all():
+                active_exposed = extract_exposed_ports(active_t.core, active_t.spec)
+                active_ports = {e["port"] for e in active_exposed}
+                overlap = candidate_ports.intersection(active_ports)
+                if overlap:
+                    port_str = ", ".join(map(str, overlap))
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Port(s) {port_str} already in use by active tunnel '{active_t.name}' ({active_t.core}). Please stop or delete that tunnel first, or use 'Change Core' to switch in place."
+                    )
     
     db_tunnel = Tunnel(
         name=tunnel.name,
@@ -1447,6 +1551,8 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
                 client_spec["type"] = transport
                 client_spec["token"] = token
                 client_spec["ports"] = ports  # Pass ports to client
+                if not client_spec.get("target_port") and ports:
+                    client_spec["target_port"] = ports[0]
                 if "websocket_tls" in server_spec:
                     client_spec["websocket_tls"] = server_spec["websocket_tls"]
                 elif "tls" in server_spec:
@@ -3223,7 +3329,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
             return {"status": "applied", "message": "Tunnel reapplied successfully"}
         raise HTTPException(status_code=500, detail=tunnel.error_message or f"Failed to apply {tunnel.core} tunnel")
 
-    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4"}
+    is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4", "awg_ws", "fec_faketcp"}
     foreign_node = None
     iran_node = None
     
@@ -3407,14 +3513,25 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                     else:
                         client_spec["ports"] = ports
                 
-                elif tunnel.core == "rathole":
-                    transport = spec.get("transport") or spec.get("type") or "tcp"
+                elif tunnel.core in ("rathole", "awg_ws"):
+                    transport = spec.get("transport") or spec.get("type") or ("tls" if tunnel.core == "awg_ws" else "tcp")
                     proxy_port = spec.get("remote_port") or spec.get("listen_port")
+                    if not proxy_port:
+                        ports = parse_ports_from_spec(spec)
+                        if ports:
+                            proxy_port = ports[0]
                     token = spec.get("token")
+                    if not token:
+                        from app.utils import generate_token
+                        token = generate_token()
+                        spec["token"] = token
+                        tunnel.spec["token"] = token
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(tunnel, "spec")
 
-                    # WireGuard Stealth (rathole-TLS): make sure cert material is
+                    # WireGuard Stealth (rathole-TLS / awg_ws): make sure cert material is
                     # present (persist for older tunnels), then refresh our spec copy.
-                    if (transport or "tcp").lower() == "tls":
+                    if (transport or "tcp").lower() in ("tls", "ws", "websocket") or tunnel.core == "awg_ws":
                         from app.tls_utils import ensure_wg_stealth_materials
                         if ensure_wg_stealth_materials(tunnel.spec, tunnel.spec.get("sni")):
                             from sqlalchemy.orm.attributes import flag_modified
@@ -3445,6 +3562,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                     server_spec["bind_addr"] = f"0.0.0.0:{control_port}"
                     server_spec["control_port"] = control_port
                     server_spec["proxy_port"] = proxy_port
+                    server_spec["ports"] = [proxy_port]
                     server_spec["transport"] = transport
                     server_spec["token"] = token
                     
@@ -3466,6 +3584,15 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         client_spec["remote_addr"] = f"{iran_node_ip}:{control_port}"
                     client_spec["transport"] = transport
                     client_spec["token"] = token
+                    client_spec["ports"] = [proxy_port]
+                    client_spec["target_port"] = proxy_port
+                    client_spec["target_host"] = spec.get("target_host", "127.0.0.1")
+                    if tunnel.core == "awg_ws":
+                        server_spec["service_type"] = "udp"
+                        client_spec["service_type"] = "udp"
+                        if not server_spec.get("sni"):
+                            server_spec["sni"] = "www.digikala.com"
+                        client_spec["sni"] = server_spec["sni"]
                 
                 elif tunnel.core == "chisel":
                     listen_port = spec.get("listen_port") or spec.get("remote_port")
@@ -3500,7 +3627,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         client_spec["server_url"] = f"http://{iran_node_ip}:{server_control_port}"
                     client_spec["reverse_port"] = listen_port
                 
-                elif tunnel.core == "udp2raw":
+                elif tunnel.core in ("udp2raw", "fec_faketcp"):
                     # Iran node runs the udp2raw CLIENT (public entry), foreign node
                     # runs the udp2raw SERVER. server_spec -> iran, client_spec -> foreign.
                     raw_mode = (tunnel.type or spec.get("raw_mode") or "faketcp").lower()
@@ -3696,7 +3823,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         "tunnel_id": tunnel.id,
                         "core": tunnel.core,
                         "type": tunnel.type,
-                        "spec": server_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel", "hysteria2", "tuic"] else spec
+                        "spec": server_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel", "hysteria2", "tuic", "awg_ws", "fec_faketcp"] else spec
                     }
                 )
                 
@@ -3719,7 +3846,7 @@ async def apply_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Depe
                         "tunnel_id": tunnel.id,
                         "core": tunnel.core,
                         "type": tunnel.type,
-                        "spec": client_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel", "hysteria2", "tuic"] else spec
+                        "spec": client_spec if tunnel.core in ["backhaul", "frp", "rathole", "chisel", "udp2raw", "trusttunnel", "hysteria2", "tuic", "awg_ws", "fec_faketcp"] else spec
                     }
                 )
                 

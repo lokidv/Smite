@@ -101,6 +101,10 @@ interface Translations {
     roleForeign: string
     systemUpgrade: string
     systemUpgradeDesc: string
+    cleanTakeover: string
+    cleanTakeoverDesc: string
+    cleanTakeoverResult: string
+    cleanTakeoverResultDesc: string
     nodeName: string
     panelSection: string
     panelHost: string
@@ -612,6 +616,10 @@ const translations: Record<Language, Translations> = {
       roleForeign: 'Foreign Server',
       systemUpgrade: 'Update & upgrade the server first',
       systemUpgradeDesc: 'Runs apt-get update and upgrade and installs prerequisites (python3, venv, curl) before installing. Recommended; adds a few minutes.',
+      cleanTakeover: 'Clean Takeover / Migration from Old Panel',
+      cleanTakeoverDesc: 'Purges legacy node services, stops lingering tunnel processes, flushes old tunnel redirect rules, and wipes stale certificates & tunnel databases before enrolling into this panel. Highly recommended when migrating a node from an older panel (e.g. v7.2).',
+      cleanTakeoverResult: 'Clean Takeover & Migration',
+      cleanTakeoverResultDesc: 'Old panel services, lingering processes, and stale tunnel configs were completely purged.',
       nodeName: 'Node Name',
       panelSection: 'Panel Address (given to the node)',
       panelHost: 'Panel Host / IP',
@@ -1129,6 +1137,10 @@ const translations: Record<Language, Translations> = {
       roleForeign: 'سرور خارج',
       systemUpgrade: 'ابتدا سرور را آپدیت و آپگرید کن',
       systemUpgradeDesc: 'قبل از نصب، apt-get update و upgrade را اجرا و پیش‌نیازها (python3، venv، curl) را نصب می‌کند. توصیه می‌شود؛ چند دقیقه زمان می‌برد.',
+      cleanTakeover: 'مهاجرت و انتقال تمیز از پنل قبلی',
+      cleanTakeoverDesc: 'سرویس‌ها و کانتینرهای نود قبلی را متوقف، پروسه‌ها و پورت‌های اشغال‌شده را آزاد، و گواهی‌ها و دیتابیس تونل‌های قدیمی را کاملاً پاکسازی می‌کند تا نود بدون تداخل به این پنل جدید متصل شود (مناسب انتقال نود از پنل‌های قبلی مانند نسخه 7.2).',
+      cleanTakeoverResult: 'پاکسازی و مهاجرت از پنل قبلی',
+      cleanTakeoverResultDesc: 'سرویس‌ها، پروسه‌ها و کانفیگ‌های باقیمانده از پنل قبلی با موفقیت به صورت کامل پاکسازی شدند.',
       nodeName: 'نام نود',
       panelSection: 'آدرس پنل (به نود داده می‌شود)',
       panelHost: 'هاست / آی‌پی پنل',

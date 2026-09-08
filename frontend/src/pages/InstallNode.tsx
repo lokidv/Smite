@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Copy, Check, Loader2, Play, Server, Upload, Trash2, Globe, Package, Shield, AlertTriangle } from 'lucide-react'
+import { Copy, Check, Loader2, Play, Server, Upload, Trash2, Globe, Package, Shield, AlertTriangle, RefreshCw } from 'lucide-react'
 import api from '../api/client'
 import { useLanguage } from '../contexts/LanguageContext'
 
@@ -53,6 +53,7 @@ const InstallNode = () => {
   const [installOpenvpn, setInstallOpenvpn] = useState(false)
   const [installWarp, setInstallWarp] = useState(false)
   const [systemUpgrade, setSystemUpgrade] = useState(true)
+  const [cleanTakeover, setCleanTakeover] = useState(false)
   const [xuiPort, setXuiPort] = useState('')
   const [xuiUsername, setXuiUsername] = useState('')
   const [xuiPassword, setXuiPassword] = useState('')
@@ -243,6 +244,7 @@ const InstallNode = () => {
         warp_proxy_user: warpProxyUser || null,
         warp_proxy_pass: warpProxyPass || null,
         system_upgrade: systemUpgrade,
+        clean_takeover: cleanTakeover,
         xui_version: 'v2.9.4',
         xui_port: xuiPort ? parseInt(xuiPort) : null,
         xui_username: xuiUsername || null,
@@ -318,6 +320,7 @@ const InstallNode = () => {
   const wgRes = job?.results?.wireguard
   const ovpnRes = job?.results?.openvpn
   const warpRes = job?.results?.warp
+  const cleanRes = job?.results?.clean_takeover
   const jobActive = job && (job.status === 'pending' || job.status === 'running')
 
   return (
@@ -393,6 +396,28 @@ const InstallNode = () => {
               <div className="flex-1">
                 <div className="text-sm font-medium text-gray-900 dark:text-white">{tr.systemUpgrade}</div>
                 <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{tr.systemUpgradeDesc}</div>
+              </div>
+            </label>
+
+            <label className={`mt-3 flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+              cleanTakeover
+                ? 'border-amber-300 dark:border-amber-700/80 bg-amber-50/60 dark:bg-amber-950/20'
+                : 'border-gray-200 dark:border-gray-700'
+            }`}>
+              <input
+                type="checkbox"
+                checked={cleanTakeover}
+                onChange={(e) => setCleanTakeover(e.target.checked)}
+                className="mt-1 w-4 h-4 text-amber-600 rounded"
+              />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                  <RefreshCw size={15} className="text-amber-500" />
+                  {tr.cleanTakeover}
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
+                  {tr.cleanTakeoverDesc}
+                </div>
               </div>
             </label>
           </div>
@@ -764,13 +789,27 @@ const InstallNode = () => {
           </div>
 
           {/* Results */}
-          {(nodeRes || xuiRes || wgRes || ovpnRes || warpRes) && (
+          {(cleanRes || nodeRes || xuiRes || wgRes || ovpnRes || warpRes) && (
             <div className={sectionCls}>
               <h2 className={sectionTitleCls}>
                 <Shield size={20} className="text-violet-500" />
                 {tr.resultsSection}
               </h2>
               <div className="space-y-5">
+                {cleanRes && (
+                  <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <RefreshCw size={16} className="text-amber-500" />
+                        {tr.cleanTakeoverResult}
+                      </h3>
+                      {statusBadge(cleanRes.status)}
+                    </div>
+                    {cleanRes.error && <div className="text-xs text-red-500 mb-2" dir="auto">{cleanRes.error}</div>}
+                    <p className="text-xs text-gray-600 dark:text-gray-300" dir="auto">{tr.cleanTakeoverResultDesc}</p>
+                  </div>
+                )}
+
                 {nodeRes && (
                   <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
                     <div className="flex items-center justify-between mb-2">

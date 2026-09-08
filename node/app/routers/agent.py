@@ -142,7 +142,7 @@ async def get_health(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
     return {
         "status": "ok",
-        "running": list(adapter_manager.active_tunnels.keys()),
+        "running": [t for t in adapter_manager.active_tunnels.keys() if not (t.startswith("bench-") or t.startswith("test-"))],
         "tunnels": health,
     }
 
@@ -151,11 +151,11 @@ async def get_health(request: Request):
 async def get_status(request: Request):
     """Get node status"""
     adapter_manager = request.app.state.adapter_manager
-    
+    tunnels = [t for t in adapter_manager.active_tunnels.keys() if not (t.startswith("bench-") or t.startswith("test-"))]
     return {
         "status": "ok",
-        "active_tunnels": len(adapter_manager.active_tunnels),
-        "tunnels": list(adapter_manager.active_tunnels.keys())
+        "active_tunnels": len(tunnels),
+        "tunnels": tunnels,
     }
 
 

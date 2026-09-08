@@ -630,19 +630,21 @@ def _build_specs(
         return iran_spec, foreign_spec
 
     if core == "mport_hop":
-        server = {
+        iran_spec = {
+            "mode": "client",
+            "target_ip": foreign_ip,
+            "target_port": test_port,
+            "port_range": f"{test_port}:{test_port+5}",
+            "ports": [test_port],
+        }
+        foreign_spec = {
             "mode": "server",
             "target_port": test_port,
             "port_range": f"{test_port}:{test_port+5}",
             "ports": [test_port],
+            "client_ip": iran_ip,
         }
-        client = {
-            "mode": "client",
-            "target_port": test_port,
-            "port_range": f"{test_port}:{test_port+5}",
-            "ports": [test_port],
-        }
-        return server, client
+        return iran_spec, foreign_spec
 
     if core == "zapret":
         preset = (extra_spec.get("preset") if extra_spec else None) or mode or "mci"
@@ -1008,7 +1010,8 @@ class BenchmarkManager:
             else:
                 # Dynamic polling: check client node for connection_state == connected
                 poll_node_id = second_node_id
-                for _ in range(16):
+                connected = False
+                for _ in range(20):
                     await asyncio.sleep(0.5)
                     try:
                         status_resp = await client.send_to_node(
@@ -1018,12 +1021,18 @@ class BenchmarkManager:
                         )
                         state_val = (status_resp.get("data") or {}).get("connection_state")
                         if state_val == "connected":
+                            connected = True
                             break
                     except Exception:
                         pass
+                if connected:
+                    # Allow 1s for the proxy server and data pool to fully settle
+                    await asyncio.sleep(1.0)
+                else:
+                    logger.warning(f"Tunnel {tunnel_id} did not report connected state before probe (last state={state_val if 'state_val' in locals() else 'unknown'})")
 
-            probe_host = foreign_ip if core in ("zapret", "mport_hop") else "127.0.0.1"
-            probe_port = (test_port + 1) if core == "mport_hop" else test_port
+            probe_host = foreign_ip if core == "zapret" else "127.0.0.1"
+            probe_port = test_port
             probe_response = await client.send_to_node(
                 node_id=iran_node_id,
                 endpoint="/api/agent/benchmark/probe",

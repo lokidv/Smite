@@ -96,8 +96,8 @@ class NodeClient:
             logger.debug(f"[{comm_type}] Sending request to node {node_id}: {endpoint}")
             
             try:
-                # Retry logic for FRP connections which may need a moment to stabilize
-                max_retries = 5 if using_frp else 1
+                # Retry logic for connections to stabilize
+                max_retries = 5 if using_frp else 3
                 last_error = None
                 
                 for attempt in range(max_retries):
@@ -193,12 +193,12 @@ class NodeClient:
                 return {"reachable": False, "message": f"Node {node_id} not found"}
             node_address, using_frp = await self._get_node_address(node)
             base = node_address.rstrip("/")
-            timeout = httpx.Timeout(timeout_s, connect=min(3.0, timeout_s))
-            attempts = 3 if using_frp else 1
+            timeout = httpx.Timeout(timeout_s, connect=min(5.0, timeout_s))
+            attempts = 3
             last_err = None
             for attempt in range(attempts):
-                if using_frp and attempt > 0:
-                    await asyncio.sleep(1.5)
+                if attempt > 0:
+                    await asyncio.sleep(1.0)
                 try:
                     async with httpx.AsyncClient(
                         timeout=timeout, verify=_verify_tls(),

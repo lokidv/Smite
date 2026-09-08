@@ -262,6 +262,11 @@ class TunnelReapplyManager:
                                 server_spec["control_port"] = control_port
                                 server_spec["transport"] = transport
                                 server_spec["type"] = transport
+                                ports = server_spec.get("ports") or [proxy_port]
+                                server_spec["ports"] = ports
+                                client_spec["ports"] = ports
+                                client_spec["target_port"] = proxy_port
+                                client_spec["token"] = token
                                 if tunnel.core == "awg_ws":
                                     server_spec["service_type"] = "udp"
                                     client_spec["service_type"] = "udp"
@@ -492,11 +497,17 @@ class TunnelReapplyManager:
                                 continue
 
                             spec = tunnel.spec.copy() if tunnel.spec else {}
-                            target_port = spec.get("target_port") or 8863
+                            ports_list = spec.get("ports", [])
+                            target_port = spec.get("target_port") or (ports_list[0] if isinstance(ports_list, list) and ports_list else 8863)
+                            try:
+                                target_port = int(target_port)
+                            except (ValueError, TypeError):
+                                target_port = 8863
                             port_range = spec.get("port_range") or "20000:40000"
                             foreign_ip = foreign_node.node_metadata.get("ip_address")
 
-                            f_spec = {"mode": "server", "target_port": target_port, "port_range": port_range, "ports": [target_port]}
+                            iran_ip = iran_node.node_metadata.get("ip_address")
+                            f_spec = {"mode": "server", "target_port": target_port, "port_range": port_range, "ports": [target_port], "client_ip": iran_ip}
                             i_spec = {"mode": "client", "target_ip": foreign_ip, "target_port": target_port, "port_range": port_range, "ports": [target_port]}
 
                             rf = await client.send_to_node(node_id=foreign_node.id, endpoint="/api/agent/tunnels/apply", data={"tunnel_id": tunnel.id, "core": "mport_hop", "type": tunnel.type or "udp", "spec": f_spec})
@@ -522,17 +533,35 @@ class TunnelReapplyManager:
                         spec = tunnel.spec.copy() if tunnel.spec else {}
 
                         if tunnel.core == "zapret" and tunnel.foreign_node_id:
-                            tgt = (spec.get("target_ip") or "").strip()
-                            if not tgt or tgt == "104.19.229.21":
-                                f_res = await session.execute(select(Node).where(Node.id == tunnel.foreign_node_id))
-                                f_node = f_res.scalar_one_or_none()
-                                if f_node and f_node.node_metadata.get("ip_address"):
+                            f_res = await session.execute(select(Node).where(Node.id == tunnel.foreign_node_id))
+                            f_node = f_res.scalar_one_or_none()
+                            if f_node and f_node.node_metadata.get("ip_address"):
+                                tgt = (spec.get("target_ip") or "").strip()
+                                if not tgt or tgt == "104.19.229.21":
                                     spec["target_ip"] = f_node.node_metadata.get("ip_address")
-                            if not spec.get("target_port") and spec.get("filter_udp"):
+                                if not spec.get("target_port") and spec.get("filter_udp"):
+                                    try:
+                                        spec["target_port"] = int(str(spec["filter_udp"]).split(",")[0].split("-")[0].strip())
+                                    except (TypeError, ValueError):
+                                        pass
+                                f_tgt_port = spec.get("target_port") or 8863
                                 try:
-                                    spec["target_port"] = int(str(spec["filter_udp"]).split(",")[0].split("-")[0].strip())
-                                except (TypeError, ValueError):
-                                    pass
+                                    await client.send_to_node(
+                                        node_id=f_node.id,
+                                        endpoint="/api/agent/tunnels/apply",
+                                        data={
+                                            "tunnel_id": tunnel.id,
+                                            "core": "zapret",
+                                            "type": tunnel.type or "mci",
+                                            "spec": {
+                                                "mode": "server",
+                                                "target_port": f_tgt_port,
+                                                "client_ip": node.node_metadata.get("ip_address"),
+                                            }
+                                        }
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Zapret reapply: failed to apply on foreign node: {e}")
 
                         if tunnel.core == "gost":
                             spec["type"] = tunnel.type

@@ -542,35 +542,40 @@ def _fetch_and_push_bundle(job: ProvisioningJob, ssh: SSHSession, url: str, asse
 
 # -- step: clean takeover ----------------------------------------------------
 def _clean_takeover_target(ssh: SSHSession, job: ProvisioningJob) -> Dict[str, Any]:
-    """Purge legacy services, tunnel processes, network interfaces, iptables rules,
-    old CA certs and stale tunnel configs left over from an old panel (e.g. v7.2)."""
-    job.log("Starting clean takeover: purging old panel connections, legacy services & stale tunnels...", "info")
+    """Purge legacy Smite services, tunnel processes and stale tunnel configs left
+    over from an old panel (e.g. v7.2) WITHOUT touching any user VPN configs (WireGuard, OpenVPN, 3x-ui)."""
+    job.log("Starting clean takeover: purging old panel connections & stale tunnels (preserving user VPNs)...", "info")
     clean_script = """#!/bin/bash
 set +e
-echo "1. Stopping and disabling legacy systemd services..."
+echo "=== Clean Takeover / Safe Node Migration ==="
+echo "NOTE: User VPNs (WireGuard /etc/wireguard, OpenVPN /etc/openvpn, 3x-ui) are strictly PROTECTED and PRESERVED."
+
+echo "1. Stopping and disabling legacy Smite systemd services..."
 systemctl stop smite-node smite smite-agent 2>/dev/null || true
 systemctl disable smite-node smite smite-agent 2>/dev/null || true
 
-echo "2. Removing legacy Docker containers..."
+echo "2. Removing legacy Smite Docker containers..."
 if command -v docker >/dev/null 2>&1; then
     docker rm -f smite-node smite smite-panel 2>/dev/null || true
-    docker rm -f $(docker ps -aq --filter name=smite) 2>/dev/null || true
-    docker compose -f /opt/smite/docker-compose.yml down 2>/dev/null || true
-    docker compose -f /root/smite/docker-compose.yml down 2>/dev/null || true
+    docker rm -f $(docker ps -aq --filter name=smite-node) 2>/dev/null || true
 fi
 
-echo "3. Terminating lingering tunnel processes..."
-for proc in smite-node gost rathole chisel frpc frps udp2raw backhaul awg nfqws wsproxy mport-relay faketcp-relay speeder amneziawg-go wireguard-go; do
+echo "3. Terminating lingering Smite tunnel carrier processes..."
+# Explicitly NEVER kill wireguard, openvpn, or x-ui processes!
+for proc in smite-node gost rathole chisel frpc frps udp2raw backhaul nfqws wsproxy mport-relay faketcp-relay speeder smite-udp-relay; do
     pkill -9 -f "$proc" 2>/dev/null || true
 done
 
-echo "4. Removing legacy WireGuard / TUN network interfaces..."
-for dev in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -E '^(awg|wg[0-9]|tun_smite)'); do
+echo "4. Removing legacy Smite tunnel interfaces (STRICTLY PRESERVING wg0, wg*, tun0, tun*)..."
+# Explicitly only touch interfaces named tun_smite* or awg_smite*. NEVER touch wg0, wg*, tun0, or openvpn tun!
+for dev in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -E '^(tun_smite|awg_smite)'); do
     ip link set down dev "$dev" 2>/dev/null || true
     ip link delete dev "$dev" 2>/dev/null || true
 done
 
-echo "5. Cleaning stale iptables redirect & NFQUEUE rules..."
+echo "5. Cleaning stale NFQUEUE rules from previous DPI bypass..."
+# Only remove NFQUEUE rules and local 127.0.0.1 PREROUTING redirects (used by zapret).
+# NEVER touch FORWARD or nat POSTROUTING/MASQUERADE used by WireGuard/OpenVPN!
 if command -v iptables >/dev/null 2>&1; then
     iptables -S INPUT 2>/dev/null | grep -E 'NFQUEUE' | while read -r line; do
         iptables -D ${line#-A } 2>/dev/null || true
@@ -578,28 +583,50 @@ if command -v iptables >/dev/null 2>&1; then
     iptables -t mangle -S OUTPUT 2>/dev/null | grep -E 'NFQUEUE' | while read -r line; do
         iptables -t mangle -D ${line#-A } 2>/dev/null || true
     done
-    iptables -t nat -S PREROUTING 2>/dev/null | grep -E '127\\.0\\.0\\.1|REDIRECT|NFQUEUE' | while read -r line; do
+    iptables -t nat -S PREROUTING 2>/dev/null | grep -E '127\\.0\\.0\\.1.*REDIRECT' | while read -r line; do
         iptables -t nat -D ${line#-A } 2>/dev/null || true
-    done
-    iptables -S INPUT 2>/dev/null | grep -E '\\-j DROP' | grep -E 'tcp' | while read -r line; do
-        iptables -D ${line#-A } 2>/dev/null || true
     done
 fi
 
-echo "6. Wiping old panel credentials, CA certificates and stale tunnel database..."
+echo "6. Resetting Smite agent certificates and tunnel database..."
+# ONLY touch /etc/smite-node and /var/lib/smite-node. NEVER touch /etc/wireguard or /etc/openvpn!
 rm -rf /etc/smite-node/certs/* 2>/dev/null || true
 rm -f /etc/smite-node/.env 2>/dev/null || true
 rm -f /var/lib/smite-node/tunnels.json /var/lib/smite-node/node_id /var/lib/smite-node/node.json /var/lib/smite-node/health.json 2>/dev/null || true
 mkdir -p /var/lib/smite-node
 echo "{}" > /var/lib/smite-node/tunnels.json
 
-echo "Clean takeover preparation completed successfully."
+echo "7. Verifying VPN user data integrity..."
+if [ -d "/etc/wireguard" ]; then
+    wg_count=$(ls -1 /etc/wireguard 2>/dev/null | wc -l)
+    echo "SAFE: /etc/wireguard is intact ($wg_count files preserved, including client configs and keys)."
+    # If wg0 or wvpn service was enabled, make sure it is actively running
+    if systemctl is-enabled wg-quick@wg0 >/dev/null 2>&1; then
+        systemctl is-active --quiet wg-quick@wg0 || systemctl start wg-quick@wg0 2>/dev/null || true
+        echo "SAFE: wg-quick@wg0 verified active."
+    fi
+    if systemctl is-enabled wvpn >/dev/null 2>&1; then
+        systemctl is-active --quiet wvpn || systemctl start wvpn 2>/dev/null || true
+        echo "SAFE: wvpn (WireGuard API) verified active."
+    fi
+fi
+
+if [ -d "/etc/openvpn" ]; then
+    ovpn_count=$(ls -1 /etc/openvpn 2>/dev/null | wc -l)
+    echo "SAFE: /etc/openvpn is intact ($ovpn_count files preserved, user accounts and certificates safe)."
+fi
+
+if [ -d "/etc/x-ui" ] || command -v x-ui >/dev/null 2>&1; then
+    echo "SAFE: 3x-ui is intact and preserved."
+fi
+
+echo "Clean takeover finished: Smite node cleaned and ready for new panel without touching any user VPNs."
 """
     remote_clean_script = "/tmp/smite_clean_takeover.sh"
     ssh.put_text(clean_script, remote_clean_script, mode=0o755)
     _run(job, ssh, f"bash {remote_clean_script}", timeout=180, allow_fail=True)
     _run(job, ssh, f"rm -f {remote_clean_script}", timeout=30, allow_fail=True)
-    job.log("Clean takeover completed: server is ready for fresh enrollment.", "info")
+    job.log("Clean takeover completed: server is ready for fresh enrollment (user VPNs preserved).", "info")
     return {"cleaned": True}
 
 

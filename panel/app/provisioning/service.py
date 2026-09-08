@@ -52,13 +52,19 @@ WARP_BUNDLE_DIR = SCRIPTS_DIR / "warp"
 # NATIVELY by downloading the matching release bundle from GitHub on the target.
 # This keeps every node native and panel-updatable (no Docker dead-end).
 PROVISION_REPO = os.environ.get("SMITE_UPDATE_REPO", "lokidv/Smite")
-# Must match the build matrix in .github/workflows/offline-bundle.yml — a target
-# whose Python is missing here has no installable bundle.
+# Must match the build matrix in .github/workflows/offline-bundle.yml — a label
+# listed here that CI does not build makes the target download a 404 instead of
+# getting the "unsupported Python" error below, so only add one once the bundle
+# is actually published.
+#
+# Python 3.13 is deliberately absent: pydantic-core==2.14.1 (pinned by
+# pydantic==2.5.0) publishes version-tagged wheels for cp310/cp311/cp312 only —
+# no abi3, no cp313 — and its sdist needs a Rust toolchain, so the py313 bundle
+# cannot be built. Bumping pydantic to >=2.9 (pydantic-core >=2.23) unblocks it.
 _PY_OSLABEL = {
     "3.10": "ubuntu22.04-py310",
     "3.11": "debian12-py311",
     "3.12": "ubuntu24.04-py312",
-    "3.13": "debian13-py313",
 }
 
 

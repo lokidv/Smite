@@ -6,7 +6,11 @@ name: Build Offline Bundle
 #
 # Wheels are Python-version specific, so each bundle is built INSIDE a
 # container that matches a common server OS:
-#   ubuntu:22.04 -> Python 3.10   |   debian:12 -> Python 3.11   |   ubuntu:24.04 -> Python 3.12
+#   ubuntu:22.04 -> Python 3.10   |   debian:12 -> Python 3.11
+#   ubuntu:24.04 -> Python 3.12   |   debian:13 -> Python 3.13
+#
+# Keep this matrix in sync with _PY_OSLABEL in panel/app/provisioning/service.py:
+# a foreign node whose Python has no bundle here cannot be installed at all.
 #
 # On version tags (v*) the bundles are attached to the GitHub Release.
 # It can also be run manually from the Actions tab (workflow_dispatch);
@@ -31,9 +35,11 @@ jobs:
           - { arch: amd64, runner: ubuntu-latest,    image: 'ubuntu:22.04', label: ubuntu22.04-py310 }
           - { arch: amd64, runner: ubuntu-latest,    image: 'debian:12',    label: debian12-py311 }
           - { arch: amd64, runner: ubuntu-latest,    image: 'ubuntu:24.04', label: ubuntu24.04-py312 }
+          - { arch: amd64, runner: ubuntu-latest,    image: 'debian:13',    label: debian13-py313 }
           - { arch: arm64, runner: ubuntu-24.04-arm, image: 'ubuntu:22.04', label: ubuntu22.04-py310 }
           - { arch: arm64, runner: ubuntu-24.04-arm, image: 'debian:12',    label: debian12-py311 }
           - { arch: arm64, runner: ubuntu-24.04-arm, image: 'ubuntu:24.04', label: ubuntu24.04-py312 }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: 'debian:13',    label: debian13-py313 }
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:

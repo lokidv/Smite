@@ -52,7 +52,14 @@ WARP_BUNDLE_DIR = SCRIPTS_DIR / "warp"
 # NATIVELY by downloading the matching release bundle from GitHub on the target.
 # This keeps every node native and panel-updatable (no Docker dead-end).
 PROVISION_REPO = os.environ.get("SMITE_UPDATE_REPO", "lokidv/Smite")
-_PY_OSLABEL = {"3.10": "ubuntu22.04-py310", "3.11": "debian12-py311", "3.12": "ubuntu24.04-py312"}
+# Must match the build matrix in .github/workflows/offline-bundle.yml — a target
+# whose Python is missing here has no installable bundle.
+_PY_OSLABEL = {
+    "3.10": "ubuntu22.04-py310",
+    "3.11": "debian12-py311",
+    "3.12": "ubuntu24.04-py312",
+    "3.13": "debian13-py313",
+}
 
 
 class ProvisioningError(Exception):
@@ -697,7 +704,24 @@ def _install_node(ssh: SSHSession, job: ProvisioningJob, arch: str, py: str) -> 
         # matching offline bundle from the GitHub release ON the target and run
         # the NATIVE installer. Foreign nodes stay native (panel-updatable)
         # instead of becoming Docker containers the panel updater cannot touch.
-        oslabel = _PY_OSLABEL.get(py, "ubuntu24.04-py312")
+        # Wheels in the bundle are compiled per CPython minor version, so a
+        # bundle whose Python differs from the target's cannot install. Bundles
+        # are only built for the versions in _PY_OSLABEL; silently falling back
+        # to the 3.12 bundle (as this used to) made a target on e.g. Python 3.13
+        # download 100 MB and then fail deep inside pip with an unhelpful
+        # "no matching distribution" error. Fail early and say what to do.
+        oslabel = _PY_OSLABEL.get(py)
+        if not oslabel:
+            supported = ", ".join(
+                f"Python {k} ({v.split('-py')[0]})" for k, v in sorted(_PY_OSLABEL.items())
+            )
+            raise ProvisioningError(
+                f"No offline bundle is built for this server's Python "
+                f"({py or 'could not be detected'}). Bundles exist only for: {supported}. "
+                f"Reinstall this server on one of those releases, or build a bundle for "
+                f"Python {py or 'this version'} and upload it on the Install Node page so it "
+                f"is used instead of the GitHub release."
+            )
         asset = f"smite-offline-{arch}-{oslabel}.tar.gz"
         url = f"https://github.com/{PROVISION_REPO}/releases/latest/download/{asset}"
         job.log(

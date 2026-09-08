@@ -365,6 +365,16 @@ class UpdateManager:
     def is_running(self) -> bool:
         return bool(self._task and not self._task.done())
 
+    def cancel(self) -> Dict[str, Any]:
+        """Abort an in-progress update run."""
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self.state["status"] = "cancelled"
+        self.state["message"] = "Update cancelled by admin"
+        self.state["finished_at"] = datetime.utcnow().isoformat()
+        self._persist()
+        return {"status": "cancelled"}
+
     async def get_status(self) -> Dict[str, Any]:
         state = dict(self.state)
         current = await get_current_panel_version()
@@ -448,7 +458,10 @@ class UpdateManager:
         )
         state["panel"] = panel_state
         state["nodes"] = nodes
-        state["status"] = "done" if any_success else "failed"
+        if any_success or (not nodes and panel_state.get("status") == "skipped"):
+            state["status"] = "done"
+        else:
+            state["status"] = "failed"
         state["finished_at"] = datetime.utcnow().isoformat()
         state["message"] = ""
         self.state = state
@@ -672,10 +685,14 @@ class UpdateManager:
             if entry.get("status") == "failed":
                 continue
             try:
-                self._set_node(node.id, status="uploading", message="")
-                await self._push_file_to_node(node, variant, local_files[variant])
+                # If this node acted as the relay, it already downloaded this variant locally in step 3.
+                # Skip re-uploading the 100MB file over the internet.
+                is_relay = bool(relay and node.id == relay.id)
+                if not is_relay:
+                    self._set_node(node.id, status="uploading", message="")
+                    await self._push_file_to_node(node, variant, local_files[variant])
 
-                self._set_node(node.id, status="applying")
+                self._set_node(node.id, status="applying", message="")
                 await self._node_request(
                     node, "POST", "/api/agent/update/apply",
                     json_body={"download_id": variant}, timeout=NODE_APPLY_TIMEOUT, retries=1,
@@ -718,7 +735,12 @@ class UpdateManager:
             self.state["message"] = "Panel is restarting to finish its own update..."
         else:
             any_success = any(n.get("status") == "updated" for n in node_entries)
-            self.state["status"] = "done" if (any_success or panel_status == "updated") else "failed"
+            panel_ok = panel_status in ("updated", "skipped")
+            # If nodes succeeded, or if panel was updated (or skipped because Docker with no nodes selected), mark done
+            if any_success or panel_status == "updated" or (not nodes and panel_status == "skipped"):
+                self.state["status"] = "done"
+            else:
+                self.state["status"] = "failed"
             self.state["finished_at"] = datetime.utcnow().isoformat()
             self.state["message"] = ""
         self._persist()

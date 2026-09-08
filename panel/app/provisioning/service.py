@@ -467,9 +467,115 @@ def _select_bundle(
     return pool[0]
 
 
+_EMBEDDED_FETCH_BUNDLE = """#!/usr/bin/env bash
+set -uo pipefail
+URL="${1:?usage: fetch-bundle.sh <url> <dest>}"
+DEST="${2:?usage: fetch-bundle.sh <url> <dest>}"
+CHUNK_BYTES="${CHUNK_BYTES:-2097152}"
+RESUME_ATTEMPTS="${RESUME_ATTEMPTS:-40}"
+STALL_LIMIT="${STALL_LIMIT:-4}"
+CHUNK_TRIES="${CHUNK_TRIES:-5}"
+CHUNK_FAIL_LIMIT="${CHUNK_FAIL_LIMIT:-3}"
+
+size_of() { stat -c %s "$1" 2>/dev/null || echo 0; }
+total_size() {
+    curl -sIL --connect-timeout 20 --max-time 60 "$URL" \\
+        | awk 'BEGIN{IGNORECASE=1} /^content-length:/{v=$2} END{gsub(/\\r/,"",v); print v}'
+}
+
+echo "Fetching $(basename "$DEST") ..."
+TOTAL="$(total_size)"
+if [ -n "$TOTAL" ]; then
+    echo "  expected size: $TOTAL bytes"
+else
+    echo "  server did not report a size; will verify the archive instead"
+fi
+
+prev=0
+stall=0
+for i in $(seq 1 "$RESUME_ATTEMPTS"); do
+    curl -fL -C - --connect-timeout 20 --max-time 600 \\
+         --retry 3 --retry-all-errors --retry-delay 2 \\
+         -o "$DEST" -s "$URL"
+    rc=$?
+    now="$(size_of "$DEST")"
+    if [ "$rc" = "0" ]; then
+        echo "  downloaded in $i attempt(s) ($now bytes)"
+        break
+    fi
+    if [ "$rc" = "33" ]; then
+        echo "  server refuses resume; restarting from scratch"
+        rm -f "$DEST"
+        prev=0
+        continue
+    fi
+    if [ "$now" -gt "$prev" ]; then
+        stall=0
+        echo "  attempt $i: $now bytes so far (rc=$rc)"
+    else
+        stall=$((stall + 1))
+    fi
+    prev="$now"
+    if [ "$stall" -ge "$STALL_LIMIT" ]; then
+        echo "  resume stalled at $now bytes; switching to chunked range fetch"
+        break
+    fi
+done
+
+if [ -n "$TOTAL" ] && [ "$(size_of "$DEST")" -lt "$TOTAL" ]; then
+    off="$(size_of "$DEST")"
+    fails=0
+    tmp="${DEST}.part"
+    while [ "$off" -lt "$TOTAL" ]; do
+        end=$((off + CHUNK_BYTES - 1))
+        [ "$end" -ge "$TOTAL" ] && end=$((TOTAL - 1))
+        want=$((end - off + 1))
+        ok=0
+        for _ in $(seq 1 "$CHUNK_TRIES"); do
+            rm -f "$tmp"
+            if curl -fL -r "${off}-${end}" --connect-timeout 15 --max-time 120 -s -o "$tmp" "$URL"; then
+                if [ "$(size_of "$tmp")" = "$want" ]; then ok=1; break; fi
+            fi
+            sleep 2
+        done
+        if [ "$ok" != "1" ]; then
+            fails=$((fails + 1))
+            echo "  chunk at offset $off failed"
+            if [ "$fails" -ge "$CHUNK_FAIL_LIMIT" ]; then
+                rm -f "$tmp"
+                echo "ERROR: too many failed chunks; the target network cannot sustain this download." >&2
+                exit 75
+            fi
+            continue
+        fi
+        cat "$tmp" >> "$DEST"
+        off=$((end + 1))
+        [ $(( (off / CHUNK_BYTES) % 10 )) = 0 ] && echo "  $off / $TOTAL bytes"
+    done
+    rm -f "$tmp"
+fi
+
+got="$(size_of "$DEST")"
+if [ -n "$TOTAL" ] && [ "$got" != "$TOTAL" ]; then
+    echo "ERROR: incomplete download ($got of $TOTAL bytes)." >&2
+    exit 75
+fi
+if ! gzip -t "$DEST" 2>/dev/null; then
+    echo "ERROR: downloaded archive is corrupt (gzip check failed)." >&2
+    rm -f "$DEST"
+    exit 75
+fi
+echo "Bundle downloaded and verified ($got bytes)."
+"""
+
+
 def _read_script(name: str) -> str:
     path = SCRIPTS_DIR / name
-    return path.read_text(encoding="utf-8")
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    if name == "fetch-bundle.sh":
+        return _EMBEDDED_FETCH_BUNDLE
+    raise ProvisioningError(f"Required script '{name}' not found at {path}")
 
 
 def _make_bundle(src_dir: Path) -> str:

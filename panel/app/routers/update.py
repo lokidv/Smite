@@ -48,3 +48,9 @@ async def start_update(payload: UpdateStartRequest, _user=Depends(get_current_us
 async def update_status(_user=Depends(get_current_user)):
     """Per-node + panel progress of the current/last update run."""
     return await update_manager.get_status()
+
+
+@router.post("/cancel")
+async def cancel_update(_user=Depends(get_current_user)):
+    """Cancel any running update process and reset status."""
+    return update_manager.cancel()

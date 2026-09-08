@@ -484,6 +484,17 @@ total_size() {
 }
 
 echo "Fetching $(basename "$DEST") ..."
+
+if [ -f "$DEST" ]; then
+    if gzip -t "$DEST" 2>/dev/null; then
+        echo "Bundle already downloaded and verified ($(size_of "$DEST") bytes)."
+        exit 0
+    else
+        echo "Removing stale/incomplete bundle before download..."
+        rm -f "$DEST" "${DEST}.part"
+    fi
+fi
+
 TOTAL="$(total_size)"
 if [ -n "$TOTAL" ]; then
     echo "  expected size: $TOTAL bytes"
@@ -491,7 +502,17 @@ else
     echo "  server did not report a size; will verify the archive instead"
 fi
 
-prev=0
+curl -fL --connect-timeout 20 --max-time 600 \\
+     --retry 3 --retry-all-errors --retry-delay 2 \\
+     -o "$DEST" -s "$URL"
+rc=$?
+
+if [ "$rc" = "0" ] && gzip -t "$DEST" 2>/dev/null; then
+    echo "  downloaded and verified in 1 attempt ($(size_of "$DEST") bytes)"
+    exit 0
+fi
+
+prev="$(size_of "$DEST")"
 stall=0
 for i in $(seq 1 "$RESUME_ATTEMPTS"); do
     curl -fL -C - --connect-timeout 20 --max-time 600 \\
@@ -499,9 +520,10 @@ for i in $(seq 1 "$RESUME_ATTEMPTS"); do
          -o "$DEST" -s "$URL"
     rc=$?
     now="$(size_of "$DEST")"
-    if [ "$rc" = "0" ]; then
-        echo "  downloaded in $i attempt(s) ($now bytes)"
-        break
+
+    if [ "$rc" = "0" ] && gzip -t "$DEST" 2>/dev/null; then
+        echo "  downloaded and verified in $i attempt(s) ($now bytes)"
+        exit 0
     fi
     if [ "$rc" = "33" ]; then
         echo "  server refuses resume; restarting from scratch"
@@ -509,6 +531,7 @@ for i in $(seq 1 "$RESUME_ATTEMPTS"); do
         prev=0
         continue
     fi
+
     if [ "$now" -gt "$prev" ]; then
         stall=0
         echo "  attempt $i: $now bytes so far (rc=$rc)"
@@ -516,6 +539,7 @@ for i in $(seq 1 "$RESUME_ATTEMPTS"); do
         stall=$((stall + 1))
     fi
     prev="$now"
+
     if [ "$stall" -ge "$STALL_LIMIT" ]; then
         echo "  resume stalled at $now bytes; switching to chunked range fetch"
         break
@@ -530,6 +554,7 @@ if [ -n "$TOTAL" ] && [ "$(size_of "$DEST")" -lt "$TOTAL" ]; then
         end=$((off + CHUNK_BYTES - 1))
         [ "$end" -ge "$TOTAL" ] && end=$((TOTAL - 1))
         want=$((end - off + 1))
+
         ok=0
         for _ in $(seq 1 "$CHUNK_TRIES"); do
             rm -f "$tmp"
@@ -538,16 +563,18 @@ if [ -n "$TOTAL" ] && [ "$(size_of "$DEST")" -lt "$TOTAL" ]; then
             fi
             sleep 2
         done
+
         if [ "$ok" != "1" ]; then
             fails=$((fails + 1))
             echo "  chunk at offset $off failed"
             if [ "$fails" -ge "$CHUNK_FAIL_LIMIT" ]; then
                 rm -f "$tmp"
-                echo "ERROR: too many failed chunks; the target network cannot sustain this download." >&2
+                echo "ERROR: too many failed chunks; target network cannot sustain this download." >&2
                 exit 75
             fi
             continue
         fi
+
         cat "$tmp" >> "$DEST"
         off=$((end + 1))
         [ $(( (off / CHUNK_BYTES) % 10 )) = 0 ] && echo "  $off / $TOTAL bytes"
@@ -556,16 +583,19 @@ if [ -n "$TOTAL" ] && [ "$(size_of "$DEST")" -lt "$TOTAL" ]; then
 fi
 
 got="$(size_of "$DEST")"
-if [ -n "$TOTAL" ] && [ "$got" != "$TOTAL" ]; then
+if gzip -t "$DEST" 2>/dev/null; then
+    echo "Bundle downloaded and verified ($got bytes)."
+    exit 0
+fi
+
+if [ -n "$TOTAL" ] && [ "$got" -lt "$TOTAL" ]; then
     echo "ERROR: incomplete download ($got of $TOTAL bytes)." >&2
     exit 75
 fi
-if ! gzip -t "$DEST" 2>/dev/null; then
-    echo "ERROR: downloaded archive is corrupt (gzip check failed)." >&2
-    rm -f "$DEST"
-    exit 75
-fi
-echo "Bundle downloaded and verified ($got bytes)."
+
+echo "ERROR: downloaded archive is corrupt (gzip check failed)." >&2
+rm -f "$DEST" "${DEST}.part"
+exit 75
 """
 
 
@@ -611,13 +641,37 @@ def _fetch_and_push_bundle(job: ProvisioningJob, ssh: SSHSession, url: str, asse
     """Download the release bundle on the panel and upload it to the target.
 
     Fallback for targets whose own connectivity cannot sustain a ~100 MB
-    download. The panel usually sits on a healthy link, so pulling once here and
-    pushing over the existing SSH channel avoids the target's bad path entirely.
+    download. If the panel already has the bundle stored locally, it uses the
+    local copy directly instead of re-downloading from GitHub.
     """
     import shutil
     import tarfile
     import tempfile
     import urllib.request
+    from app.config import settings
+
+    # Check local candidates on panel first
+    data_dir = Path(settings.db_path)
+    if not data_dir.is_absolute():
+        data_dir = Path(os.getcwd()) / data_dir
+    artifacts_dir = data_dir.parent / "artifacts"
+
+    local_candidates = [
+        artifacts_dir / asset,
+        Path("/app/data/artifacts") / asset,
+        Path("/app/data/update") / asset,
+        Path("/opt/smite/panel/data/artifacts") / asset,
+        Path("/opt/smite/panel/data/update") / asset,
+        Path("/tmp") / asset,
+    ]
+    for cand in local_candidates:
+        try:
+            if cand.is_file() and cand.stat().st_size > 50 * 1024 * 1024:
+                job.log(f"Panel using locally cached bundle {cand.name} ({cand.stat().st_size} bytes); uploading to target ...", "info")
+                ssh.put_file(str(cand), REMOTE_BUNDLE)
+                return
+        except Exception:
+            pass
 
     fd, tmp = tempfile.mkstemp(prefix="smite-release-", suffix=".tar.gz")
     os.close(fd)

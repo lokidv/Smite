@@ -4261,6 +4261,91 @@ class AdapterManager:
         except Exception as e:
             logger.error(f"Failed to save tunnel configurations to {self.tunnels_file}: {e}", exc_info=True)
     
+    def _live_rule_owners(self):
+        """(tunnel-id prefixes, ports) that tunnels in tunnels.json legitimately own."""
+        prefixes = {tid[:8] for tid in self.tunnel_configs}
+        ports = set()
+        for cfg in self.tunnel_configs.values():
+            spec = cfg.get("spec") or {}
+            for key in ("target_port", "listen_port", "raw_port", "control_port"):
+                v = spec.get(key)
+                if v is not None and str(v).isdigit():
+                    ports.add(int(v))
+            for v in (spec.get("ports") or []):
+                if str(v).isdigit():
+                    ports.add(int(v))
+        return prefixes, ports
+
+    def sweep_orphan_rules(self) -> int:
+        """Delete iptables rules left behind by tunnels that no longer exist.
+
+        Teardown removes a tunnel's own rules, but anything it misses stays
+        forever: a rule written by an older build that did not tag rules with a
+        comment, or a delete that never reached this node. The damaging case is
+        a stale `nat PREROUTING -p udp --dport <range> -j REDIRECT --to-ports <p>`
+        from multi-port hopping — it swallows every UDP port in the range and
+        sends them to a port nothing listens on, so clients fail while the node
+        looks healthy and the benchmark, which picks its own test port outside
+        the range, never touches the broken path.
+
+        Conservative by construction: a rule is only removed when it is clearly
+        ours (a smite comment, an NFQUEUE with no nfqws behind it, or a REDIRECT
+        to a port no live tunnel claims). Returns how many were removed.
+        """
+        import re as _re
+        prefixes, ports = self._live_rule_owners()
+        removed = 0
+
+        try:
+            nfq_live = set(_re.findall(r"-q\s+(\d+)", subprocess.check_output(
+                ["ps", "-eo", "cmd"], stderr=subprocess.DEVNULL).decode("utf-8", "replace")))
+        except Exception:
+            nfq_live = set()
+
+        for table, chain in (
+            ("nat", "PREROUTING"), ("nat", "POSTROUTING"),
+            ("mangle", "OUTPUT"), ("mangle", "PREROUTING"), ("mangle", "POSTROUTING"),
+            ("filter", "INPUT"), ("filter", "FORWARD"),
+        ):
+            try:
+                out = subprocess.check_output(
+                    ["iptables", "-t", table, "-S", chain], stderr=subprocess.DEVNULL
+                ).decode("utf-8", "replace")
+            except Exception:
+                continue
+
+            for line in out.splitlines():
+                if not line.startswith("-A "):
+                    continue
+                why = None
+
+                m = _re.search(r"--comment\s+\"?(smite_\w+?_([0-9a-f]{8}))\"?", line)
+                if m and m.group(2) not in prefixes:
+                    why = f"comment {m.group(1)} has no live tunnel"
+
+                if why is None:
+                    m = _re.search(r"NFQUEUE --queue-num (\d+)", line)
+                    if m and m.group(1) not in nfq_live:
+                        why = f"NFQUEUE {m.group(1)} has no nfqws process"
+
+                if why is None:
+                    m = _re.search(r"REDIRECT --to-ports (\d+)", line)
+                    if m and "-p udp" in line and int(m.group(1)) not in ports:
+                        why = f"REDIRECT to :{m.group(1)} which no live tunnel claims"
+
+                if why is None:
+                    continue
+                try:
+                    subprocess.run(
+                        ["iptables", "-t", table, "-D"] + line.split()[1:], check=False,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    removed += 1
+                    logger.warning(f"[sweep] removed stale {table}/{chain} rule ({why}): {line}")
+                except Exception as e:
+                    logger.warning(f"[sweep] could not remove {table}/{chain} rule: {e}")
+        return removed
+
     async def restore_tunnels(self):
         """Restore all persisted tunnels on startup"""
         import logging
@@ -4271,11 +4356,23 @@ class AdapterManager:
         logger.info(f"Tunnels file exists: {self.tunnels_file.exists()}")
         
         self._load_tunnels()
-        
+
+        # Drop rules belonging to tunnels that no longer exist BEFORE restoring,
+        # and do it whether or not anything is left to restore — the early
+        # return below used to skip this entirely, which is exactly how a node
+        # with an empty tunnels.json kept a live REDIRECT hijacking 20000 UDP
+        # ports.
+        try:
+            removed = self.sweep_orphan_rules()
+            if removed:
+                logger.warning(f"Removed {removed} orphaned iptables rule(s) left by deleted tunnels")
+        except Exception as e:
+            logger.warning(f"Orphan-rule sweep failed (continuing): {e}")
+
         if not self.tunnel_configs:
             logger.info("No persisted tunnels to restore")
             return
-        
+
         logger.info(f"Restoring {len(self.tunnel_configs)} persisted tunnels...")
         restored = 0
         failed = 0

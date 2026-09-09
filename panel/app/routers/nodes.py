@@ -90,6 +90,17 @@ async def create_node(node: NodeCreate, db: AsyncSession = Depends(get_db)):
         
         existing.last_seen = datetime.utcnow()
         existing.status = "active"
+        # Track NODE_NAME changes. The name was previously frozen at first
+        # registration and there is no rename endpoint, so two servers installed
+        # with the same NODE_NAME stayed indistinguishable forever — every health
+        # report and problem record just said "on node '<name>'" with no way to
+        # tell which one, and editing NODE_NAME on the server had no effect.
+        # The node is the source of truth for its own name.
+        if node.name and node.name != existing.name:
+            logger.info(
+                "Node %s renamed '%s' -> '%s'", existing.fingerprint, existing.name, node.name
+            )
+            existing.name = node.name
         existing.node_metadata.update(metadata)
         existing.node_metadata["role"] = existing_role
         await db.commit()

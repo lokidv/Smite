@@ -4034,41 +4034,46 @@ async def delete_tunnel(tunnel_id: str, request: Request, db: AsyncSession = Dep
                 import logging
                 logging.error(f"Failed to stop FRP server: {e}")
     
-    if tunnel.core in ("udp2raw", "zapret", "trusttunnel", "snispoof", "hysteria2", "tuic", "obfs4", "warp", "mport_hop", "fec_faketcp", "awg_ws"):
-        # udp2raw/trusttunnel/hysteria2/tuic/obfs4 run on both the iran and
-        # foreign nodes; zapret/snispoof/warp run on one node but may have been
-        # registered under node_id/iran/foreign. Remove from each so every
-        # process (and any iptables rules) is torn down.
-        client = NodeClient()
-        node_ids = {tunnel.node_id, tunnel.iran_node_id, tunnel.foreign_node_id}
-        for node_id in node_ids:
-            if not node_id:
-                continue
-            result = await db.execute(select(Node).where(Node.id == node_id))
-            node = result.scalar_one_or_none()
-            if node:
-                try:
-                    await client.send_to_node(
-                        node_id=node.id,
-                        endpoint="/api/agent/tunnels/remove",
-                        data={"tunnel_id": tunnel.id}
-                    )
-                except:
-                    pass
-    elif tunnel.status == "active":
-        result = await db.execute(select(Node).where(Node.id == tunnel.node_id))
+    # Tear the tunnel down on EVERY node it could be running on, whatever its
+    # core or status.
+    #
+    # This used to be gated on a hard-coded list of cores, with a fallback that
+    # only messaged `node_id` and only when status == "active". Anything outside
+    # that list (including every newly added core) therefore kept running on
+    # `foreign_node_id`, and a tunnel in any non-active state was never torn down
+    # at all — the panel deleted the row while the node kept the process alive.
+    # The health monitor then found it as an "orphan ... (stale/deleted)" and had
+    # to remove it on a later cycle. Removal is idempotent, so simply always
+    # asking every associated node is both simpler and correct.
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    client = NodeClient()
+    for node_id in {tunnel.node_id, tunnel.iran_node_id, tunnel.foreign_node_id}:
+        if not node_id:
+            continue
+        result = await db.execute(select(Node).where(Node.id == node_id))
         node = result.scalar_one_or_none()
-        if node:
-            client = NodeClient()
-            try:
-                await client.send_to_node(
-                    node_id=node.id,
-                    endpoint="/api/agent/tunnels/remove",
-                    data={"tunnel_id": tunnel.id}
+        if not node:
+            continue
+        try:
+            resp = await client.send_to_node(
+                node_id=node.id,
+                endpoint="/api/agent/tunnels/remove",
+                data={"tunnel_id": tunnel.id},
+            )
+            if not (isinstance(resp, dict) and resp.get("status") == "success"):
+                # Not fatal: the row still goes away and the health monitor will
+                # reconcile. Log it so a node that keeps refusing is visible.
+                _log.warning(
+                    "Tunnel %s: node %s did not confirm removal (%s)",
+                    tunnel.id, node.name, resp,
                 )
-            except:
-                pass
-    
+        except Exception as e:  # noqa: BLE001
+            _log.warning(
+                "Tunnel %s: could not reach node %s to remove it: %s",
+                tunnel.id, node.name, e,
+            )
+
     await db.delete(tunnel)
     await db.commit()
     return {"status": "deleted"}

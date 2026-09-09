@@ -1800,14 +1800,35 @@ const Tunnels = () => {
             onClose={() => setShowBenchmark(false)}
             onUseConfig={async (payload) => {
               try {
-                const p = String(payload.ports || payload.spec?.target_port || payload.spec?.listen_port || '')
-                const existing = tunnels.find((tn) => {
+                // A benchmarked config can expose several ports (`ports` is a
+                // comma list, and some cores carry a `ports` array in spec), so
+                // comparing one stringified port against each exposed port made
+                // the collision check silently miss every multi-port config and
+                // let a second tunnel be created on a port already in use.
+                // Collect every port this config would take and look for any
+                // overlap instead.
+                const wantedPorts = new Set(
+                  [
+                    ...String(payload.ports ?? '').split(','),
+                    ...(Array.isArray(payload.spec?.ports) ? payload.spec!.ports : []),
+                    payload.spec?.target_port,
+                    payload.spec?.listen_port,
+                  ]
+                    .map((v) => String(v ?? '').trim())
+                    .filter((v) => v !== ''),
+                )
+
+                let clashingPort = ''
+                const existing = wantedPorts.size === 0 ? undefined : tunnels.find((tn) => {
                   const sameNodes = (tn.iran_node_id === payload.iran_node_id || tn.node_id === payload.iran_node_id) &&
                                     (tn.foreign_node_id === payload.foreign_node_id)
                   if (!sameNodes) return false
                   const exposed = extractExposedPorts(tn.core, tn.spec)
-                  return exposed.some((e: ExposedPortEntry) => String(e.port) === p)
+                  const hit = exposed.find((e: ExposedPortEntry) => wantedPorts.has(String(e.port)))
+                  if (hit) clashingPort = String(hit.port)
+                  return Boolean(hit)
                 })
+                const p = clashingPort
 
                 if (existing) {
                   const msg = language === 'fa'

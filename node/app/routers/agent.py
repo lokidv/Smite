@@ -213,6 +213,105 @@ async def get_version():
 
 # ---- Benchmark (tunnel quality test) ----
 
+class PathCheck(BaseModel):
+    """Ports whose data path should be audited."""
+    ports: list = []
+    port_range: str = ""
+    target_port: int = 0
+
+
+def _rule_dport_span(line: str):
+    """(lo, hi) of a rule's --dport / --dports, or None when it matches any port."""
+    m = re.search(r"--dport\s+(\d+)(?::(\d+))?", line)
+    if m:
+        lo = int(m.group(1))
+        return lo, int(m.group(2)) if m.group(2) else lo
+    m = re.search(r"--dports\s+([\d,]+)", line)
+    if m:
+        vals = [int(x) for x in m.group(1).split(",") if x.isdigit()]
+        if vals:
+            return min(vals), max(vals)
+    return None
+
+
+@router.post("/pathcheck")
+async def path_check(data: PathCheck):
+    """Report anything on this node that would capture the given ports.
+
+    The benchmark measures a synthetic test port, so a rule that hijacks the
+    range a real tunnel uses never showed up: the probe simply picked a port
+    outside it and passed while production traffic was being swallowed. This
+    audits the ports a tunnel will actually use and names what would interfere.
+    """
+    import shutil
+    import subprocess
+
+    wanted = set()
+    for p in (data.ports or []):
+        try:
+            wanted.add(int(p))
+        except (TypeError, ValueError):
+            pass
+    if data.target_port:
+        wanted.add(int(data.target_port))
+    rng = None
+    if data.port_range:
+        parts = str(data.port_range).replace("-", ":").split(":")
+        if len(parts) == 2 and all(p.strip().isdigit() for p in parts):
+            rng = (int(parts[0]), int(parts[1]))
+
+    def overlaps(span):
+        if span is None:
+            return True  # rule matches every port
+        lo, hi = span
+        if any(lo <= p <= hi for p in wanted):
+            return True
+        return bool(rng and not (hi < rng[0] or lo > rng[1]))
+
+    findings = []
+    if shutil.which("iptables"):
+        for table, chain in (("nat", "PREROUTING"), ("nat", "OUTPUT"),
+                             ("mangle", "OUTPUT"), ("mangle", "PREROUTING"),
+                             ("filter", "INPUT"), ("filter", "FORWARD")):
+            try:
+                out = subprocess.check_output(["iptables", "-t", table, "-S", chain],
+                                              stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+            except Exception:
+                continue
+            for line in out.splitlines():
+                if not line.startswith("-A ") or not overlaps(_rule_dport_span(line)):
+                    continue
+                verdict = None
+                m = re.search(r"REDIRECT --to-ports (\d+)", line)
+                if m and int(m.group(1)) not in wanted:
+                    verdict = f"redirects these ports to :{m.group(1)}, which this tunnel does not use"
+                elif re.search(r"-j (DROP|REJECT)", line):
+                    verdict = "drops or rejects traffic on these ports"
+                elif re.search(r"-j DNAT", line):
+                    d = re.search(r"--to-destination (\S+)", line)
+                    verdict = f"DNATs these ports to {d.group(1) if d else 'another address'}"
+                if verdict:
+                    findings.append({"table": table, "chain": chain, "rule": line.strip(),
+                                     "problem": verdict, "severity": "blocking"})
+
+    listener = None
+    if data.target_port:
+        try:
+            ss = subprocess.check_output(["ss", "-lnu"], stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+            listener = bool(re.search(rf"[:.]{int(data.target_port)}\s", ss))
+        except Exception:
+            listener = None
+
+    return {
+        "status": "success",
+        "checked_ports": sorted(wanted),
+        "checked_range": data.port_range or None,
+        "findings": findings,
+        "udp_listener_on_target": listener,
+        "clean": not findings,
+    }
+
+
 class BenchmarkSinkStart(BaseModel):
     sink_id: str
     port: int

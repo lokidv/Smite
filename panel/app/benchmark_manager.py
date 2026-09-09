@@ -798,6 +798,52 @@ class BenchmarkManager:
         foreign_ip: str,
     ):
         client = NodeClient()
+
+        # Preflight: audit the data path before trusting any measurement.
+        #
+        # A benchmark combo runs on its own synthetic test port, so a rule that
+        # hijacks the range production traffic uses never showed up — the probe
+        # picked a port outside it and reported success while real clients were
+        # being swallowed. Ask both nodes what would interfere with the ports a
+        # real tunnel takes (the benchmark's own ports plus the multi-port
+        # hopping pool) and surface it, so "the test passed" cannot mean "the
+        # test went around the broken part".
+        preflight = {"ok": True, "nodes": {}}
+        hop_lo, hop_hi = 20000, 40000
+        bench_ports = [TEST_PORT_BASE + (i * 20) for i in range(len(combos))]
+        bench_ports += [CONTROL_PORT_BASE + (i * 20) for i in range(len(combos))]
+        for label, node_id in (("iran", iran_node_id), ("foreign", foreign_node_id)):
+            try:
+                res = await client.send_to_node(
+                    node_id, "/api/agent/pathcheck",
+                    {"ports": bench_ports, "port_range": f"{hop_lo}:{hop_hi}"},
+                )
+                findings = (res or {}).get("findings") or []
+                preflight["nodes"][label] = {
+                    "node_id": node_id,
+                    "clean": not findings,
+                    "findings": findings,
+                }
+                if findings:
+                    preflight["ok"] = False
+                    for f in findings:
+                        logger.warning(
+                            f"[benchmark] preflight on {label} node {node_id}: "
+                            f"{f.get('problem')} -- {f.get('rule')}"
+                        )
+            except Exception as e:
+                # An unreachable/older node cannot audit itself; say so rather
+                # than implying the path is clean.
+                preflight["nodes"][label] = {"node_id": node_id, "clean": None, "error": str(e)}
+                logger.info(f"[benchmark] preflight unavailable on {label} node {node_id}: {e}")
+        self.state["preflight"] = preflight
+        if not preflight["ok"]:
+            self.state["warning"] = (
+                "Existing firewall rules capture ports these tunnels use. "
+                "Measurements below may not reflect what real clients experience — "
+                "see preflight findings."
+            )
+
         try:
             for index, (core, mode, protocol) in enumerate(combos):
                 test_port = TEST_PORT_BASE + (index * 20)

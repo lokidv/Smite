@@ -713,6 +713,54 @@ class UpdateManager:
             except Exception as e:
                 self._set_node(node.id, status="failed", message=str(e))
 
+        # 4b. Reconcile every node that came back on the target version.
+        #
+        # Swapping the binaries is only half an update. A node restores its
+        # tunnels from /var/lib/smite-node/tunnels.json when it restarts, but
+        # nothing re-syncs it with what the panel actually wants: tunnels added
+        # or removed while it was down stay missing or keep running as orphans,
+        # and the problems recorded against it stay open in the UI. Both used to
+        # be left for whenever the health monitor next happened to sweep, so an
+        # update appeared to succeed while the node was still wrong.
+        #
+        # Re-apply the desired set, then let the monitor do one full pass — it
+        # already removes orphans, recomputes tunnel health, heals what it can
+        # and auto-resolves problems that no longer reproduce. Runs before the
+        # panel self-update below, which restarts this process.
+        updated_ids = {n.id for n in nodes if self._node_entry(n.id).get("status") == "updated"}
+        if updated_ids:
+            try:
+                from app.database import AsyncSessionLocal
+                from app.health_monitor import health_monitor
+                from app.models import Tunnel
+                from app.tunnel_reapply_manager import tunnel_reapply_manager
+
+                async with AsyncSessionLocal() as session:
+                    rows = (
+                        await session.execute(select(Tunnel).where(Tunnel.status == "active"))
+                    ).scalars().all()
+                wanted = sorted(
+                    t.id for t in rows
+                    if {t.node_id, t.iran_node_id, t.foreign_node_id} & updated_ids
+                )
+
+                if wanted:
+                    self.state["message"] = f"Re-applying {len(wanted)} tunnel(s) on updated nodes..."
+                    self._persist()
+                    applied, failed = await tunnel_reapply_manager.reapply_tunnels(wanted)
+                    logger.info(
+                        "[update] post-update reapply: applied=%s failed=%s", applied, failed
+                    )
+
+                self.state["message"] = "Reconciling node state (orphans, health, problems)..."
+                self._persist()
+                summary = await health_monitor.run_once()
+                logger.info("[update] post-update reconcile: %s", summary)
+            except Exception as e:  # noqa: BLE001
+                # Never fail an otherwise-good update because the cleanup pass
+                # stumbled; the periodic monitor still gets to it.
+                logger.warning("[update] post-update reconcile failed: %s", e)
+
         # 5. Panel self-update last (it will restart this process)
         if panel_variant and panel_variant in local_files:
             try:

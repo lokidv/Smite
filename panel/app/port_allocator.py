@@ -96,14 +96,34 @@ def _iran_node_of(t: Tunnel) -> Optional[str]:
     return t.iran_node_id or t.node_id or None
 
 
-async def _used_control_ports(db, iran_node_id: str, exclude_id: str) -> Set[int]:
-    """Control ports already claimed by other active tunnels on this iran node."""
+async def _used_control_ports(
+    db, iran_node_id: Optional[str], foreign_node_id: Optional[str], exclude_id: str
+) -> Set[int]:
+    """Control ports already claimed by other active tunnels sharing either end.
+
+    For a reverse tunnel the listener binds on the FOREIGN node — see
+    ``Tunnel.foreign_node_id`` ("foreign node (server side)"), and the adapters
+    which want ``remote_addr``/``server_url`` pointing at the foreign server.
+    This used to filter on the iran node alone, so two tunnels from *different*
+    iran nodes to the *same* foreign node never saw each other and were handed
+    the same control port, which both then tried to bind on that one foreign
+    node. That is exactly the reported failure: adding a second/backup iran node
+    against an already-tunnelled foreign node drops the link, and two iran nodes
+    on one foreign node keep fighting over the socket.
+
+    Matching on either end is a superset of what is strictly needed. It cannot
+    hand out a colliding port on either side, and being slightly conservative
+    costs nothing: the probe windows are ~1000 ports wide.
+    """
+    ends = {n for n in (iran_node_id, foreign_node_id) if n}
     used: Set[int] = set()
+    if not ends:
+        return used
     result = await db.execute(select(Tunnel).where(Tunnel.status == "active"))
     for t in result.scalars().all():
         if t.id == exclude_id or t.core not in _CONTROL_WINDOWS:
             continue
-        if _iran_node_of(t) != iran_node_id:
+        if not ends & {n for n in (_iran_node_of(t), t.foreign_node_id) if n}:
             continue
         p = _preferred_control_port(t)
         if p:
@@ -149,15 +169,19 @@ async def assign_reverse_ports(db, tunnel: Tunnel, iran_node=None, foreign_node=
 
     if core in _CONTROL_WINDOWS and not spec.get("control_port"):
         iran_id = iran_node.id if iran_node is not None else _iran_node_of(tunnel)
-        if iran_id:
+        foreign_id = foreign_node.id if foreign_node is not None else tunnel.foreign_node_id
+        # The listener lives on the foreign node, so allocate as soon as either
+        # end is known rather than requiring the iran side.
+        if iran_id or foreign_id:
             preferred = _preferred_control_port(tunnel)
-            used = await _used_control_ports(db, iran_id, tunnel.id)
+            used = await _used_control_ports(db, iran_id, foreign_id, tunnel.id)
             port = _pick(int(preferred), used, _CONTROL_WINDOWS[core])
             spec["control_port"] = port
             changed = True
             logger.info(
                 f"[port-alloc] tunnel {tunnel.id} ({core}) control_port={port} "
-                f"(preferred={preferred}, used={sorted(used)}) on iran {iran_id}"
+                f"(preferred={preferred}, used={sorted(used)}) "
+                f"iran={iran_id} foreign={foreign_id}"
             )
 
     if core == "udp2raw" and not spec.get("raw_port"):

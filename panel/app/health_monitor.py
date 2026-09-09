@@ -391,26 +391,34 @@ class HealthMonitor:
             return False
 
     async def _diagnose_port_collisions(self, session, tunnels: List[Tunnel], current_keys: Set[tuple]):
+        # The control port is bound on the FOREIGN node (Tunnel.foreign_node_id
+        # is "foreign node (server side)"); the iran end dials out to it. Keying
+        # this only on the iran node therefore never saw the one arrangement that
+        # actually fights over the socket — two iran nodes pointed at the same
+        # foreign node with the same control port — so the panel kept reporting
+        # those tunnels healthy while they dropped each other. Index every node a
+        # tunnel occupies so a clash on either end is reported.
         by_node_port: Dict[tuple, List[Tunnel]] = {}
         for t in tunnels:
             if t.core not in ("rathole", "backhaul", "chisel", "trusttunnel", "awg_ws"):
                 continue
-            iran = t.iran_node_id or t.node_id
             port = self._control_port_of(t)
-            if not iran or not port:
+            if not port:
                 continue
-            by_node_port.setdefault((iran, port), []).append(t)
-        for (iran, port), group in by_node_port.items():
+            for node_id in {t.foreign_node_id, t.iran_node_id or t.node_id}:
+                if node_id:
+                    by_node_port.setdefault((node_id, port), []).append(t)
+        for (node_id, port), group in by_node_port.items():
             if len(group) > 1:
                 names = ", ".join(g.name for g in group)
                 for g in group:
-                    key = (iran, g.id, "port_conflict")
+                    key = (node_id, g.id, "port_conflict")
                     current_keys.add(key)
                     await self._record_problem(
-                        session, node_id=iran, tunnel_id=g.id, kind="port_conflict",
+                        session, node_id=node_id, tunnel_id=g.id, kind="port_conflict",
                         severity="critical",
-                        message=f"Control port {port} is shared by {len(group)} tunnels on the same iran node ({names}). They will fight; recreate one to reassign its port.",
-                        detail={"port": port, "tunnels": [g.id for g in group]},
+                        message=f"Control port {port} is shared by {len(group)} tunnels on the same node ({names}). They will fight over the socket; recreate one to reassign its port.",
+                        detail={"port": port, "tunnels": [g.id for g in group], "node": node_id},
                     )
 
     async def _record_problem(self, session, node_id, tunnel_id, kind, severity, message,

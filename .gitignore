@@ -47,3 +47,6 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
+
+# Written by install-native.sh at install time, not source.
+panel/VERSION

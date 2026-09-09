@@ -56,7 +56,6 @@ ARG SMITE_VERSION=latest
 LABEL org.opencontainers.image.version="${SMITE_VERSION}"
 LABEL smite.version="${SMITE_VERSION}"
 ENV SMITE_VERSION="${SMITE_VERSION}"
-RUN echo "${SMITE_VERSION}" > /app/VERSION
 
 # Copy FRP binary from frp-bin stage
 COPY --from=frp-bin /usr/local/bin/frps /usr/local/bin/frps
@@ -64,6 +63,12 @@ COPY --from=frp-bin /usr/local/bin/frps /usr/local/bin/frps
 COPY --from=deps /usr/local /usr/local
 COPY --from=frontend-build /app/dist ./static
 COPY panel .
+
+# MUST come after `COPY panel .`. panel/VERSION is a file install-native.sh
+# writes at install time; when a stale copy of it was committed it landed in the
+# image and silently overwrote the version written from the build arg, so every
+# published image reported the previous release's version.
+RUN echo "${SMITE_VERSION}" > /app/VERSION
 # Note: .git is excluded in .dockerignore, so git tag extraction at runtime won't work in Docker
 # Version is set via SMITE_VERSION build arg (extract with: git describe --tags --abbrev=0)
 

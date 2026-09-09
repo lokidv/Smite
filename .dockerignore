@@ -49,3 +49,7 @@ tests/
 *.tmp
 .cache/
 
+
+# Generated at install time by install-native.sh; a stale committed copy would
+# overwrite the version baked from the SMITE_VERSION build arg.
+panel/VERSION

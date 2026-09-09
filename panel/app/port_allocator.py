@@ -34,6 +34,14 @@ _CONTROL_WINDOWS = {
 }
 _UDP2RAW_RAW_WINDOW = (4096, 5095)
 
+# Multi-port hopping claims a contiguous UDP range with a single REDIRECT rule.
+# Every tunnel used to get the same hard-coded "20000:40000" — 20001 ports for
+# one tunnel — so a second mport_hop tunnel on a node installed an identical
+# REDIRECT that fought with the first, and the range swallowed every other UDP
+# service in it. Hand each tunnel its own slice of the pool instead.
+_HOP_POOL = (20000, 40000)
+_HOP_SLICE = 512
+
 
 def _hash(tunnel_id: str) -> int:
     return int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16)
@@ -143,6 +151,79 @@ async def _used_raw_ports(db, foreign_node_id: str, exclude_id: str) -> Set[int]
         if p:
             used.add(int(p))
     return used
+
+
+def _hop_range_start(value) -> Optional[int]:
+    """First port of a 'lo:hi' / 'lo-hi' range string."""
+    if not value:
+        return None
+    head = str(value).replace("-", ":").split(":")[0].strip()
+    return int(head) if head.isdigit() else None
+
+
+def _preferred_hop_start(tunnel: Tunnel) -> int:
+    cur = _hop_range_start((tunnel.spec or {}).get("port_range"))
+    if cur:
+        return cur
+    lo, hi = _HOP_POOL
+    slots = max(1, (hi - lo + 1) // _HOP_SLICE)
+    return lo + (_hash(tunnel.id) % slots) * _HOP_SLICE
+
+
+async def _used_hop_starts(db, ends: Set[str], exclude_id: str) -> Set[int]:
+    """Slice starts already claimed by other active mport_hop tunnels on these nodes."""
+    used: Set[int] = set()
+    if not ends:
+        return used
+    result = await db.execute(select(Tunnel).where(Tunnel.status == "active"))
+    for t in result.scalars().all():
+        if t.id == exclude_id or t.core != "mport_hop":
+            continue
+        if not ends & {n for n in (_iran_node_of(t), t.foreign_node_id) if n}:
+            continue
+        s = _hop_range_start((t.spec or {}).get("port_range"))
+        if s:
+            used.add(s)
+    return used
+
+
+async def assign_hop_range(db, tunnel: Tunnel, iran_node=None, foreign_node=None) -> bool:
+    """Give an mport_hop tunnel its own port slice; persist it into the spec.
+
+    Idempotent: an existing ``port_range`` is kept, so tunnels created before
+    this existed keep the range their clients are already using.
+    """
+    if tunnel.core != "mport_hop":
+        return False
+    spec = dict(tunnel.spec or {})
+    if spec.get("port_range"):
+        return False
+
+    ends = {n for n in (
+        iran_node.id if iran_node is not None else _iran_node_of(tunnel),
+        foreign_node.id if foreign_node is not None else tunnel.foreign_node_id,
+        tunnel.node_id,
+    ) if n}
+    used = await _used_hop_starts(db, ends, tunnel.id)
+
+    lo, hi = _HOP_POOL
+    slots = max(1, (hi - lo + 1) // _HOP_SLICE)
+    start = _preferred_hop_start(tunnel)
+    if start in used:
+        for i in range(slots):
+            cand = lo + i * _HOP_SLICE
+            if cand not in used:
+                start = cand
+                break
+    end = min(start + _HOP_SLICE - 1, hi)
+    spec["port_range"] = f"{start}:{end}"
+    tunnel.spec = spec
+    flag_modified(tunnel, "spec")
+    logger.info(
+        f"[port-alloc] tunnel {tunnel.id} (mport_hop) port_range={spec['port_range']} "
+        f"({_HOP_SLICE} ports, used_starts={sorted(used)}) nodes={sorted(ends)}"
+    )
+    return True
 
 
 def _pick(preferred: int, used: Set[int], window) -> int:

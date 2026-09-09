@@ -616,7 +616,11 @@ def normalize_mport_hop_spec(spec: dict) -> dict:
     except (ValueError, TypeError):
         p0 = 8863
     s.setdefault("target_port", p0)
-    s.setdefault("port_range", "20000:40000")
+    # port_range is deliberately NOT defaulted here: port_allocator.assign_hop_range
+    # gives each tunnel its own slice once the row exists. Defaulting it to the old
+    # "20000:40000" made every mport_hop tunnel claim the same 20001 ports, so a
+    # second one on the same node installed a competing REDIRECT and the range
+    # swallowed every other UDP service in it.
     s.setdefault("ports", [int(s["target_port"]) if str(s["target_port"]).isdigit() else p0])
     return s
 
@@ -1426,14 +1430,21 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     # Assign a collision-free control/raw port per node and persist it into the
     # spec so multiple foreign nodes sharing one iran node never bind the same
     # rathole control port (the cause of the repeated tunnel drops).
-    if is_reverse_tunnel:
-        try:
-            from app.port_allocator import assign_reverse_ports
+    try:
+        from app.port_allocator import assign_hop_range, assign_reverse_ports
+        changed = False
+        if is_reverse_tunnel:
             if await assign_reverse_ports(db, db_tunnel, iran_node, foreign_node):
-                await db.commit()
-                await db.refresh(db_tunnel)
-        except Exception as e:
-            logger.warning(f"Port allocation skipped for tunnel {db_tunnel.id}: {e}")
+                changed = True
+        # mport_hop is a single-node core, so it never reached the allocator and
+        # always fell back to the shared hard-coded range. Give it its own slice.
+        if await assign_hop_range(db, db_tunnel):
+            changed = True
+        if changed:
+            await db.commit()
+            await db.refresh(db_tunnel)
+    except Exception as e:
+        logger.warning(f"Port allocation skipped for tunnel {db_tunnel.id}: {e}")
 
     try:
         if db_tunnel.core in SINGLE_NODE_CORES:

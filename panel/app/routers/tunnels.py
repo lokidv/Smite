@@ -946,7 +946,7 @@ async def change_tunnel_core_type(
             new_spec["type"] = new_type
         if new_core == "udp2raw":
             new_spec["raw_mode"] = new_type
-        if new_core == "rathole" and new_type == "tls":
+        if (new_core == "rathole" and new_type == "tls") or new_core == "awg_ws":
             new_spec.setdefault("service_type", "udp")
             from app.tls_utils import ensure_wg_stealth_materials
             ensure_wg_stealth_materials(new_spec, new_spec.get("sni"))

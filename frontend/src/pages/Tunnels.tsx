@@ -3610,7 +3610,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
       }
       parsed.filter_udp = initial.ports || detectedWgPort
       if (initial.foreign_node_id) {
-        const targetServer = servers.find((s) => s.id === initial.foreign_node_id)
+        const targetServer = servers.find((s) => s.id === initial.foreign_node_id) || nodes.find((n) => n.id === initial.foreign_node_id)
         const targetIp = targetServer?.node_metadata?.ip_address || targetServer?.metadata?.ip_address || targetServer?.ip_address || ''
         if (targetIp) parsed.target_ip = targetIp
       }
@@ -3658,7 +3658,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
         parsed.preset = preset
       }
       parsed.filter_udp = finalPorts
-      const targetServer = servers.find((s) => s.id === foreignId)
+      const targetServer = servers.find((s) => s.id === foreignId) || nodes.find((n) => n.id === foreignId)
       const targetIp = targetServer?.node_metadata?.ip_address || targetServer?.metadata?.ip_address || targetServer?.ip_address || parsed.target_ip || ''
       parsed.target_ip = targetIp
       setZapretState(parsed)
@@ -3687,12 +3687,12 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
     if (c === 'tuic' && TUIC_TYPES.includes(t as TuicType)) {
       setTuicState((prev) => ({ ...prev, type: t as TuicType, port: finalPorts }))
     }
-  }, [initial, servers, detectedWgPort])
+  }, [initial, servers, nodes, detectedWgPort])
 
   // Auto-populate target_ip for zapret when foreign server changes
   useEffect(() => {
     if (formData.core === 'zapret' && formData.foreign_node_id) {
-      const selectedServer = servers.find(s => s.id === formData.foreign_node_id)
+      const selectedServer = servers.find(s => s.id === formData.foreign_node_id) || nodes.find(n => n.id === formData.foreign_node_id)
       const ip = selectedServer?.node_metadata?.ip_address || selectedServer?.metadata?.ip_address || selectedServer?.ip_address
       if (ip) {
         setZapretState(prev => ({
@@ -3701,20 +3701,21 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
         }))
       }
     }
-  }, [formData.foreign_node_id, formData.core, servers])
+  }, [formData.foreign_node_id, formData.core, servers, nodes])
 
   // Auto-populate remote_ip with foreign server IP when GOST is selected
   useEffect(() => {
     if (formData.core === 'gost' && formData.foreign_node_id) {
-      const selectedServer = servers.find(s => s.id === formData.foreign_node_id)
-      if (selectedServer?.metadata?.ip_address) {
+      const selectedServer = servers.find(s => s.id === formData.foreign_node_id) || nodes.find(n => n.id === formData.foreign_node_id)
+      const ip = selectedServer?.node_metadata?.ip_address || selectedServer?.metadata?.ip_address || selectedServer?.ip_address
+      if (ip) {
         setFormData(prev => ({
           ...prev,
-          remote_ip: selectedServer.metadata.ip_address
+          remote_ip: ip
         }))
       }
     }
-  }, [formData.foreign_node_id, formData.core, servers])
+  }, [formData.foreign_node_id, formData.core, servers, nodes])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

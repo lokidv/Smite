@@ -1719,7 +1719,36 @@ const Tunnels = () => {
             servers={servers}
             tunnels={tunnels}
             onClose={() => setShowBenchmark(false)}
-            onUseConfig={(payload) => {
+            onUseConfig={async (payload) => {
+              const p = String(payload.ports || payload.spec?.target_port || payload.spec?.listen_port || '')
+              const existing = tunnels.find((tn) => {
+                const sameNodes = (tn.iran_node_id === payload.iran_node_id || tn.node_id === payload.iran_node_id) &&
+                                  (tn.foreign_node_id === payload.foreign_node_id)
+                if (!sameNodes) return false
+                const exposed = extractExposedPorts(tn.core, tn.spec)
+                return exposed.some((e) => String(e.port) === p)
+              })
+
+              if (existing) {
+                const msg = language === 'fa'
+                  ? `تونل «${existing.name}» در حال حاضر از پورت ${p} استفاده می‌کند.\nآیا می‌خواهید هسته آن مستقیماً به «${payload.name || payload.core}» تغییر یابد؟`
+                  : `Tunnel "${existing.name}" is already using port ${p}.\nDo you want to switch its core to "${payload.name || payload.core}" in place?`
+                if (window.confirm(msg)) {
+                  try {
+                    await api.post('/tunnels/bulk/change', {
+                      tunnel_ids: [existing.id],
+                      core: payload.core,
+                      type: payload.type || null,
+                    })
+                    setShowBenchmark(false)
+                    fetchData()
+                    return
+                  } catch (e: any) {
+                    alert(e?.response?.data?.detail || 'Failed to change tunnel core')
+                  }
+                }
+              }
+
               setShowBenchmark(false)
               setAddPrefill(payload)
               setShowAddModal(true)
@@ -3884,7 +3913,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
         spec.port_range = (formData.mport_range || '20000:40000').trim()
         spec.ports = [targetPort]
         if (formData.foreign_node_id) {
-          const selectedServer = servers.find((s) => s.id === formData.foreign_node_id)
+          const selectedServer = servers.find((s) => s.id === formData.foreign_node_id) || nodes.find((n) => n.id === formData.foreign_node_id)
           const sIp = selectedServer?.node_metadata?.ip_address || selectedServer?.metadata?.ip_address || selectedServer?.ip_address || ''
           if (sIp) {
             spec.target_ip = sIp
@@ -3943,7 +3972,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
         }
         let currentZapretState = { ...zapretState }
         if (formData.foreign_node_id) {
-          const selectedServer = servers.find((s) => s.id === formData.foreign_node_id)
+          const selectedServer = servers.find((s) => s.id === formData.foreign_node_id) || nodes.find((n) => n.id === formData.foreign_node_id)
           const sIp = selectedServer?.node_metadata?.ip_address || selectedServer?.metadata?.ip_address || selectedServer?.ip_address || ''
           if (sIp) {
             currentZapretState.target_ip = sIp
@@ -4017,9 +4046,10 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
       }
       await api.post('/tunnels', payload)
       onSuccess()
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create tunnel:', error)
-      alert('Failed to create tunnel')
+      const detail = error?.response?.data?.detail || 'Failed to create tunnel'
+      alert(detail)
     }
   }
 

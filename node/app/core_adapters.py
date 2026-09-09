@@ -153,16 +153,30 @@ class RatholeAdapter:
         """
         log_path = self.config_dir / f"{tunnel_id}.log"
         log_f = open(log_path, "w", buffering=1)
-        self.log_handles[tunnel_id] = log_f
+        env = os.environ.copy()
+        tls12_conf = self.config_dir / "openssl_tls12.cnf"
+        if not tls12_conf.exists():
+            try:
+                tls12_conf.write_text(
+                    "openssl_conf = default_conf\n\n"
+                    "[default_conf]\nssl_conf = ssl_sect\n\n"
+                    "[ssl_sect]\nsystem_default = system_default_sect\n\n"
+                    "[system_default_sect]\nMaxProtocol = TLSv1.2\n"
+                )
+            except Exception:
+                pass
+        if tls12_conf.exists():
+            env["OPENSSL_CONF"] = str(tls12_conf)
+
         try:
             return subprocess.Popen(
                 ["/usr/local/bin/rathole", flag, str(config_path)],
-                stdout=log_f, stderr=subprocess.STDOUT,
+                stdout=log_f, stderr=subprocess.STDOUT, env=env,
             )
         except FileNotFoundError:
             return subprocess.Popen(
                 ["rathole", flag, str(config_path)],
-                stdout=log_f, stderr=subprocess.STDOUT,
+                stdout=log_f, stderr=subprocess.STDOUT, env=env,
             )
 
     def _write_tls_pkcs12(self, tunnel_id: str, spec: Dict[str, Any]) -> Path:
@@ -2203,7 +2217,7 @@ class ZapretAdapter:
                     str(binary_path),
                     "-q", str(queue),
                     "--user=root",
-                    f"--filter-udp={target_port}",
+                    "--filter-udp=*",
                     "--dpi-desync-any-protocol=1",
                     "--dpi-desync=ipfrag2",
                     "--dpi-desync-repeats=2",
@@ -3927,7 +3941,7 @@ class PortHoppingAdapter:
                         str(nfqws_bin),
                         "-q", str(queue),
                         "--user=root",
-                        f"--filter-udp={target_port}",
+                        "--filter-udp=*",
                         "--dpi-desync-any-protocol=1",
                         "--dpi-desync=ipfrag2",
                         "--dpi-desync-repeats=2",

@@ -829,6 +829,9 @@ def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: 
     if new_core == "mport_hop":
         return {
             "type": new_type or "udp",
+            "target_host": target_host,
+            "target_ip": target_host,
+            "foreign_ip": target_host,
             "target_port": primary["port"],
             "port_range": "20000:40000",
             "ports": [primary["port"]],
@@ -839,6 +842,9 @@ def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: 
             "preset": preset,
             "filter_udp": str(primary["port"]),
             "filter_tcp": "",
+            "target_host": target_host,
+            "target_ip": target_host,
+            "foreign_ip": target_host,
             "target_port": primary["port"],
             "ports": [primary["port"]],
             "desync_mode": "ipfrag2",

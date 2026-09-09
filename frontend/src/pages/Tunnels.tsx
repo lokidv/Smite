@@ -133,6 +133,85 @@ export interface UseConfigPayload {
   spec?: Record<string, any>
 }
 
+export interface ExposedPortEntry {
+  port: number
+  target_host: string
+  target_port: number
+}
+
+export function extractExposedPorts(core: string, spec: any): ExposedPortEntry[] {
+  if (!spec) return []
+  let s = spec
+  if (typeof s === 'string') {
+    try {
+      s = JSON.parse(s)
+    } catch {
+      return []
+    }
+  }
+  const defaultHost = s.target_host || '127.0.0.1'
+  const entries: ExposedPortEntry[] = []
+
+  const add = (port: any, tHost?: any, tPort?: any) => {
+    if (port === undefined || port === null) return
+    const p = parseInt(String(port), 10)
+    if (isNaN(p) || p <= 0) return
+    let tp = tPort !== undefined && tPort !== null ? parseInt(String(tPort), 10) : p
+    if (isNaN(tp) || tp <= 0) tp = p
+    const host = tHost ? String(tHost).trim() : defaultHost
+    entries.push({ port: p, target_host: host || defaultHost, target_port: tp })
+  }
+
+  let ports = s.ports || []
+  if (typeof ports === 'string') {
+    ports = ports.split(/[\s,]+/).filter(Boolean)
+  }
+
+  if (core === 'udp2raw' || core === 'fec_faketcp') {
+    const listenPort = s.listen_port || s.public_port || (Array.isArray(ports) && ports[0])
+    if (listenPort) {
+      add(listenPort, s.target_host, s.target_port)
+    }
+  } else if (core === 'mport_hop') {
+    const targetPort = s.target_port || 8863
+    add(targetPort, s.target_host, targetPort)
+  } else if (core === 'zapret') {
+    const p = s.target_port || s.filter_udp || (Array.isArray(ports) && ports[0]) || 8863
+    add(p, s.target_ip || s.target_host, p)
+  } else if (Array.isArray(ports) && ports.length > 0) {
+    for (const p of ports) {
+      if (typeof p === 'object' && p !== null) {
+        const exposed = p.remote || p.listen_port || p.public_port || p.local
+        add(exposed, p.target_host, p.local || p.target_port)
+      } else if (typeof p === 'string' && p.includes('=')) {
+        const [left, right] = p.split('=')
+        let tHost = defaultHost
+        let tPort = left
+        if (right) {
+          const rTrim = right.trim()
+          if (rTrim.includes(':')) {
+            const parts = rTrim.split(':')
+            tPort = parts[parts.length - 1]
+            tHost = parts.slice(0, -1).join(':')
+          } else {
+            tPort = rTrim
+          }
+        }
+        add(left.trim(), tHost, tPort)
+      } else {
+        add(p, defaultHost, p)
+      }
+    }
+  } else {
+    const lp = s.listen_port || s.public_port || s.remote_port || s.target_port
+    if (lp) {
+      add(lp, s.target_host, s.target_port)
+    }
+  }
+
+  return entries
+}
+
 interface Udp2rawFormState {
   raw_mode: Udp2rawRawMode
   listen_port: string
@@ -1720,38 +1799,45 @@ const Tunnels = () => {
             tunnels={tunnels}
             onClose={() => setShowBenchmark(false)}
             onUseConfig={async (payload) => {
-              const p = String(payload.ports || payload.spec?.target_port || payload.spec?.listen_port || '')
-              const existing = tunnels.find((tn) => {
-                const sameNodes = (tn.iran_node_id === payload.iran_node_id || tn.node_id === payload.iran_node_id) &&
-                                  (tn.foreign_node_id === payload.foreign_node_id)
-                if (!sameNodes) return false
-                const exposed = extractExposedPorts(tn.core, tn.spec)
-                return exposed.some((e) => String(e.port) === p)
-              })
+              try {
+                const p = String(payload.ports || payload.spec?.target_port || payload.spec?.listen_port || '')
+                const existing = tunnels.find((tn) => {
+                  const sameNodes = (tn.iran_node_id === payload.iran_node_id || tn.node_id === payload.iran_node_id) &&
+                                    (tn.foreign_node_id === payload.foreign_node_id)
+                  if (!sameNodes) return false
+                  const exposed = extractExposedPorts(tn.core, tn.spec)
+                  return exposed.some((e: ExposedPortEntry) => String(e.port) === p)
+                })
 
-              if (existing) {
-                const msg = language === 'fa'
-                  ? `تونل «${existing.name}» در حال حاضر از پورت ${p} استفاده می‌کند.\nآیا می‌خواهید هسته آن مستقیماً به «${payload.name || payload.core}» تغییر یابد؟`
-                  : `Tunnel "${existing.name}" is already using port ${p}.\nDo you want to switch its core to "${payload.name || payload.core}" in place?`
-                if (window.confirm(msg)) {
-                  try {
-                    await api.post('/tunnels/bulk/change', {
-                      tunnel_ids: [existing.id],
-                      core: payload.core,
-                      type: payload.type || null,
-                    })
-                    setShowBenchmark(false)
-                    fetchData()
-                    return
-                  } catch (e: any) {
-                    alert(e?.response?.data?.detail || 'Failed to change tunnel core')
+                if (existing) {
+                  const msg = language === 'fa'
+                    ? `تونل «${existing.name}» در حال حاضر از پورت ${p} استفاده می‌کند.\nآیا می‌خواهید هسته آن مستقیماً به «${payload.name || payload.core}» تغییر یابد؟`
+                    : `Tunnel "${existing.name}" is already using port ${p}.\nDo you want to switch its core to "${payload.name || payload.core}" in place?`
+                  if (window.confirm(msg)) {
+                    try {
+                      await api.post('/tunnels/bulk/change', {
+                        tunnel_ids: [existing.id],
+                        core: payload.core,
+                        type: payload.type || null,
+                      })
+                      setShowBenchmark(false)
+                      fetchData()
+                      return
+                    } catch (e: any) {
+                      alert(e?.response?.data?.detail || 'Failed to change tunnel core')
+                    }
                   }
                 }
-              }
 
-              setShowBenchmark(false)
-              setAddPrefill(payload)
-              setShowAddModal(true)
+                setShowBenchmark(false)
+                setAddPrefill(payload)
+                setShowAddModal(true)
+              } catch (err) {
+                console.error('Error handling onUseConfig:', err)
+                setShowBenchmark(false)
+                setAddPrefill(payload)
+                setShowAddModal(true)
+              }
             }}
           />
         </ErrorBoundary>

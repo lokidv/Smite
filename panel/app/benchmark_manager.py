@@ -47,9 +47,9 @@ COMBO_METADATA: List[Dict[str, Any]] = [
         "protocol": "udp",
         "label": "🛡️ Dynamic Multi-Port Hopping",
         "label_fa": "🛡️ Dynamic Multi-Port Hopping (پرش پورت)",
-        "mode_label": "Kernel NAT (20000:40000)",
-        "mode_label_fa": "حالت: پرش پورت در سطح کرنل (20000:40000)",
-        "description": "Kernel iptables PREROUTING port hopping for WireGuard with 0% CPU overhead",
+        "mode_label": "Kernel NAT hopping + fake-packet desync",
+        "mode_label_fa": "حالت: پرش پورت در کرنل + پکت جعلی ضد DPI",
+        "description": "Relays WireGuard over a per-tunnel UDP port slice; nfqws puts a bad-checksum fake packet ahead of each flow so DPI stops inspecting it",
         "stealth": True,
         "default_selected": True,
         "badge": "جدید",
@@ -647,49 +647,58 @@ def _build_specs(
         return iran_spec, foreign_spec
 
     if core == "zapret":
+        # Same topology as a real dual-node zapret tunnel: the iran node runs the
+        # relay + nfqws (client mode) and forwards to the foreign node, which
+        # runs the server side. The benchmark used to apply "server" mode on both
+        # nodes and probe the foreign IP directly, so it never exercised the relay
+        # or the desync a real tunnel uses, and every scenario "passed" the same way.
         preset = (extra_spec.get("preset") if extra_spec else None) or mode or "mci"
         if preset == "fixed":
-            default_mode = "ipfrag2"
-            default_fooling = "none"
-            default_repeats = 1
+            default_mode, default_fooling, default_repeats = "ipfrag2", "none", 1
         elif preset == "mtn":
-            default_mode = "fake"
-            default_fooling = "badsum"
-            default_repeats = 3
+            default_mode, default_fooling, default_repeats = "fake", "badsum", 3
         elif preset == "hybrid":
-            default_mode = "fake,ipfrag2"
-            default_fooling = "badsum"
-            default_repeats = 2
+            default_mode, default_fooling, default_repeats = "fake,ipfrag2", "badsum", 2
         else:
-            default_mode = "fake"
-            default_fooling = "badsum"
-            default_repeats = 2
+            default_mode, default_fooling, default_repeats = "fake", "badsum", 2
 
-        desync_mode = (extra_spec.get("desync_mode") if extra_spec else None) or default_mode
-        fooling = (extra_spec.get("desync_fooling") if extra_spec else None) or default_fooling
-        repeats = (extra_spec.get("repeats") if extra_spec else None) or default_repeats
-        extra_args = (extra_spec.get("extra_args") if extra_spec else "") or ("--dpi-desync-ipfrag-pos-udp=8" if "ipfrag" in desync_mode else "")
-
-        # Fallbacks for safe UDP
-        if desync_mode in ("multisplit", "fakedsplit", "disorder2", "split"):
-            desync_mode = "fake"
-        if "badseq" in str(fooling) or "ts" in str(fooling):
-            fooling = "badsum"
-
-        spec_dict = {
-            "mode": "server",
+        desync = {
             "preset": preset,
-            "desync_mode": desync_mode,
-            "desync_fooling": fooling,
-            "repeats": repeats,
-            "filter_udp": str(test_port),
-            "filter_tcp": str(test_port),
-            "ports": [test_port],
-            "extra_args": extra_args,
+            "desync_mode": (extra_spec.get("desync_mode") if extra_spec else None) or default_mode,
+            "desync_fooling": (extra_spec.get("desync_fooling") if extra_spec else None) or default_fooling,
+            "repeats": (extra_spec.get("repeats") if extra_spec else None) or default_repeats,
+            "extra_args": (extra_spec.get("extra_args") if extra_spec else "") or "",
         }
-        return dict(spec_dict), dict(spec_dict)
+        if extra_spec and extra_spec.get("desync_ttl"):
+            desync["desync_ttl"] = extra_spec["desync_ttl"]
+
+        iran_spec = {
+            "mode": "client",
+            **desync,
+            "filter_udp": str(test_port),
+            "filter_tcp": "",
+            "direction": "out",
+            "target_ip": foreign_ip,
+            "target_port": test_port,
+            "listen_port": test_port,
+            "ports": [test_port],
+        }
+        foreign_spec = {
+            "mode": "server",
+            **desync,
+            "target_port": test_port,
+            "client_ip": iran_ip,
+            "ports": [test_port],
+        }
+        return iran_spec, foreign_spec
 
     raise ValueError(f"Unsupported benchmark core: {core}")
+
+
+def _wg_fields(metrics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The WireGuard-probe verdict fields a result row carries to the UI."""
+    m = metrics or {}
+    return {k: m.get(k) for k in ("probe_style", "wg_flows_ok", "wg_flows_total", "plain_udp_ok", "error_code")}
 
 
 def _score(metrics: Optional[Dict[str, Any]]) -> float:
@@ -884,6 +893,7 @@ class BenchmarkManager:
                     result["loss_percent"] = metrics.get("loss_percent")
                     result["error"] = metrics.get("error")
                     result["score"] = _score(metrics)
+                    result.update(_wg_fields(metrics))
                 except Exception as e:
                     logger.warning(f"Benchmark combo {core}/{mode} failed: {e}")
                     result["error"] = str(e)
@@ -949,6 +959,7 @@ class BenchmarkManager:
                     "loss_percent": metrics.get("loss_percent"),
                     "score": sc_score,
                     "error": metrics.get("error"),
+                    **_wg_fields(metrics),
                     "spec": {
                         "preset": sc.get("preset", "mci"),
                         "desync_mode": sc.get("desync_mode", "fake"),
@@ -992,6 +1003,7 @@ class BenchmarkManager:
             "loss_percent": best["loss_percent"] if best else None,
             "score": best["score"] if best else 0.0,
             "error": None if (best and best["ok"]) else (best["error"] if best else "All scenarios failed"),
+            **(_wg_fields(best) if best else {}),
             "scenarios": scenarios_results,
             "total_scenarios": len(scenarios_results),
             "successful_scenarios": sum(1 for s in scenarios_results if s["ok"]),
@@ -1077,22 +1089,31 @@ class BenchmarkManager:
                 else:
                     logger.warning(f"Tunnel {tunnel_id} did not report connected state before probe (last state={state_val if 'state_val' in locals() else 'unknown'})")
 
-            probe_host = foreign_ip if core == "zapret" else "127.0.0.1"
-            probe_port = test_port
+            # Every core, zapret included, is probed at its iran-side entry, so the
+            # measured path is the one clients use. UDP probes look like WireGuard
+            # when the foreign sink can answer them: zapret and multi-port hopping
+            # relay raw WireGuard, which a DPI drops while it let the old plain
+            # probe through. That is how both topped the benchmark and then
+            # carried nothing for real clients.
+            style = "wireguard" if (protocol == "udp" and sink_response.get("wg_probe")) else "plain"
             probe_response = await client.send_to_node(
                 node_id=iran_node_id,
                 endpoint="/api/agent/benchmark/probe",
                 data={
-                    "host": probe_host,
-                    "port": probe_port,
+                    "host": "127.0.0.1",
+                    "port": test_port,
                     "protocol": protocol,
                     "ping_count": PING_COUNT,
                     "throughput_seconds": THROUGHPUT_SECONDS,
+                    "style": style,
                 },
             )
             if probe_response.get("status") != "success":
                 raise RuntimeError(f"Probe failed: {probe_response.get('message', 'unknown error')}")
-            return probe_response.get("metrics") or {"ok": False, "error": "No metrics returned"}
+            metrics = probe_response.get("metrics") or {"ok": False, "error": "No metrics returned"}
+            if protocol == "udp":
+                metrics.setdefault("probe_style", style)
+            return metrics
         finally:
             # 4. Teardown, best effort.
             for node_id in (iran_node_id, foreign_node_id):

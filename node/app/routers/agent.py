@@ -362,6 +362,8 @@ class BenchmarkProbe(BaseModel):
     protocol: str = "tcp"
     ping_count: int = 10
     throughput_seconds: float = 3.0
+    # "wireguard": make UDP probe traffic look like WireGuard on the wire
+    style: str = "plain"
 
 
 @router.post("/benchmark/sink/start")
@@ -370,7 +372,10 @@ async def benchmark_sink_start(data: BenchmarkSinkStart):
     from app.benchmark import sink_manager
     try:
         sink_manager.start_sink(data.sink_id, data.port, data.protocol, data.duration_sec)
-        return {"status": "success", "message": f"Sink started on 127.0.0.1:{data.port}/{data.protocol}"}
+        # wg_probe tells the panel this sink answers WireGuard-shaped probes, so
+        # it only asks for them when both ends understand them.
+        return {"status": "success", "message": f"Sink started on 127.0.0.1:{data.port}/{data.protocol}",
+                "wg_probe": True}
     except Exception as e:
         logger.error(f"Failed to start benchmark sink: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -400,6 +405,7 @@ async def benchmark_probe(data: BenchmarkProbe):
             protocol=data.protocol,
             ping_count=data.ping_count,
             throughput_seconds=data.throughput_seconds,
+            style=data.style,
         )
         return {"status": "success", "metrics": metrics}
     except Exception as e:

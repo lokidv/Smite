@@ -1913,6 +1913,130 @@ class TrustTunnelAdapter:
         }
 
 
+# --- UDP / WireGuard anti-DPI desync ---------------------------------------
+#
+# Dual-node zapret and multi-port hopping both relay *raw* WireGuard from the
+# iran node to the foreign WireGuard port. On a filtered path the DPI
+# recognises WireGuard and drops it, so these cores only work when nfqws
+# disguises the start of each flow. Measured with real WireGuard handshakes on
+# a live Iran -> foreign pair (2026-09-12):
+#
+#   direct, or relay without desync   blocked on every attempt
+#   ipfrag2 (the old hard-coded mode)  got through only some of the time
+#   fake + badsum                      got through on every attempt
+#   fake + ttl, fake,ipfrag2           got through
+#
+# The DPI classifies a UDP flow by its first packets. A junk packet ahead of
+# the flow makes it stop inspecting, and the junk packet's bad UDP checksum
+# makes the far end's kernel drop it before WireGuard sees it. So fake+badsum
+# is the default, and whatever mode the panel chose is honoured instead of
+# being rewritten to ipfrag2 behind its back.
+_WG_SAFE_DESYNC_MODES = ("fake", "ipfrag2")  # others mangle or resize the datagram
+_UDP_FOOLING = ("badsum",)                    # badseq/ts/md5sig/datanoack are TCP-only
+
+
+def udp_desync_args(spec: Optional[Dict[str, Any]] = None) -> List[str]:
+    """nfqws desync arguments for a WireGuard/UDP flow, taken from a tunnel spec.
+
+    Honours desync_mode, desync_fooling, desync_ttl, repeats (or
+    desync_repeats) and extra_args. Anything missing falls back to fake+badsum.
+    Modes that would break WireGuard (TCP split modes, udplen, tamper) become
+    fake rather than being passed to nfqws.
+    """
+    s = spec or {}
+    modes: List[str] = []
+    for part in str(s.get("desync_mode") or "fake").lower().replace(" ", "").split(","):
+        if not part:
+            continue
+        part = part if part in _WG_SAFE_DESYNC_MODES else "fake"
+        if part not in modes:
+            modes.append(part)
+    modes = sorted(modes or ["fake"], key=lambda m: 0 if m == "fake" else 1)  # fake phase first
+
+    fooling = [f for f in str(s.get("desync_fooling") or "").lower().replace(" ", "").split(",")
+               if f in _UDP_FOOLING]
+    try:
+        ttl = int(s.get("desync_ttl")) if s.get("desync_ttl") not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        ttl = None
+    if "fake" in modes and not fooling and not ttl:
+        fooling = ["badsum"]  # the fake must never reach WireGuard intact
+
+    try:
+        repeats = int(s.get("repeats") or s.get("desync_repeats") or 2)
+    except (TypeError, ValueError):
+        repeats = 2
+    repeats = max(1, min(repeats, 10))
+
+    extra = str(s.get("extra_args") or "").strip()
+    args = ["--dpi-desync-any-protocol=1", f"--dpi-desync={','.join(modes)}"]
+    if fooling:
+        args.append(f"--dpi-desync-fooling={','.join(fooling)}")
+    if ttl:
+        args.append(f"--dpi-desync-ttl={ttl}")
+    args.append(f"--dpi-desync-repeats={repeats}")
+    if "ipfrag2" in modes and "--dpi-desync-ipfrag-pos-udp" not in extra:
+        args.append("--dpi-desync-ipfrag-pos-udp=8")
+    if "ipfrag2" not in modes and "--dpi-desync-cutoff" not in extra:
+        # Only the head of a flow needs the fake. Without a cutoff nfqws put two
+        # fakes in front of every packet: 422 fakes for a 211-packet burst.
+        args.append("--dpi-desync-cutoff=n2")
+    if "--ctrack-timeouts" not in extra:
+        # Treat 15s of silence as a new flow, so a flow the DPI has forgotten
+        # (an idle or sleeping client) gets a fake again when it resumes.
+        args.append("--ctrack-timeouts=60:300:60:15")
+    if extra:
+        import shlex
+        args.extend(shlex.split(extra))
+    return args
+
+
+def pick_nfqueue(preferred: int, lo: int = 200, hi: int = 999) -> int:
+    """`preferred` unless another nfqws already listens on it, else the first free queue.
+
+    Queue numbers come from a hash of the tunnel id modulo a few hundred, so two
+    tunnels on one node (typically several iran nodes landing on the same
+    foreign node) could collide. The second nfqws then failed to bind and the
+    tunnel ran without any desync.
+    """
+    used = set()
+    try:
+        with open("/proc/net/netfilter/nfnetlink_queue") as f:
+            for line in f:
+                first = line.split()[:1]
+                if first and first[0].isdigit():
+                    used.add(int(first[0]))
+    except OSError:
+        return preferred
+    if preferred not in used:
+        return preferred
+    for q in range(lo, hi + 1):
+        if q not in used:
+            return q
+    return preferred
+
+
+def start_nfqws(nfqws_bin: str, queue: int, filter_udp: str, desync: List[str], log_path: Path,
+                attempts: int = 3) -> subprocess.Popen:
+    """Start nfqws on `queue` and make sure it stayed up; raise with its own output otherwise."""
+    cmd = [str(nfqws_bin), "-q", str(queue), "--user=root", f"--filter-udp={filter_udp}"] + list(desync)
+    last = ""
+    for _ in range(attempts):
+        with open(log_path, "w") as log_f:
+            log_f.write("Command: " + " ".join(cmd) + "\n")
+            log_f.flush()
+            proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT, start_new_session=True)
+        time.sleep(0.4)
+        if proc.poll() is None:
+            return proc
+        try:
+            last = Path(log_path).read_text(errors="replace").strip().splitlines()[-1]
+        except Exception:
+            last = f"exit code {proc.returncode}"
+        time.sleep(0.4)
+    raise RuntimeError(f"nfqws could not start on queue {queue}: {last}")
+
+
 def start_udp_relay(listen_port: int, target_ip: str, target_port: int, log_path: Path,
                     attempts: int = 3) -> subprocess.Popen:
     """Start smite-udp-relay and prove it is actually listening before returning.
@@ -2279,22 +2403,16 @@ class ZapretAdapter:
                 "-m", "comment", "--comment", comment
             ], check=False)
 
-            # Return desync with nfqws on Foreign node for WireGuard replies
+            # Return desync on the foreign node, same strategy as the iran side,
+            # in case the DPI only sees this direction (asymmetric routing).
+            # Failing here is not fatal: the iran-side desync is what the
+            # measured path needed.
             import hashlib
-            queue = 300 + (int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16) % 200)
+            queue = pick_nfqueue(300 + (int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16) % 200))
             try:
                 binary_path = self._resolve_binary_path()
-                cmd_nfqws = [
-                    str(binary_path),
-                    "-q", str(queue),
-                    "--user=root",
-                    "--filter-udp=*",
-                    "--dpi-desync-any-protocol=1",
-                    "--dpi-desync=ipfrag2",
-                    "--dpi-desync-repeats=2",
-                    "--dpi-desync-ipfrag-pos-udp=8"
-                ]
-                proc = subprocess.Popen(cmd_nfqws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                proc = start_nfqws(str(binary_path), queue, "*", udp_desync_args(spec),
+                                   self.config_dir / f"{tunnel_id}_return.log")
                 self.processes[f"{tunnel_id}_nfqws"] = proc
 
                 out_rule = [
@@ -2352,18 +2470,15 @@ class ZapretAdapter:
         elif not filter_tcp and not filter_udp:
             filter_tcp = "443"
 
+        udp_args: List[str] = []
         if filter_udp:
-            # WireGuard / UDP anti-DPI evasion:
-            # TCP-only split modes (multisplit, fakedsplit, disorder2, etc.) destroy UDP datagrams.
-            # TCP fooling (badseq, ts) does nothing for UDP.
-            # Must use fake packets with invalid checksum (badsum) or IP layer 3 fragmentation (ipfrag2).
-            if preset in ("mci", "mtn", "fixed", "hybrid") or not desync_mode:
-                if not desync_mode or desync_mode in ("multisplit", "fakedsplit", "disorder2", "split", "fakeddisorder", "fake"):
-                    desync_mode = "ipfrag2"
-                if not desync_fooling or "badseq" in desync_fooling or "ts" in desync_fooling:
-                    desync_fooling = "none"
-                if not repeats:
-                    repeats = "2"
+            # WireGuard / UDP: the strategy comes from udp_desync_args(), which
+            # honours the preset's desync_mode/fooling/repeats. This block used to
+            # rewrite every preset (including "fake + badsum") to ipfrag2, the one
+            # mode measured to let WireGuard through only intermittently, so the
+            # benchmarked strategy never reached the real tunnel.
+            udp_args = udp_desync_args(spec)
+            desync_mode = next(a.split("=", 1)[1] for a in udp_args if a.startswith("--dpi-desync="))
             split_pos = ""
         else:
             # TCP / TLS DPI evasion
@@ -2458,31 +2573,32 @@ class ZapretAdapter:
             cmd.append(f"--filter-tcp={filter_tcp}")
         if filter_udp:
             cmd.append(f"--filter-udp={filter_udp}")
-            cmd.append("--dpi-desync-any-protocol=1")
-            if "ipfrag" in desync_mode and "--dpi-desync-ipfrag-pos-udp" not in extra_args:
-                cmd.append("--dpi-desync-ipfrag-pos-udp=8")
+            # tls/http can never match a UDP datagram and would switch desync off.
+            if filter_l7 and filter_l7.lower() not in ("none", "any", "", "tls", "http"):
+                cmd.append(f"--filter-l7={filter_l7}")
+            cmd.extend(udp_args)  # already carries extra_args
+        else:
+            if filter_l7 and filter_l7.lower() not in ("none", "any", ""):
+                cmd.append(f"--filter-l7={filter_l7}")
 
-        if filter_l7 and filter_l7.lower() not in ("none", "any", ""):
-            cmd.append(f"--filter-l7={filter_l7}")
+            cmd.append(f"--dpi-desync={desync_mode}")
 
-        cmd.append(f"--dpi-desync={desync_mode}")
+            if split_pos:
+                cmd.append(f"--dpi-desync-split-pos={split_pos}")
+            if split_seqovl:
+                cmd.append(f"--dpi-desync-split-seqovl={split_seqovl}")
+            if repeats:
+                cmd.append(f"--dpi-desync-repeats={repeats}")
 
-        if split_pos and not filter_udp:
-            cmd.append(f"--dpi-desync-split-pos={split_pos}")
-        if split_seqovl and not filter_udp:
-            cmd.append(f"--dpi-desync-split-seqovl={split_seqovl}")
-        if repeats:
-            cmd.append(f"--dpi-desync-repeats={repeats}")
-
-        if fake_tls_sni and not filter_udp:
-            cmd.append(f"--dpi-desync-fake-tls-mod=sni={fake_tls_sni}")
-        if desync_fooling and desync_fooling.lower() not in ("none", ""):
-            cmd.append(f"--dpi-desync-fooling={desync_fooling}")
-        if ttl not in (None, "", 0, "0"):
-            cmd.append(f"--dpi-desync-ttl={ttl}")
-        if extra_args:
-            import shlex
-            cmd.extend(shlex.split(extra_args))
+            if fake_tls_sni:
+                cmd.append(f"--dpi-desync-fake-tls-mod=sni={fake_tls_sni}")
+            if desync_fooling and desync_fooling.lower() not in ("none", ""):
+                cmd.append(f"--dpi-desync-fooling={desync_fooling}")
+            if ttl not in (None, "", 0, "0"):
+                cmd.append(f"--dpi-desync-ttl={ttl}")
+            if extra_args:
+                import shlex
+                cmd.extend(shlex.split(extra_args))
 
         # Start nfqws first. --queue-bypass means traffic flows untouched until the
         # iptables rules below are installed, so this ordering never drops packets.
@@ -3904,27 +4020,20 @@ class PortHoppingAdapter:
         subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         import hashlib
-        queue = 300 + (int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16) % 200)
         nfqws_bin = shutil.which("nfqws") or ("/usr/local/bin/nfqws" if os.path.exists("/usr/local/bin/nfqws") else None)
 
-        # Release any leftover socket and stale nfqws on target_port / queue
+        # Release a stale relay still holding our listen port (e.g. from before an
+        # agent restart). Our own rules and processes were already removed by
+        # self.remove() above. This used to also kill every nfqws filtering
+        # target_port and delete every smite_hop/smite_zap rule mentioning it —
+        # on a foreign node where several iran nodes' tunnels all target the same
+        # WireGuard port, applying one tunnel tore down all the others.
         try:
             subprocess.run(["pkill", "-9", "-f", f"smite-udp-relay {listen_port} "], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["pkill", "-9", "-f", f"nfqws.*filter-udp={target_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["pkill", "-9", "-f", f"nfqws.*-q {queue}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
         time.sleep(0.3)
-
-        # Clean any stale iptables rules targeting this port before adding new ones
-        for table_chain in [("mangle", "OUTPUT"), ("nat", "PREROUTING"), ("filter", "INPUT"), ("mangle", "POSTROUTING")]:
-            try:
-                out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
-                for line in out.splitlines():
-                    if f"{target_port}" in line and ("smite_hop" in line or "smite_zap" in line) and line.startswith("-A"):
-                        subprocess.run(["iptables", "-t", table_chain[0], "-D"] + line.split()[1:], check=False)
-            except Exception:
-                pass
+        queue = pick_nfqueue(300 + (int(hashlib.md5(tunnel_id.encode()).hexdigest()[:8], 16) % 200))
 
         if mode == "client" and target_ip and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
             # === IRAN NODE (Relay Mode) ===
@@ -3953,40 +4062,29 @@ class PortHoppingAdapter:
                     "-m", "comment", "--comment", comment
                 ], check=False)
 
-            # 3. Anti-DPI desync (ipfrag2) on mangle OUTPUT for outbound UDP to foreign server
-            if nfqws_bin:
-                try:
-                    cmd_nfqws = [
-                        str(nfqws_bin),
-                        "-q", str(queue),
-                        "--user=root",
-                        f"--filter-udp={target_port}",
-                        "--dpi-desync-any-protocol=1",
-                        "--dpi-desync=ipfrag2",
-                        "--dpi-desync-repeats=2",
-                        "--dpi-desync-ipfrag-pos-udp=8"
-                    ]
-                    for attempt in range(3):
-                        proc_nfqws = subprocess.Popen(cmd_nfqws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-                        time.sleep(0.2)
-                        if proc_nfqws.poll() is None:
-                            self.processes[f"{tunnel_id}_nfqws"] = proc_nfqws
-                            logger.info(f"PortHopping nfqws running on queue {queue} (PID {proc_nfqws.pid})")
-                            break
-                        else:
-                            logger.warning(f"nfqws exited with code {proc_nfqws.returncode} on attempt {attempt + 1}, retrying...")
-                            time.sleep(0.4)
-
-                    subprocess.run([
-                        "iptables", "-t", "mangle", "-I", "OUTPUT",
-                        "-d", target_ip, "-p", "udp", "--dport", str(target_port),
-                        "-m", "mark", "!", "--mark", "0x40000000/0x40000000",
-                        "-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass",
-                        "-m", "comment", "--comment", comment
-                    ], check=False)
-                    logger.info(f"Attached nfqws anti-DPI desync on queue {queue} for PortHopping {tunnel_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to attach nfqws to PortHopping {tunnel_id}: {e}")
+            # 3. Anti-DPI desync on the relay's outbound UDP to the foreign server.
+            # The relay forwards raw WireGuard, which a filtered path drops on
+            # sight, so without the desync this side carries nothing even though
+            # every process is up. Failing to start it is therefore fatal: it
+            # used to log a warning and report the tunnel as applied.
+            desync = udp_desync_args(spec)
+            try:
+                if not nfqws_bin:
+                    raise RuntimeError("nfqws binary not found; multi-port hopping needs it to get WireGuard past DPI")
+                proc_nfqws = start_nfqws(nfqws_bin, queue, str(target_port), desync,
+                                         self.state_dir / f"hop_nfqws_{tunnel_id}.log")
+            except Exception:
+                self.remove(tunnel_id)
+                raise
+            self.processes[f"{tunnel_id}_nfqws"] = proc_nfqws
+            subprocess.run([
+                "iptables", "-t", "mangle", "-I", "OUTPUT",
+                "-d", target_ip, "-p", "udp", "--dport", str(target_port),
+                "-m", "mark", "!", "--mark", "0x40000000/0x40000000",
+                "-j", "NFQUEUE", "--queue-num", str(queue), "--queue-bypass",
+                "-m", "comment", "--comment", comment
+            ], check=False)
+            logger.info(f"PortHopping {tunnel_id}: nfqws on queue {queue} (PID {proc_nfqws.pid}): {' '.join(desync)}")
 
         else:
             # === FOREIGN NODE (Endpoint Mode) ===
@@ -4007,30 +4105,14 @@ class PortHoppingAdapter:
                     "-m", "comment", "--comment", comment
                 ], check=False)
 
-            # 3. Attach return desync with nfqws on mangle OUTPUT
+            # 3. Return desync on mangle OUTPUT, same strategy as the iran side, in
+            # case the DPI only sees this direction. Not fatal: the measured path
+            # only needed the iran-side desync.
             if nfqws_bin:
                 try:
-                    cmd_nfqws = [
-                        str(nfqws_bin),
-                        "-q", str(queue),
-                        "--user=root",
-                        "--filter-udp=*",
-                        "--dpi-desync-any-protocol=1",
-                        "--dpi-desync=ipfrag2",
-                        "--dpi-desync-repeats=2",
-                        "--dpi-desync-ipfrag-pos-udp=8"
-                    ]
-                    for attempt in range(3):
-                        proc_nfqws = subprocess.Popen(cmd_nfqws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-                        time.sleep(0.2)
-                        if proc_nfqws.poll() is None:
-                            self.processes[f"{tunnel_id}_nfqws"] = proc_nfqws
-                            logger.info(f"PortHopping return nfqws running on queue {queue} (PID {proc_nfqws.pid})")
-                            break
-                        else:
-                            logger.warning(f"Return nfqws exited with code {proc_nfqws.returncode} on attempt {attempt + 1}, retrying...")
-                            time.sleep(0.4)
-
+                    proc_nfqws = start_nfqws(nfqws_bin, queue, "*", udp_desync_args(spec),
+                                             self.state_dir / f"hop_return_{tunnel_id}.log")
+                    self.processes[f"{tunnel_id}_nfqws"] = proc_nfqws
                     out_rule = [
                         "iptables", "-t", "mangle", "-I", "OUTPUT",
                         "-p", "udp", "--sport", str(target_port),
@@ -4096,7 +4178,11 @@ class PortHoppingAdapter:
             try:
                 out = subprocess.check_output(["iptables", "-t", table_chain[0], "-S", table_chain[1]], stderr=subprocess.DEVNULL).decode("utf-8")
                 for line in out.splitlines():
-                    matches_comment = comment in line or (not is_bench and "smite_hop_" in line)
+                    # Only this tunnel's rules. Matching any "smite_hop_" here meant
+                    # removing (or re-applying, which removes first) one tunnel
+                    # wiped every other multi-port tunnel on the node. Rules left
+                    # by deleted tunnels are swept at startup by sweep_orphan_rules.
+                    matches_comment = f"--comment {comment}" in line
                     matches_bench = is_bench and ("smite_hop_bench" in line or f"{tunnel_id[:12]}" in line)
                     if (matches_comment or matches_bench) and line.startswith("-A"):
                         d_cmd = ["iptables", "-t", table_chain[0], "-D"] + line.split()[1:]

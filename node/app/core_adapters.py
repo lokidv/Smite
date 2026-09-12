@@ -1912,6 +1912,77 @@ class TrustTunnelAdapter:
         }
 
 
+def start_udp_relay(listen_port: int, target_ip: str, target_port: int, log_path: Path,
+                    attempts: int = 3) -> subprocess.Popen:
+    """Start smite-udp-relay and prove it is actually listening before returning.
+
+    The relay exits immediately when it cannot bind — most often because the
+    port is already held by another tunnel's carrier (rathole, udp2raw, ...).
+    Both zapret and multi-port hopping used to treat that as success: zapret
+    never looked at the process again and mport_hop logged a warning and
+    carried on. The panel then showed the tunnel as active and connected while
+    nothing was forwarding anything, and the benchmark, which uses a fresh test
+    port, could not reproduce it. Raise instead, carrying the relay's own
+    message, so the failure surfaces where the tunnel is created.
+    """
+    relay_bin = ensure_udp_relay_binary()
+    log_f = open(log_path, "a", buffering=1)
+
+    def _port_owner():
+        """(process name, pid) currently bound to UDP listen_port, or None."""
+        try:
+            ss = subprocess.check_output(["ss", "-lnup"], stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+        except Exception:
+            return None
+        for line in ss.splitlines():
+            if re.search(rf"[:.]{listen_port}\s", line):
+                m = re.search(r'users:\(\("([^"]+)",pid=(\d+)', line)
+                return (m.group(1), int(m.group(2))) if m else ("?", 0)
+        return None
+
+    last_err = ""
+    for attempt in range(1, attempts + 1):
+        proc = subprocess.Popen(
+            [str(relay_bin), str(listen_port), target_ip, str(target_port)],
+            stdout=log_f, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        # The relay retries bind() itself for up to ~1.5s before giving up, so
+        # "still running after a moment" proves nothing. Wait for the socket to
+        # actually appear under THIS pid — that is the only real success signal.
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            owner = _port_owner()
+            if owner and owner[1] == proc.pid:
+                return proc
+            time.sleep(0.2)
+        if proc.poll() is None:
+            # Alive but never took the port: something else has it. Don't leave
+            # a zombie relay behind.
+            proc.kill()
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+        try:
+            tail = Path(log_path).read_text(errors="replace").strip().splitlines()
+            last_err = tail[-1] if tail else f"exit code {proc.returncode}"
+        except Exception:
+            last_err = f"exit code {proc.returncode}"
+        if "in use" in last_err.lower():
+            break  # will not fix itself; do not waste retries
+        time.sleep(0.4)
+
+    owner = _port_owner()
+    holder = f" (held by {owner[0]} pid {owner[1]})" if owner else ""
+    raise RuntimeError(
+        f"smite-udp-relay could not listen on UDP {listen_port}{holder}: {last_err}. "
+        f"Another tunnel on this node is probably already using that port; "
+        f"pick a different port for this tunnel."
+    )
+
+
 def ensure_udp_relay_binary() -> Path:
     """Ensure /usr/local/bin/smite-udp-relay exists. If missing, compile from source."""
     bin_path = Path("/usr/local/bin/smite-udp-relay")
@@ -2063,19 +2134,13 @@ class ZapretAdapter:
                 except Exception:
                     pass
 
+                # This never checked whether the relay survived its own start:
+                # on "bind: Address already in use" it exited at once, the
+                # tunnel was logged as started, and apply reported success.
                 log_file = self.config_dir / f"zap_relay_{tunnel_id}.log"
-                try:
-                    log_f = open(log_file, "w", buffering=1)
-                    proc_relay = subprocess.Popen(
-                        [str(relay_bin), str(actual_tgt_port), target_ip, str(actual_tgt_port)],
-                        stdout=log_f,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True
-                    )
-                    self.processes[f"{tunnel_id}_relay"] = proc_relay
-                    logger.info(f"zapret smite-udp-relay started: {actual_tgt_port} -> {target_ip}:{actual_tgt_port}")
-                except Exception as e:
-                    logger.error(f"Failed to start smite-udp-relay for zapret {tunnel_id}: {e}")
+                proc_relay = start_udp_relay(actual_tgt_port, target_ip, actual_tgt_port, log_file)
+                self.processes[f"{tunnel_id}_relay"] = proc_relay
+                logger.info(f"zapret smite-udp-relay started: {actual_tgt_port} -> {target_ip}:{actual_tgt_port} (PID {proc_relay.pid})")
 
                 self._run_ipt([
                     "iptables", "-I", "INPUT",
@@ -3840,28 +3905,13 @@ class PortHoppingAdapter:
 
         if mode == "client" and target_ip and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"):
             # === IRAN NODE (Relay Mode) ===
-            relay_bin = ensure_udp_relay_binary()
+            # The relay IS the tunnel on this side; if it cannot listen there is
+            # nothing to apply. Let the error propagate so the panel marks the
+            # tunnel as failed instead of "active" with nothing behind it.
             log_file = self.state_dir / f"hop_relay_{tunnel_id}.log"
-            proc_relay = None
-            try:
-                log_f = open(log_file, "a", buffering=1)
-                for attempt in range(3):
-                    proc_relay = subprocess.Popen(
-                        [str(relay_bin), str(target_port), target_ip, str(target_port)],
-                        stdout=log_f,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True
-                    )
-                    time.sleep(0.2)
-                    if proc_relay.poll() is None:
-                        self.processes[f"{tunnel_id}_relay"] = proc_relay
-                        logger.info(f"PortHopping smite-udp-relay started: {target_port} -> {target_ip}:{target_port} (PID {proc_relay.pid})")
-                        break
-                    else:
-                        logger.warning(f"smite-udp-relay exited immediately with code {proc_relay.returncode} on attempt {attempt + 1}, retrying...")
-                        time.sleep(0.4)
-            except Exception as e:
-                logger.error(f"Failed to start smite-udp-relay for PortHopping {tunnel_id}: {e}")
+            proc_relay = start_udp_relay(target_port, target_ip, target_port, log_file)
+            self.processes[f"{tunnel_id}_relay"] = proc_relay
+            logger.info(f"PortHopping smite-udp-relay started: {target_port} -> {target_ip}:{target_port} (PID {proc_relay.pid})")
 
             # 1. INPUT accept for target_port
             subprocess.run([
@@ -4058,8 +4108,17 @@ class PortHoppingAdapter:
 
     def health(self, tunnel_id: str) -> Dict[str, Any]:
         st = self.status(tunnel_id)
+        info = self.active_ranges.get(tunnel_id) or {}
+        target_ip = (info.get("target_ip") or "").strip()
+        # On the iran side the relay is the tunnel. "No relay process recorded"
+        # used to count as alive, so a relay that never started (port already
+        # in use) still reported healthy and the panel showed Connected.
+        needs_relay = bool(target_ip and target_ip not in ("127.0.0.1", "localhost", "0.0.0.0"))
         relay_proc = self.processes.get(f"{tunnel_id}_relay")
-        relay_alive = relay_proc.poll() is None if relay_proc is not None else True
+        if relay_proc is not None:
+            relay_alive = relay_proc.poll() is None
+        else:
+            relay_alive = not needs_relay
         nfqws_proc = self.processes.get(f"{tunnel_id}_nfqws")
         nfqws_alive = nfqws_proc.poll() is None if nfqws_proc is not None else True
         is_healthy = st.get("active", False) and relay_alive and nfqws_alive

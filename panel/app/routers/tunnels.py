@@ -1091,6 +1091,17 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
             }
         )
         if resp_i.get("status") != "success":
+            # The foreign side was applied a moment ago and would otherwise be
+            # left running (REDIRECT rule + return nfqws) for a tunnel that is
+            # now in error — one more orphan for the health monitor to find.
+            try:
+                await client.send_to_node(
+                    node_id=foreign_node.id,
+                    endpoint="/api/agent/tunnels/remove",
+                    data={"tunnel_id": db_tunnel.id},
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Tunnel {db_tunnel.id}: could not roll back foreign side after iran failure: {e}")
             db_tunnel.status = "error"
             db_tunnel.error_message = f"Iran node error: {resp_i.get('message', 'Failed to apply on Iran node')}"
             await db.commit()

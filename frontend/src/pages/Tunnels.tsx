@@ -1659,6 +1659,17 @@ const Tunnels = () => {
                         {tunnel.error_message}
                       </div>
                     )}
+                    {/* The panel moved this tunnel's listen port because the
+                        requested one was already bound on the node. Tell the
+                        operator, or clients get pointed at the wrong port. */}
+                    {(() => {
+                      const s: any = typeof tunnel.spec === 'string' ? (() => { try { return JSON.parse(tunnel.spec) } catch { return {} } })() : (tunnel.spec || {})
+                      return s?.port_note ? (
+                        <div className="mt-2 text-xs text-amber-700 dark:text-amber-400" dir="ltr">
+                          {s.port_note}
+                        </div>
+                      ) : null
+                    })()}
                   </div>
                 </div>
 

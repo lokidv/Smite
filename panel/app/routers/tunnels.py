@@ -1044,6 +1044,31 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
         foreign_ip = foreign_node.node_metadata.get("ip_address")
         target_port = spec_for_node.get("target_port") or 8863
         port_range = spec_for_node.get("port_range") or "20000:40000"
+        try:
+            target_port = int(target_port)
+        except (TypeError, ValueError):
+            target_port = 8863
+
+        # Pre-check: the iran relay must LISTEN somewhere free. target_port is
+        # the foreign WireGuard port and cannot change, but if another tunnel's
+        # carrier already holds it on the iran node (rathole for awg_ws, udp2raw
+        # for fec_faketcp), pick a free local port instead of failing to bind.
+        client = NodeClient()
+        from app.port_allocator import pick_free_listen_port
+        listen_port, port_note = await pick_free_listen_port(
+            client, db, iran_node.id, target_port, db_tunnel.id
+        )
+        if listen_port != target_port:
+            s = dict(db_tunnel.spec or {})
+            s["listen_port"] = listen_port
+            s["ports"] = [listen_port]          # what clients connect to on iran
+            s["port_note"] = port_note
+            db_tunnel.spec = s
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(db_tunnel, "spec")
+            await db.commit()
+            await db.refresh(db_tunnel)
+            logger.info(f"Tunnel {db_tunnel.id}: {port_note}")
 
         # 1. Apply on Foreign node (server mode: REDIRECT port_range -> target_port)
         iran_ip = iran_node.node_metadata.get("ip_address")
@@ -1054,7 +1079,6 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
             "ports": [target_port],
             "client_ip": iran_ip,
         }
-        client = NodeClient()
         resp_f = await client.send_to_node(
             node_id=foreign_node.id,
             endpoint="/api/agent/tunnels/apply",
@@ -1077,8 +1101,9 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
             "mode": "client",
             "target_ip": foreign_ip,
             "target_port": target_port,
+            "listen_port": listen_port,
             "port_range": port_range,
-            "ports": [target_port]
+            "ports": [listen_port],
         }
         resp_i = await client.send_to_node(
             node_id=iran_node.id,
@@ -1127,6 +1152,24 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
                 spec_for_node["target_port"] = int(str(spec_for_node["filter_udp"]).split(",")[0].split("-")[0].strip())
             except (TypeError, ValueError):
                 pass
+
+        # Pre-check the iran relay's listen port (same reasoning as mport_hop):
+        # the foreign WireGuard port stays the remote target, but if another
+        # carrier already holds it locally, listen on a free port instead.
+        try:
+            _zp = int(spec_for_node.get("target_port") or 8863)
+        except (TypeError, ValueError):
+            _zp = 8863
+        try:
+            from app.port_allocator import pick_free_listen_port
+            _lp, _note = await pick_free_listen_port(NodeClient(), db, node.id, _zp, db_tunnel.id)
+            if _lp != _zp:
+                spec_for_node["listen_port"] = _lp
+                spec_for_node["ports"] = [_lp]
+                spec_for_node["port_note"] = _note
+                logger.info(f"Tunnel {db_tunnel.id}: {_note}")
+        except Exception as e:  # noqa: BLE001
+            logger.info(f"Tunnel {db_tunnel.id}: listen-port pre-check skipped: {e}")
 
         # Apply endpoint mode on Foreign node (accept input and normalize return TOS/checksum)
         if f_node:

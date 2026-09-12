@@ -226,6 +226,68 @@ async def assign_hop_range(db, tunnel: Tunnel, iran_node=None, foreign_node=None
     return True
 
 
+async def _ports_claimed_in_db(db, node_id: str, exclude_id: str) -> Set[int]:
+    """UDP ports other active tunnels on this node already say they use."""
+    used: Set[int] = set()
+    result = await db.execute(select(Tunnel).where(Tunnel.status == "active"))
+    for t in result.scalars().all():
+        if t.id == exclude_id:
+            continue
+        if node_id not in {n for n in (_iran_node_of(t), t.foreign_node_id, t.node_id) if n}:
+            continue
+        spec = t.spec or {}
+        for key in ("listen_port", "target_port"):
+            v = spec.get(key)
+            if v is not None and str(v).isdigit():
+                used.add(int(v))
+        for v in (spec.get("ports") or []):
+            if str(v).isdigit():
+                used.add(int(v))
+    return used
+
+
+async def pick_free_listen_port(client, db, node_id: str, preferred: int, exclude_id: str,
+                                probe: int = 300) -> tuple:
+    """Return (port, note) — `preferred` if free on this node, else the nearest free one.
+
+    Free means: no other active tunnel in the DB claims it on this node, AND
+    nothing is actually bound to it there right now. The second check is what
+    the DB cannot do — a port is usually held by another tunnel's *carrier*
+    (rathole for awg_ws, udp2raw for fec_faketcp, WireGuard itself) rather than
+    recorded as that tunnel's port. That is exactly how zapret and mport_hop
+    ended up trying to bind the same 8863 a rathole already owned.
+
+    `note` is empty when `preferred` was used, otherwise a sentence saying what
+    was picked and why, meant to be surfaced to the operator.
+    """
+    used = await _ports_claimed_in_db(db, node_id, exclude_id)
+    owners = {}
+    try:
+        res = await client.send_to_node(node_id, "/api/agent/ports/used", {})
+        if isinstance(res, dict) and res.get("status") == "success":
+            for p, who in (res.get("udp") or {}).items():
+                used.add(int(p))
+                owners[int(p)] = who
+    except Exception as e:  # noqa: BLE001
+        # Cannot ask the node (older build / unreachable): fall back to DB-only.
+        logger.info(f"[port-alloc] ports/used unavailable on node {node_id}: {e}")
+
+    if preferred not in used:
+        return preferred, ""
+
+    holder = owners.get(preferred) or {}
+    who = f" (held by {holder.get('proc')} pid {holder.get('pid')})" if holder.get("proc") else ""
+    for cand in range(preferred + 1, min(preferred + probe, 65535)):
+        if cand not in used:
+            note = (
+                f"UDP {preferred} is already in use on this node{who}; "
+                f"this tunnel listens on {cand} instead. Point clients at port {cand}."
+            )
+            logger.info(f"[port-alloc] node {node_id}: {note}")
+            return cand, note
+    return preferred, f"UDP {preferred} is in use on this node{who} and no free port was found nearby."
+
+
 def _pick(preferred: int, used: Set[int], window) -> int:
     lo, hi = window
     if preferred and preferred not in used:

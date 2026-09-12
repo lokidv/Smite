@@ -213,6 +213,39 @@ async def get_version():
 
 # ---- Benchmark (tunnel quality test) ----
 
+@router.get("/ports/used")
+@router.post("/ports/used")
+async def ports_used():
+    """Every UDP/TCP port something is bound to on this node, with its owner.
+
+    The panel uses this to pick a listen port that is actually free before it
+    applies a tunnel, instead of discovering the clash when the relay fails to
+    bind. The DB alone cannot answer this: a port is often held by another
+    tunnel's *carrier* (rathole, udp2raw, ...) rather than recorded as that
+    tunnel's port.
+    """
+    import subprocess
+
+    out = {"udp": {}, "tcp": {}}
+    try:
+        text = subprocess.check_output(["ss", "-lnup", "-lntp"], stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+    except Exception as e:
+        return {"status": "error", "message": f"ss failed: {e}", **out}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0] not in ("udp", "tcp"):
+            continue
+        m = re.search(r"[:.](\d+)\s*$", parts[4])
+        if not m:
+            continue
+        port = int(m.group(1))
+        owner = re.search(r'users:\(\("([^"]+)",pid=(\d+)', line)
+        out[parts[0]][port] = (
+            {"proc": owner.group(1), "pid": int(owner.group(2))} if owner else {"proc": "?", "pid": 0}
+        )
+    return {"status": "success", **out}
+
+
 class PathCheck(BaseModel):
     """Ports whose data path should be audited."""
     ports: list = []

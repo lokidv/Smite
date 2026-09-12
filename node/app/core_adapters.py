@@ -2127,10 +2127,17 @@ class ZapretAdapter:
                 subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 relay_bin = ensure_udp_relay_binary()
                 actual_tgt_port = target_port or int(str(filter_udp).split(",")[0].split("-")[0].strip())
+                # Local listen port may differ from the remote target (see
+                # PortHoppingAdapter): the panel picks a free one when the
+                # foreign WireGuard port is already bound here by another carrier.
+                try:
+                    listen_port = int(spec.get("listen_port") or actual_tgt_port)
+                except (TypeError, ValueError):
+                    listen_port = actual_tgt_port
                 nat_comment = f"smite_zapret_nat_{tunnel_id[:8]}"
                 
                 try:
-                    subprocess.run(["pkill", "-f", f"smite-udp-relay.*{actual_tgt_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(["pkill", "-f", f"smite-udp-relay {listen_port} "], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
 
@@ -2138,13 +2145,13 @@ class ZapretAdapter:
                 # on "bind: Address already in use" it exited at once, the
                 # tunnel was logged as started, and apply reported success.
                 log_file = self.config_dir / f"zap_relay_{tunnel_id}.log"
-                proc_relay = start_udp_relay(actual_tgt_port, target_ip, actual_tgt_port, log_file)
+                proc_relay = start_udp_relay(listen_port, target_ip, actual_tgt_port, log_file)
                 self.processes[f"{tunnel_id}_relay"] = proc_relay
-                logger.info(f"zapret smite-udp-relay started: {actual_tgt_port} -> {target_ip}:{actual_tgt_port} (PID {proc_relay.pid})")
+                logger.info(f"zapret smite-udp-relay started: {listen_port} -> {target_ip}:{actual_tgt_port} (PID {proc_relay.pid})")
 
                 self._run_ipt([
                     "iptables", "-I", "INPUT",
-                    "-p", "udp", "--dport", str(actual_tgt_port),
+                    "-p", "udp", "--dport", str(listen_port),
                     "-j", "ACCEPT",
                     "-m", "comment", "--comment", nat_comment
                 ])
@@ -3871,6 +3878,16 @@ class PortHoppingAdapter:
             target_port = int(target_port)
         except (TypeError, ValueError):
             target_port = 8863
+        # On the iran side the port the relay LISTENS on and the port it forwards
+        # TO on the foreign node are different roles. They used to be one value,
+        # so when the foreign WireGuard port was already taken locally by another
+        # tunnel's carrier there was no way to keep the remote target and still
+        # bind. The panel now hands us a free `listen_port`; the remote stays
+        # `target_port`. Unset -> identical, exactly as before.
+        try:
+            listen_port = int(spec.get("listen_port") or target_port)
+        except (TypeError, ValueError):
+            listen_port = target_port
 
         raw_range = str(spec.get("port_range") or "20000:40000")
         port_range = raw_range.replace("-", ":")
@@ -3886,7 +3903,7 @@ class PortHoppingAdapter:
 
         # Release any leftover socket and stale nfqws on target_port / queue
         try:
-            subprocess.run(["pkill", "-9", "-f", f"smite-udp-relay.*{target_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-9", "-f", f"smite-udp-relay {listen_port} "], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["pkill", "-9", "-f", f"nfqws.*filter-udp={target_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["pkill", "-9", "-f", f"nfqws.*-q {queue}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
@@ -3909,24 +3926,24 @@ class PortHoppingAdapter:
             # nothing to apply. Let the error propagate so the panel marks the
             # tunnel as failed instead of "active" with nothing behind it.
             log_file = self.state_dir / f"hop_relay_{tunnel_id}.log"
-            proc_relay = start_udp_relay(target_port, target_ip, target_port, log_file)
+            proc_relay = start_udp_relay(listen_port, target_ip, target_port, log_file)
             self.processes[f"{tunnel_id}_relay"] = proc_relay
-            logger.info(f"PortHopping smite-udp-relay started: {target_port} -> {target_ip}:{target_port} (PID {proc_relay.pid})")
+            logger.info(f"PortHopping smite-udp-relay started: {listen_port} -> {target_ip}:{target_port} (PID {proc_relay.pid})")
 
-            # 1. INPUT accept for target_port
+            # 1. INPUT accept for the local listen port
             subprocess.run([
                 "iptables", "-I", "INPUT",
-                "-p", "udp", "--dport", str(target_port),
+                "-p", "udp", "--dport", str(listen_port),
                 "-j", "ACCEPT",
                 "-m", "comment", "--comment", comment
             ], check=False)
 
-            # 2. PREROUTING REDIRECT for port_range -> target_port
+            # 2. PREROUTING REDIRECT for port_range -> local listen port
             if port_range:
                 subprocess.run([
                     "iptables", "-t", "nat", "-A", "PREROUTING",
                     "-p", "udp", "--dport", port_range,
-                    "-j", "REDIRECT", "--to-ports", str(target_port),
+                    "-j", "REDIRECT", "--to-ports", str(listen_port),
                     "-m", "comment", "--comment", comment
                 ], check=False)
 
@@ -4041,6 +4058,7 @@ class PortHoppingAdapter:
 
         self.active_ranges[tunnel_id] = {
             "target_port": target_port,
+            "listen_port": listen_port,
             "port_range": port_range,
             "target_ip": target_ip,
             "comment": comment,

@@ -2,6 +2,7 @@
 from typing import Protocol, Dict, Any, Optional, List
 import subprocess
 import os
+import re
 import psutil
 import time
 import logging
@@ -2114,7 +2115,8 @@ class ZapretAdapter:
         direction: str,
         target_ip: str = "",
         tunnel_id: str = "",
-        target_port: int = 0
+        target_port: int = 0,
+        listen_port: int = 0
     ):
         # Relay mode: if target_ip is remote and filter_udp is specified, run smite-udp-relay
         if target_ip and filter_udp and tunnel_id:
@@ -2130,10 +2132,7 @@ class ZapretAdapter:
                 # Local listen port may differ from the remote target (see
                 # PortHoppingAdapter): the panel picks a free one when the
                 # foreign WireGuard port is already bound here by another carrier.
-                try:
-                    listen_port = int(spec.get("listen_port") or actual_tgt_port)
-                except (TypeError, ValueError):
-                    listen_port = actual_tgt_port
+                listen_port = int(listen_port or actual_tgt_port)
                 nat_comment = f"smite_zapret_nat_{tunnel_id[:8]}"
                 
                 try:
@@ -2433,6 +2432,12 @@ class ZapretAdapter:
                 target_port = int(filter_udp.split(",")[0].split("-")[0].strip())
             except (TypeError, ValueError):
                 pass
+        # Local listen port may differ from the remote target: the panel picks a
+        # free one when the foreign port is already bound here by another carrier.
+        try:
+            listen_port = int(spec.get("listen_port") or 0)
+        except (TypeError, ValueError):
+            listen_port = 0
 
         try:
             max_pkt = int(spec.get("max_pkt") or 10)
@@ -2518,7 +2523,8 @@ class ZapretAdapter:
         try:
             self._setup_iptables(
                 post_chain, pre_chain, filter_tcp, filter_udp, queue, max_pkt, direction,
-                target_ip=target_ip, tunnel_id=tunnel_id, target_port=target_port
+                target_ip=target_ip, tunnel_id=tunnel_id, target_port=target_port,
+                listen_port=listen_port
             )
         except Exception:
             self._teardown_iptables(post_chain, pre_chain, tunnel_id=tunnel_id)

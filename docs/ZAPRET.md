@@ -246,7 +246,29 @@ DPIها فرق دارند؛ بهترین استراتژی را با آزمون �
 
 ---
 
-## ۷) عیب‌یابی
+## ۷) zapret و Multi-Port Hopping برای وایرگارد (دو‌نودی: ایران ← خارج)
+
+در حالت دو‌نودی، zapret و Multi-Port Hopping روی نود ایران یک رلهٔ UDP (`smite-udp-relay`) اجرا می‌کنند که بسته‌های **خامِ وایرگارد** را به پورت وایرگاردِ سرور خارج (مثلاً `8863`) می‌فرستد. چون خودِ وایرگارد رمزنگاری یا پوشانده نمی‌شود، کار اصلی را `nfqws` انجام می‌دهد.
+
+**چه چیزی واقعاً کار می‌کند** (اندازه‌گیری‌شده با handshake واقعیِ وایرگارد بین یک نود ایران و یک نود خارج، ۱۲ سپتامبر ۲۰۲۶):
+
+| روش | نتیجه |
+|-----|-------|
+| مستقیم، یا رله بدون desync | در همهٔ تلاش‌ها بلاک شد |
+| `ipfrag2` (پیش‌فرض قبلی) | فقط گاهی عبور کرد |
+| `fake` + `badsum` (پیش‌فرض فعلی) | در همهٔ تلاش‌ها عبور کرد |
+| `fake` + TTL، و `fake,ipfrag2` | عبور کرد |
+
+DPI هر جریان UDP را از روی اولین بسته‌هایش دسته‌بندی می‌کند. یک بستهٔ جعلی جلوی جریان باعث می‌شود DPI دیگر آن جریان را بررسی نکند، و چون checksum آن بسته عمداً خراب است، کرنل سرور مقصد آن را دور می‌اندازد و به وایرگارد نمی‌رسد. `--dpi-desync-cutoff=n2` باعث می‌شود بستهٔ جعلی فقط در شروع هر جریان فرستاده شود، و بعد از ۱۵ ثانیه سکوت دوباره فرستاده می‌شود.
+
+- پریست‌های `mci` و `mtn` همین روش `fake` + `badsum` هستند؛ `fixed` همان `ipfrag2` است و `hybrid` ترکیب `fake,ipfrag2`. هر پریستی که انتخاب کنید دقیقاً همان روی نود اجرا می‌شود (قبلاً همه به `ipfrag2` تبدیل می‌شدند).
+- **تست اتصال بین دو سرور** حالا برای هسته‌های UDP با ترافیکی شبیه وایرگارد انجام می‌شود (handshake + بسته‌های داده، روی ۳ اتصال جداگانه) و zapret را با همان رله‌ای که تانل واقعی می‌سازد تست می‌کند. اگر UDP معمولی عبور کند ولی وایرگارد فیلتر شود، نتیجه «ناموفق» با توضیح همین موضوع نشان داده می‌شود؛ قبلاً چنین مسیری «موفق» اعلام می‌شد.
+- اگر پورت وایرگارد (مثلاً `8863`) روی نود ایران از قبل دست تانل دیگری باشد (مثلاً rathole برای awg_ws)، پنل خودش پورت آزاد بعدی (مثلاً `8864`) را برای گوش‌دادن انتخاب می‌کند و روی کارت تانل می‌نویسد. **Endpoint کانفیگ وایرگارد را روی همان پورت بگذارید.** این پورت در ری‌استارت و re-apply ثابت می‌ماند.
+- هر تانل Multi-Port Hopping یک بازهٔ ۵۱۲تاییِ اختصاصی می‌گیرد؛ فیلد بازه را خالی بگذارید تا پنل خودش انتخاب کند.
+
+---
+
+## ۸) عیب‌یابی
 
 - **تونل error شد:** لاگ نود را ببینید (`smite-node logs` یا `journalctl -u smite-node`). معمول‌ترین علت‌ها: نبودن `nfqws` در PATH، نبودن قابلیت‌های `NET_ADMIN`/`NET_RAW`، یا نبودن ماژول `nfnetlink_queue`.
 - **لاگ خود nfqws:** روی نود در مسیر `/etc/smite-node/zapret/<tunnel_id>.log` قرار دارد.
@@ -256,7 +278,7 @@ DPIها فرق دارند؛ بهترین استراتژی را با آزمون �
 
 ---
 
-## ۸) مرجع: معادل دستی (فقط برای درک)
+## ۹) مرجع: معادل دستی (فقط برای درک)
 
 Smite کارهای زیر را خودکار انجام می‌دهد؛ این بخش صرفاً برای شفافیت است. **نیازی نیست این‌ها را دستی اجرا کنید** و برخلاف اسکریپت‌های رایج، Smite هرگز `iptables -F`/`-X` سراسری نمی‌زند.
 
@@ -284,3 +306,5 @@ nfqws -q <queue> --filter-tcp=443 --filter-l7=tls \
 Create it from **Tunnels → Create Tunnel → Core: Zapret**, pick the node, and tune the desync strategy (start with `fake` / `badseq,ts` / fake SNI `hcaptcha.com`). The optional **Target IP** field scopes the NFQUEUE rules to a single destination IP. Smite installs per-tunnel NFQUEUE `iptables` chains (never a global flush) and runs/stops `nfqws` for you. Requires `NET_ADMIN` + `NET_RAW`, which are pre-configured in both the Docker and native installs.
 
 **SNI Spoof core (`snispoof`)** automates the full recipe: it generates and runs an Xray **front proxy** (local VLESS/TCP inbound on `127.0.0.1:<local port>` + a VLESS WS/TLS domain-fronting outbound to a CDN edge IP/domain with the real backend SNI/Host), and composes the zapret desync on the front port — all as one managed single-node tunnel. Point your proxy panel (e.g. Sanaei) outbound at `127.0.0.1:<local port>` with the generated inbound UUID (`security: none`, no flow). A pasted `vless://` share link can prefill the form. Configs live in `/etc/smite-node/snispoof/`, logs in `/etc/smite-node/snispoof/<tunnel_id>.log` (xray) and `/etc/smite-node/zapret/<tunnel_id>.log` (nfqws).
+
+**WireGuard between two nodes (zapret / Multi-Port Hopping).** In dual-node mode both cores relay *raw* WireGuard from the iran node to the foreign WireGuard port, so nfqws is what gets it past DPI. Measured with real WireGuard handshakes on a live Iran -> foreign pair: raw WireGuard (direct or relayed) was blocked every time, `ipfrag2` (the old hard-coded mode) got through only some of the time, and `fake` + `badsum` got through every time, so it is now the default and the chosen preset is honoured instead of being rewritten to `ipfrag2`. The benchmark tests UDP cores with WireGuard-shaped traffic over three separate connections and runs zapret through the same relay a real tunnel uses; a path that carries plain UDP but filters WireGuard is reported as failed. When the WireGuard port is already held on the iran node, the tunnel listens on the next free port (shown on the tunnel card) and keeps it across re-applies.

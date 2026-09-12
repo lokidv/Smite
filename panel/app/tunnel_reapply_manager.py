@@ -126,6 +126,31 @@ class TunnelReapplyManager:
             
             for tunnel in tunnels:
                 try:
+                    if (tunnel.core == "zapret" and tunnel.foreign_node_id) or (
+                        tunnel.core == "mport_hop" and tunnel.iran_node_id and tunnel.foreign_node_id
+                    ):
+                        # Same code path as create. This loop had its own copy,
+                        # which dropped the chosen iran listen port (so every
+                        # restart / self-heal moved the relay back onto a port
+                        # another carrier holds and broke the tunnel), never sent
+                        # the desync strategy to the foreign side, and kept a
+                        # 127.0.0.1 relay target.
+                        from app.routers.tunnels import apply_singlenode_tunnel
+                        before = tunnel.status
+                        t = await apply_singlenode_tunnel(tunnel, session)
+                        if t.status == "active":
+                            applied += 1
+                        else:
+                            failed += 1
+                            logger.error(f"Failed to reapply tunnel {tunnel.id}: {t.error_message}")
+                            # Re-apply never used to change a tunnel's status on
+                            # failure, and only active tunnels are self-healed, so
+                            # keep it active and record why the attempt failed.
+                            t.status = before
+                            t.error_message = f"Last re-apply failed: {t.error_message}"
+                            await session.commit()
+                        continue
+
                     is_reverse_tunnel = tunnel.core in {"rathole", "backhaul", "chisel", "frp", "udp2raw", "trusttunnel", "hysteria2", "tuic", "obfs4", "awg_ws", "fec_faketcp"}
                     
                     if is_reverse_tunnel:

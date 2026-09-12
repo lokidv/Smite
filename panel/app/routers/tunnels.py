@@ -199,6 +199,14 @@ def normalize_zapret_spec(spec: dict) -> dict:
         # UDP / WireGuard anti-DPI evasion
         # TCP-only split modes (multisplit, fakedsplit, disorder2) destroy WireGuard UDP packets.
         # Instead, use fake packet with invalid UDP checksum (badsum) or IP fragmentation (ipfrag2).
+        if preset in ("mci", "mtn") and s.get("desync_mode") == "ipfrag2" and s.get("desync_fooling") in ("none", "", None):
+            # Written by the old "change core" path, which pinned every zapret
+            # tunnel to ipfrag2 whatever its preset. mci/mtn are fake+badsum
+            # presets (the UI clears the preset when a mode is picked by hand),
+            # so drop the pinned values and let the preset apply.
+            s.pop("desync_mode", None)
+            s.pop("desync_fooling", None)
+            s.pop("repeats", None)
         if s.get("filter_tcp") in (None, "", "443"):
             s["filter_tcp"] = ""
         s.setdefault("direction", "out")
@@ -628,6 +636,17 @@ def normalize_mport_hop_spec(spec: dict) -> dict:
 # Single-node cores: run on exactly one node (no iran/foreign pair).
 SINGLE_NODE_CORES = {"zapret", "snispoof", "warp", "mport_hop"}
 
+# nfqws strategy keys for the WireGuard-carrying cores. Both ends get the same
+# values so the foreign node's return desync matches what the iran side sends.
+UDP_DESYNC_KEYS = ("preset", "desync_mode", "desync_fooling", "desync_ttl", "repeats", "extra_args")
+
+# A relay target of "here" or the old default fronting IP means "not chosen yet".
+_UNSET_TARGETS = ("", "127.0.0.1", "localhost", "0.0.0.0", "104.19.229.21")
+
+
+def _desync_subset(spec: dict) -> dict:
+    return {k: spec[k] for k in UDP_DESYNC_KEYS if spec.get(k) not in (None, "")}
+
 SINGLE_NODE_NORMALIZERS = {
     "zapret": normalize_zapret_spec,
     "snispoof": normalize_snispoof_spec,
@@ -831,29 +850,29 @@ def build_spec_for_core(new_core: str, new_type: str, exposed: list, tunnel_id: 
             "ports": ports_int,
         }
     if new_core == "mport_hop":
+        # No port_range: assign_hop_range gives the tunnel its own slice. No
+        # target_ip: the relay target is the foreign node, resolved at apply time
+        # (target_host here is where the old core delivered on the foreign side,
+        # usually 127.0.0.1, which is meaningless as a relay destination).
         return {
             "type": new_type or "udp",
-            "target_host": target_host,
-            "target_ip": target_host,
-            "foreign_ip": target_host,
-            "target_port": primary["port"],
-            "port_range": "20000:40000",
+            "target_port": int(primary.get("target_port") or primary["port"]),
             "ports": [primary["port"]],
         }
     if new_core == "zapret":
+        # Relays to the foreign WireGuard port, so the target is the foreign node
+        # (resolved at apply time), never target_host: that was 127.0.0.1 for the
+        # carrier cores, and a zapret spec pointing at 127.0.0.1 started no relay
+        # at all. The desync follows the preset (normalize_zapret_spec); it used
+        # to be pinned to ipfrag2, which WireGuard only intermittently survives.
         preset = new_type if new_type in ("mci", "mtn", "fixed", "hybrid") else "mci"
+        wg_port = int(primary.get("target_port") or primary["port"])
         return {
             "preset": preset,
-            "filter_udp": str(primary["port"]),
+            "filter_udp": str(wg_port),
             "filter_tcp": "",
-            "target_host": target_host,
-            "target_ip": target_host,
-            "foreign_ip": target_host,
-            "target_port": primary["port"],
+            "target_port": wg_port,
             "ports": [primary["port"]],
-            "desync_mode": "ipfrag2",
-            "desync_fooling": "none",
-            "repeats": 2,
             "direction": "out",
         }
     raise HTTPException(status_code=400, detail=f"Unsupported core for change: {new_core}")
@@ -965,6 +984,14 @@ async def change_tunnel_core_type(
         # Tear down the old core everywhere before switching adapters.
         stop_panel_managers_for_core(tunnel, request)
         await remove_tunnel_from_all_nodes(tunnel, db)
+        if new_core == "mport_hop":
+            # Its own port slice, same as on create (after the teardown: the
+            # panel-manager stop above still needs the old core on the row).
+            from app.port_allocator import assign_hop_range
+            tunnel.core = new_core  # assign_hop_range only acts on mport_hop rows
+            tunnel.spec = new_spec
+            await assign_hop_range(db, tunnel)
+            new_spec = dict(tunnel.spec or new_spec)
 
     logger.info(
         f"Changing tunnel {tunnel.id} core/type: {old_core}/{tunnel.type} -> {new_core}/{new_type}, "
@@ -1043,6 +1070,14 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
 
         foreign_ip = foreign_node.node_metadata.get("ip_address")
         target_port = spec_for_node.get("target_port") or 8863
+        if not spec_for_node.get("port_range"):
+            # Allocation at create time can be skipped (it logs and carries on);
+            # never fall back to the shared 20000:40000 range in that case.
+            from app.port_allocator import assign_hop_range
+            if await assign_hop_range(db, db_tunnel, iran_node, foreign_node):
+                await db.commit()
+                await db.refresh(db_tunnel)
+                spec_for_node = normalizer(db_tunnel.spec)
         port_range = spec_for_node.get("port_range") or "20000:40000"
         try:
             target_port = int(target_port)
@@ -1056,19 +1091,25 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
         client = NodeClient()
         from app.port_allocator import pick_free_listen_port
         listen_port, port_note = await pick_free_listen_port(
-            client, db, iran_node.id, target_port, db_tunnel.id
+            client, db, iran_node.id, target_port, db_tunnel.id,
+            current=(db_tunnel.spec or {}).get("listen_port"),
         )
-        if listen_port != target_port:
-            s = dict(db_tunnel.spec or {})
+        # Always record the listen port, so a later re-apply keeps it.
+        s = dict(db_tunnel.spec or {})
+        if s.get("listen_port") != listen_port or s.get("ports") != [listen_port] or port_note:
             s["listen_port"] = listen_port
             s["ports"] = [listen_port]          # what clients connect to on iran
-            s["port_note"] = port_note
+            if port_note:
+                s["port_note"] = port_note
+            elif listen_port == target_port:
+                s.pop("port_note", None)
             db_tunnel.spec = s
             from sqlalchemy.orm.attributes import flag_modified
             flag_modified(db_tunnel, "spec")
             await db.commit()
             await db.refresh(db_tunnel)
-            logger.info(f"Tunnel {db_tunnel.id}: {port_note}")
+            if port_note:
+                logger.info(f"Tunnel {db_tunnel.id}: {port_note}")
 
         # 1. Apply on Foreign node (server mode: REDIRECT port_range -> target_port)
         iran_ip = iran_node.node_metadata.get("ip_address")
@@ -1078,6 +1119,7 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
             "port_range": port_range,
             "ports": [target_port],
             "client_ip": iran_ip,
+            **_desync_subset(spec_for_node),
         }
         resp_f = await client.send_to_node(
             node_id=foreign_node.id,
@@ -1104,6 +1146,7 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
             "listen_port": listen_port,
             "port_range": port_range,
             "ports": [listen_port],
+            **_desync_subset(spec_for_node),
         }
         resp_i = await client.send_to_node(
             node_id=iran_node.id,
@@ -1145,7 +1188,7 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
         f_res = await db.execute(select(Node).where(Node.id == db_tunnel.foreign_node_id))
         f_node = f_res.scalar_one_or_none()
         if f_node and f_node.node_metadata.get("ip_address"):
-            if not tgt or tgt == "104.19.229.21":
+            if tgt in _UNSET_TARGETS:
                 spec_for_node["target_ip"] = f_node.node_metadata.get("ip_address")
         if not spec_for_node.get("target_port") and spec_for_node.get("filter_udp"):
             try:
@@ -1162,12 +1205,16 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
             _zp = 8863
         try:
             from app.port_allocator import pick_free_listen_port
-            _lp, _note = await pick_free_listen_port(NodeClient(), db, node.id, _zp, db_tunnel.id)
-            if _lp != _zp:
-                spec_for_node["listen_port"] = _lp
-                spec_for_node["ports"] = [_lp]
+            _lp, _note = await pick_free_listen_port(NodeClient(), db, node.id, _zp, db_tunnel.id,
+                                                     current=spec_for_node.get("listen_port"))
+            # Always record it (persisted below), so a re-apply keeps the port.
+            spec_for_node["listen_port"] = _lp
+            spec_for_node["ports"] = [_lp]
+            if _note:
                 spec_for_node["port_note"] = _note
                 logger.info(f"Tunnel {db_tunnel.id}: {_note}")
+            elif _lp == _zp:
+                spec_for_node.pop("port_note", None)
         except Exception as e:  # noqa: BLE001
             logger.info(f"Tunnel {db_tunnel.id}: listen-port pre-check skipped: {e}")
 
@@ -1179,7 +1226,7 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
                 await db.commit()
             client_f = NodeClient()
             try:
-                await client_f.send_to_node(
+                resp_f = await client_f.send_to_node(
                     node_id=f_node.id,
                     endpoint="/api/agent/tunnels/apply",
                     data={
@@ -1190,11 +1237,22 @@ async def apply_singlenode_tunnel(db_tunnel: Tunnel, db: AsyncSession) -> Tunnel
                             "mode": "server",
                             "target_port": f_target_port,
                             "client_ip": node.node_metadata.get("ip_address"),
+                            **_desync_subset(spec_for_node),
                         },
                     },
                 )
+                if resp_f.get("status") != "success":
+                    raise RuntimeError(resp_f.get("message", "Failed to apply on foreign node"))
             except Exception as e:
-                logger.warning(f"Zapret: failed to apply return normalizer on foreign node: {e}")
+                # The foreign side opens the WireGuard port and runs the return
+                # desync. Carrying on without it left a tunnel reported active
+                # whose far end was never set up.
+                logger.warning(f"Zapret {db_tunnel.id}: foreign apply failed: {e}")
+                db_tunnel.status = "error"
+                db_tunnel.error_message = f"Foreign node error: {e}"
+                await db.commit()
+                await db.refresh(db_tunnel)
+                return db_tunnel
 
     # Persist normalized fields (e.g. the auto-generated snispoof inbound_uuid)
     # so re-applies and the UI always see the same values.
@@ -1437,9 +1495,14 @@ async def create_tunnel(tunnel: TunnelCreate, request: Request, db: AsyncSession
     foreign_node_id_to_store = (foreign_node.id if foreign_node else None) or tunnel.foreign_node_id or None
     iran_node_id_to_store = (iran_node.id if iran_node else None) or tunnel.iran_node_id or None
 
-    # Defensive check: detect port collisions with active tunnels on the same Iran node
+    # Defensive check: detect port collisions with active tunnels on the same Iran node.
+    # Skipped for zapret / mport_hop between two nodes: they pick a free iran
+    # listen port themselves when applied (pick_free_listen_port), and the port
+    # in their spec is the foreign WireGuard port they relay to, which an
+    # awg/fec tunnel exposing the same number on the iran side does not block.
+    auto_listen_port = tunnel.core in ("zapret", "mport_hop") and bool(foreign_node_id_to_store)
     target_iran_id = iran_node_id_to_store or tunnel_node_id
-    if target_iran_id and tunnel.spec:
+    if target_iran_id and tunnel.spec and not auto_listen_port:
         candidate_ports = set()
         p_list = tunnel.spec.get("ports") or []
         for p in p_list:

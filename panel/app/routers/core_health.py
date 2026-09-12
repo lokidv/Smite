@@ -288,6 +288,13 @@ async def _reset_core(core: str, app_or_request, db: AsyncSession):
     
     for tunnel in active_tunnels:
         try:
+            if core == "zapret" and tunnel.foreign_node_id:
+                # Between two nodes: same path as create (relay target, listen
+                # port, desync on both ends), not a raw copy of the spec.
+                from app.routers.tunnels import apply_singlenode_tunnel
+                await apply_singlenode_tunnel(tunnel, db)
+                await asyncio.sleep(0.5)
+                continue
             if core in ("zapret", "snispoof", "warp"):
                 # zapret/snispoof/warp are single-node: just re-push the spec to the node.
                 target = None

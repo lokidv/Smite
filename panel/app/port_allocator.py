@@ -247,7 +247,7 @@ async def _ports_claimed_in_db(db, node_id: str, exclude_id: str) -> Set[int]:
 
 
 async def pick_free_listen_port(client, db, node_id: str, preferred: int, exclude_id: str,
-                                probe: int = 300) -> tuple:
+                                probe: int = 300, current: Optional[int] = None) -> tuple:
     """Return (port, note) — `preferred` if free on this node, else the nearest free one.
 
     Free means: no other active tunnel in the DB claims it on this node, AND
@@ -259,19 +259,36 @@ async def pick_free_listen_port(client, db, node_id: str, preferred: int, exclud
 
     `note` is empty when `preferred` was used, otherwise a sentence saying what
     was picked and why, meant to be surfaced to the operator.
+
+    `current` is the port the tunnel already listens on (spec.listen_port). It is
+    kept whenever nothing else claims it, even when `preferred` has meanwhile
+    become free: clients are configured with it. A relay holding it counts as
+    the tunnel's own. Without this, re-applying a running tunnel saw its own
+    relay on e.g. 8864, moved it to 8865, and broke every client.
     """
-    used = await _ports_claimed_in_db(db, node_id, exclude_id)
+    claimed = await _ports_claimed_in_db(db, node_id, exclude_id)
+    live = set()
     owners = {}
     try:
         res = await client.send_to_node(node_id, "/api/agent/ports/used", {})
         if isinstance(res, dict) and res.get("status") == "success":
             for p, who in (res.get("udp") or {}).items():
-                used.add(int(p))
+                live.add(int(p))
                 owners[int(p)] = who
     except Exception as e:  # noqa: BLE001
         # Cannot ask the node (older build / unreachable): fall back to DB-only.
         logger.info(f"[port-alloc] ports/used unavailable on node {node_id}: {e}")
 
+    try:
+        current = int(current) if current not in (None, "") else None
+    except (TypeError, ValueError):
+        current = None
+    if current and current not in claimed:
+        holder = (owners.get(current) or {}).get("proc")
+        if current not in live or holder == "smite-udp-relay":
+            return current, ""
+
+    used = claimed | live
     if preferred not in used:
         return preferred, ""
 

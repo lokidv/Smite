@@ -705,6 +705,8 @@ const NewBadge = () => {
 
 // ---- zapret (DPI desync / SNI bypass) ----
 const ZAPRET_DESYNC_MODES = ['fake', 'fakedsplit', 'multisplit', 'multidisorder', 'disorder2', 'split2', 'syndata']
+// Modes that keep a WireGuard datagram intact (the node maps anything else to fake).
+const ZAPRET_UDP_DESYNC_MODES = ['fake', 'ipfrag2', 'fake,ipfrag2']
 const ZAPRET_L7_FILTERS = ['tls', 'http', 'quic', 'none']
 const ZAPRET_DIRECTIONS = ['both', 'out', 'in']
 
@@ -748,7 +750,10 @@ const buildZapretSpec = (state: ZapretFormState, desyncOverride?: string): Recor
   if (isUdp && ['multisplit', 'fakedsplit', 'fakeddisorder', 'disorder', 'disorder2', 'split', 'split2'].includes(modeCandidate)) {
     modeCandidate = 'fake'
   }
-  const mode = ZAPRET_DESYNC_MODES.includes(modeCandidate) ? modeCandidate : 'fake'
+  // UDP presets "fixed" (ipfrag2) and "hybrid" (fake,ipfrag2) used to be
+  // rewritten to fake here, so the created tunnel never ran what was benchmarked.
+  const allowedModes = isUdp ? ZAPRET_UDP_DESYNC_MODES : ZAPRET_DESYNC_MODES
+  const mode = allowedModes.includes(modeCandidate) ? modeCandidate : 'fake'
 
   let fooling = state.desync_fooling.trim()
   if (isUdp && (!fooling || fooling.includes('badseq') || fooling.includes('ts'))) {
@@ -790,7 +795,7 @@ const buildZapretSpec = (state: ZapretFormState, desyncOverride?: string): Recor
 const parseZapretSpec = (spec: Record<string, any> | undefined, currentType?: string): ZapretFormState => {
   const state = createDefaultZapretState()
   const modeCandidate = ((spec?.desync_mode || currentType || 'fake') as string).toLowerCase()
-  if (ZAPRET_DESYNC_MODES.includes(modeCandidate)) {
+  if (ZAPRET_DESYNC_MODES.includes(modeCandidate) || ZAPRET_UDP_DESYNC_MODES.includes(modeCandidate)) {
     state.desync_mode = modeCandidate
   }
   if (!spec) {
@@ -1830,7 +1835,13 @@ const Tunnels = () => {
                 )
 
                 let clashingPort = ''
-                const existing = wantedPorts.size === 0 ? undefined : tunnels.find((tn) => {
+                // zapret / multi-port hopping never need the port another tunnel
+                // holds: the panel picks a free iran listen port for them and
+                // relays to the foreign WireGuard port. Offering to "switch the
+                // existing tunnel in place" replaced a working awg/fec tunnel with
+                // the new core, so for these two just open the create form.
+                const coexists = ['zapret', 'mport_hop'].includes(payload.core)
+                const existing = (coexists || wantedPorts.size === 0) ? undefined : tunnels.find((tn) => {
                   const sameNodes = (tn.iran_node_id === payload.iran_node_id || tn.node_id === payload.iran_node_id) &&
                                     (tn.foreign_node_id === payload.foreign_node_id)
                   if (!sameNodes) return false
@@ -2040,6 +2051,12 @@ export const detectWireGuardPort = (tunnels?: Tunnel[]): string => {
       t.core === 'zapret'
   )
   if (carrierTunnel) {
+    // zapret / mport_hop relay to the foreign WireGuard port (target_port); their
+    // ports / listen_port are the iran-side listen port, which the panel may have
+    // moved (e.g. 8864) because another carrier already holds 8863 there.
+    if (['zapret', 'mport_hop'].includes(carrierTunnel.core) && carrierTunnel.spec?.target_port) {
+      return String(carrierTunnel.spec.target_port)
+    }
     if (carrierTunnel.spec?.ports && Array.isArray(carrierTunnel.spec.ports) && carrierTunnel.spec.ports[0]) {
       return String(carrierTunnel.spec.ports[0])
     }
@@ -2061,6 +2078,47 @@ export const detectWireGuardPort = (tunnels?: Tunnel[]): string => {
     return String(anyActive.spec.ports[0])
   }
   return '8863'
+}
+
+// Human text for a benchmark row's failure. The WireGuard-shaped UDP probe
+// reports an error_code so the reason (DPI filtering vs no UDP at all vs an
+// unreliable strategy) can be shown in the operator's language.
+const benchmarkErrorText = (r: any, language: string): string => {
+  const fa = language === 'fa'
+  switch (r?.error_code) {
+    case 'wg_filtered':
+      return fa
+        ? 'UDP عبور می‌کند ولی ترافیک وایرگارد توسط DPI فیلتر می‌شود؛ کانفیگ وایرگارد از این تانل وصل نمی‌شود.'
+        : 'Plain UDP passes but WireGuard traffic is filtered by DPI; WireGuard clients will not connect through this tunnel.'
+    case 'wg_unstable':
+      return fa
+        ? `وایرگارد فقط در ${r.wg_flows_ok} از ${r.wg_flows_total} اتصال جداگانه عبور کرد؛ این تنظیم ناپایدار است.`
+        : `WireGuard got through on only ${r.wg_flows_ok} of ${r.wg_flows_total} separate connections; this setup is unreliable.`
+    case 'no_udp':
+      return fa ? 'هیچ ترافیک UDP از تانل عبور نمی‌کند.' : 'No UDP traffic passes the tunnel.'
+    default:
+      return typeof r?.error === 'string' ? r.error : r?.error ? JSON.stringify(r.error) : ''
+  }
+}
+
+// Whether this row was judged with WireGuard-shaped traffic, and how it went.
+const WgCheckNote = ({ r, language }: { r: any; language: string }) => {
+  const fa = language === 'fa'
+  if (!r || r.protocol !== 'udp') return null
+  if (r.probe_style === 'wireguard') {
+    if (!r.ok) return null  // the error line already explains it
+    return (
+      <div className="text-[11px] text-green-700 dark:text-green-400">
+        {fa ? `✓ تست با ترافیک شبیه وایرگارد (${r.wg_flows_ok}/${r.wg_flows_total} اتصال)` : `✓ Tested with WireGuard-shaped traffic (${r.wg_flows_ok}/${r.wg_flows_total} connections)`}
+      </div>
+    )
+  }
+  if (!r.ok) return null
+  return (
+    <div className="text-[11px] text-amber-700 dark:text-amber-400">
+      {fa ? '⚠ عبور وایرگارد بررسی نشد (نودها را آپدیت کنید)' : '⚠ WireGuard pass-through not checked (update the nodes)'}
+    </div>
+  )
 }
 
 interface BenchmarkModalProps {
@@ -2677,11 +2735,12 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
                               </span>
                             )}
                           </div>
-                          {!r.ok && r.error && (
-                            <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={typeof r.error === 'string' ? r.error : JSON.stringify(r.error)}>
-                              {typeof r.error === 'string' ? r.error : JSON.stringify(r.error)}
+                          {!r.ok && (r.error || r.error_code) && (
+                            <div className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={benchmarkErrorText(r, language)}>
+                              {benchmarkErrorText(r, language)}
                             </div>
                           )}
+                          <WgCheckNote r={r} language={language} />
                         </td>
                         <td className="py-2 pr-2">
                           {r.protocol === 'udp' ? (
@@ -2758,7 +2817,6 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
                                     ports: wgPort,
                                     spec: {
                                       target_port: parseInt(wgPort, 10) || 8863,
-                                      port_range: '20000:40000',
                                       ports: [parseInt(wgPort, 10) || 8863],
                                     }
                                   })
@@ -2882,6 +2940,11 @@ const BenchmarkModal = ({ nodes, servers, tunnels, onClose, onUseConfig }: Bench
                                         </td>
                                         <td className="py-2 text-gray-600 dark:text-gray-300 font-mono text-[11px]">
                                           {sc.description || sc.mode || ''}
+                                          {!sc.ok && (sc.error || sc.error_code) && (
+                                            <div className="font-sans text-red-600 dark:text-red-400 max-w-xs truncate" title={benchmarkErrorText(sc, language)}>
+                                              {benchmarkErrorText(sc, language)}
+                                            </div>
+                                          )}
                                         </td>
                                         <td className="py-2 text-center font-mono text-gray-700 dark:text-gray-300">
                                           {sc.ok && sc.latency_ms != null ? `${sc.latency_ms} ms` : '-'}
@@ -3667,7 +3730,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
     frp_local_ip: '127.0.0.1',
     use_ipv6: false,
     node_ipv6: '',  // Optional IPv6 address for node (Rathole/Chisel)
-    mport_range: '20000:40000',
+    mport_range: '',  // Empty means auto: the panel allocates a free 512-port slice
     spec: {} as Record<string, any>,
   })
   const [backhaulState, setBackhaulState] = useState<BackhaulFormState>(() => {
@@ -3766,7 +3829,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
       rathole_transport: t === 'ws' ? 'ws' : (t === 'tcp' ? 'tcp' : 'tls'),
       rathole_service_type: (t === 'tls' || c === 'awg_ws') ? 'udp' : 'tcp',
       rathole_sni: (c === 'awg_ws' || t === 'tls') ? 'www.digikala.com' : prev.rathole_sni,
-      mport_range: c === 'mport_hop' ? '20000:40000' : prev.mport_range,
+      mport_range: c === 'mport_hop' ? '' : prev.mport_range,
     }))
 
     if (c === 'zapret') {
@@ -4029,7 +4092,10 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
         }
         const targetPort = parseInt(formData.ports || portString || '8863', 10) || 8863
         spec.target_port = targetPort
-        spec.port_range = (formData.mport_range || '20000:40000').trim()
+        // Empty = let the panel allocate a slice. Defaulting to 20000:40000 here
+        // gave every tunnel the same 20001 ports and bypassed the allocator.
+        const hopRange = (formData.mport_range || '').trim()
+        if (hopRange) spec.port_range = hopRange
         spec.ports = [targetPort]
         if (formData.foreign_node_id) {
           const selectedServer = servers.find((s) => s.id === formData.foreign_node_id) || nodes.find((n) => n.id === formData.foreign_node_id)
@@ -4208,7 +4274,7 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
         core,
         type: 'udp',
         ports: prev.ports === '8080' ? '8581' : prev.ports,
-        mport_range: '20000:40000',
+        mport_range: '',
       }))
       return
     } else if (core === 'fec_faketcp') {
@@ -4725,14 +4791,13 @@ const AddTunnelModal = ({ nodes, servers, tunnels, onClose, onSuccess, initial }
                   </label>
                   <input
                     type="text"
-                    value={formData.mport_range || '20000:40000'}
+                    value={formData.mport_range || ''}
                     onChange={(e) => setFormData({ ...formData, mport_range: e.target.value })}
-                    placeholder="20000:40000"
+                    placeholder={language === 'fa' ? 'خودکار' : 'auto'}
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white font-mono"
-                    required
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    {language === 'fa' ? 'بازه بزرگ پورت‌های UDP برای دور زدن تراتلینگ (مثلاً 20000:40000)' : 'Wide UDP port range to evade throttling (e.g. 20000:40000)'}
+                    {language === 'fa' ? 'خالی بگذارید تا پنل یک بازه ۵۱۲تایی آزاد به این تانل بدهد (مثلاً 20512:21023). بازه مشترک بین چند تانل باعث قطعی می‌شود.' : 'Leave empty and the panel gives this tunnel its own free 512-port slice (e.g. 20512:21023). Sharing one range between tunnels breaks them.'}
                   </p>
                 </div>
               </div>
